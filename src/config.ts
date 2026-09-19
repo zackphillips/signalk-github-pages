@@ -7,11 +7,16 @@
  * hand-edit and no wizard to run: `data/vessel/info.yaml` in the published
  * repo is an *output* of this file, written for the frontend to read.
  *
- * Nothing numeric has a default. An interval, a retention window, a stale
- * cutoff and the instrument-path list all describe one boat's cellular plan
- * and one boat's instruments; a default here is a guess that publishes at
- * someone else's cadence and bandwidth until they notice. The plugin refuses
- * to publish until each one is set, and says exactly which are missing.
+ * Defaults are the values the tracker has run on since it was a Python daemon
+ * on a Raspberry Pi: a two-minute cadence underway, hourly at the dock, a
+ * 24-hour position window and a five-hour instrument log. They are a working
+ * configuration for any boat, so a fresh install publishes without a setup
+ * session.
+ *
+ * What is *not* defaulted is anything that belongs to one particular boat:
+ * privacy zones start empty, the timezone follows the server, and the repo,
+ * the token and the vessel's identifiers have no stand-in. Guessing at a
+ * privacy zone would be worse than having none.
  */
 
 export interface PrivacyZone {
@@ -53,31 +58,22 @@ export interface PluginConfig {
 }
 
 /** Theme names understood by the frontend's `constants.js`. */
-export const SITE_THEMES = [
-  'mermug',
-  'light',
-  'dark',
-  'deep-sea',
-  'starboard',
-  'port-light',
-  'midnight-watch',
-  'chart-room',
-  'fog-bank',
-  'overcast',
-  'coral',
-  'kelp',
-  'dusk',
-];
+// Only these four exist in the bundled styles.css. An earlier, longer list
+// came from a stale comment in one boat's info.yaml; picking one of those
+// names left the page unstyled.
+export const SITE_THEMES = ['marine', 'mermug', 'bright', 'dark'];
+export const DEFAULT_THEME = 'marine';
 
 /**
- * A starting point for `instrumentLog.paths`, documented rather than applied.
+ * Default `instrumentLog.paths`: what the bundled sparklines draw.
  *
- * These are the paths the bundled frontend's sparklines draw. They are in the
- * README to paste into the config page, not in the schema as a default: which
- * instruments a boat has, and which of them are worth a megabyte a day over a
- * hotspot, is not something this plugin can guess.
+ * A path no instrument produces costs nothing — it simply never appears in the
+ * log — so this list is safe to ship. What it is not is a list to leave alone
+ * forever: every path here is recorded for every entry and re-uploaded on
+ * every publish, so trimming it to what you actually look at is the single
+ * biggest thing you can do for a cellular data plan.
  */
-export const SUGGESTED_INSTRUMENT_LOG_PATHS = [
+export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'navigation.speedOverGround',
   'navigation.speedThroughWater',
   'navigation.courseOverGroundTrue',
@@ -104,6 +100,17 @@ export const SUGGESTED_INSTRUMENT_LOG_PATHS = [
   'propulsion.*.temperature',
   'propulsion.*.runTime',
 ];
+
+/** Cadence while `navigation.state` says the boat is moving, in seconds. */
+export const DEFAULT_INTERVAL_UNDERWAY = 120;
+/** Cadence while moored, anchored, or state unknown, in seconds. */
+export const DEFAULT_INTERVAL_STATIONARY = 3600;
+/** Rolling length of the instrument log — about five hours at 120 s. */
+export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 120;
+/** How long raw positions stay in `positions_index.json`. */
+export const DEFAULT_POSITION_RETENTION_HOURS = 24;
+/** Values older than this are dropped from the published snapshot. */
+export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
 
 export const configSchema = {
   type: 'object',
@@ -139,20 +146,21 @@ export const configSchema = {
     },
     interval: {
       type: 'object',
-      title: 'Publish cadence (required)',
+      title: 'Publish cadence',
       properties: {
         underway: {
           type: 'number',
           title: 'Underway interval (seconds)',
           description:
-            'Used when navigation.state is sailing or motoring. 120 is one ' +
-            'publish every two minutes; each publish costs the size of the ' +
-            'changed files, uploaded in full.',
+            'Used when navigation.state is sailing or motoring. Each publish ' +
+            'costs the size of the changed files, uploaded in full.',
+          default: DEFAULT_INTERVAL_UNDERWAY,
         },
         stationary: {
           type: 'number',
           title: 'Stationary interval (seconds)',
-          description: 'Used when moored, anchored, or the state is unknown. 3600 is hourly.',
+          description: 'Used when moored, anchored, or the state is unknown.',
+          default: DEFAULT_INTERVAL_STATIONARY,
         },
       },
     },
@@ -186,7 +194,7 @@ export const configSchema = {
     },
     instrumentLog: {
       type: 'object',
-      title: 'Instrument log (sparklines, required)',
+      title: 'Instrument log (sparklines)',
       properties: {
         paths: {
           type: 'string',
@@ -196,7 +204,8 @@ export const configSchema = {
             'electrical.batteries.*.voltage covers every bank. Lines starting ' +
             'with # are comments. This list is the entire bandwidth cost of a ' +
             'cycle: every path here is uploaded, for every entry, on every ' +
-            'publish. The README has the set the bundled sparklines draw.',
+            'publish. Trim it to what you actually look at.',
+          default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
         },
         entries: {
           type: 'number',
@@ -205,22 +214,25 @@ export const configSchema = {
             'Rolling length of instrument_log.json — 120 entries is about five ' +
             'hours at a two-minute cadence. The frontend is told this number, ' +
             'so the sparklines and the publisher cannot drift apart.',
+          default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
         },
       },
     },
     positionRetentionHours: {
       type: 'number',
-      title: 'Position retention (hours, required)',
+      title: 'Position retention (hours)',
       description:
         'How long raw positions stay in positions_index.json — the map track. ' +
         'Past days survive as GPX regardless.',
+      default: DEFAULT_POSITION_RETENTION_HOURS,
     },
     staleMaxAgeMinutes: {
       type: 'number',
-      title: 'Stale value cutoff (minutes, required)',
+      title: 'Stale value cutoff (minutes)',
       description:
         'Values older than this are dropped from the published snapshot so the ' +
         'site shows them as unavailable rather than as current.',
+      default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
     buildDocsIndex: {
       type: 'boolean',
@@ -246,7 +258,7 @@ export const configSchema = {
           type: 'string',
           title: 'Theme',
           enum: SITE_THEMES,
-          default: 'mermug',
+          default: DEFAULT_THEME,
         },
         marinetrafficShipId: {
           type: 'string',
@@ -325,7 +337,14 @@ export interface UnresolvedConfig {
 
 /**
  * Validate the admin-UI payload and produce a complete config, or the list of
- * everything that is missing.
+ * everything that stops the plugin publishing.
+ *
+ * Missing numbers fall back to the documented defaults — the schema supplies
+ * them in the admin UI, and this repeats the fallback for a config written
+ * before a field existed. What has no fallback is what belongs to one boat:
+ * the repository and the token. A privacy zone missing its radius is fatal
+ * too: a half-entered zone hides nothing while looking like it does, and the
+ * failure mode is a published position someone believed was redacted.
  *
  * Every problem is reported at once: filling one field, restarting, and being
  * told about the next one is a miserable way to configure a plugin over a
@@ -346,26 +365,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   const token = typeof github.token === 'string' ? github.token.trim() : '';
   if (!token) problems.push('GitHub personal access token is not set.');
-
-  const underway = num(interval.underway);
-  if (underway === null) problems.push('Underway interval (seconds) is not set.');
-  const stationary = num(interval.stationary);
-  if (stationary === null) problems.push('Stationary interval (seconds) is not set.');
-
-  const paths = parsePathList(instrumentLog.paths);
-  if (!paths.length)
-    problems.push(
-      'Instrument log paths are not set — nothing would be recorded for the ' +
-        'sparklines. The README lists the set the bundled frontend draws.',
-    );
-  const entries = num(instrumentLog.entries);
-  if (entries === null) problems.push('Instrument log entries retained is not set.');
-
-  const retention = num(input.positionRetentionHours);
-  if (retention === null) problems.push('Position retention (hours) is not set.');
-
-  const stale = num(input.staleMaxAgeMinutes);
-  if (stale === null) problems.push('Stale value cutoff (minutes) is not set.');
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
@@ -388,8 +387,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     ? input.privacyZones.length - zones.length
     : 0;
   if (droppedZones > 0) {
-    // Not fatal, but a half-entered zone hides nothing and the operator has
-    // every reason to think it does.
     problems.push(
       `${droppedZones} privacy zone(s) are incomplete (each needs a latitude, ` +
         'longitude and a radius in metres) and would hide nothing.',
@@ -398,20 +395,32 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   if (problems.length) return { ok: false, problems };
 
+  const paths = parsePathList(instrumentLog.paths);
+
   return {
     ok: true,
     config: {
       github: { repo, branch: str(github.branch) || 'main', token },
-      interval: { underway: underway!, stationary: stationary! },
+      interval: {
+        underway: num(interval.underway) ?? DEFAULT_INTERVAL_UNDERWAY,
+        stationary: num(interval.stationary) ?? DEFAULT_INTERVAL_STATIONARY,
+      },
       privacyZones: zones,
       timezone: str(input.timezone),
-      instrumentLog: { paths, entries: Math.max(1, Math.floor(entries!)) },
-      positionRetentionHours: retention!,
-      staleMaxAgeMinutes: stale!,
+      instrumentLog: {
+        paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
+        entries: Math.max(
+          1,
+          Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
+        ),
+      },
+      positionRetentionHours:
+        num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
+      staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
       buildDocsIndex: input.buildDocsIndex !== false,
       publishFrontend: input.publishFrontend !== false,
       site: {
-        theme: str(site.theme) || 'mermug',
+        theme: SITE_THEMES.includes(str(site.theme)) ? str(site.theme) : DEFAULT_THEME,
         marinetrafficShipId: str(site.marinetrafficShipId),
         postgsailLogsUrl: str(site.postgsailLogsUrl),
         uscgNumber: str(site.uscgNumber),

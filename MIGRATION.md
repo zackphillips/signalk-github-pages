@@ -60,20 +60,21 @@ Copy the values out of `data/vessel/info.yaml` into the plugin config page:
 | `passage` | nothing — stays in the file, preserved on rewrite |
 | `signalk.host`, `signalk.port` | nothing — read from the server |
 
-The daemon's constants become required config fields — the plugin will not
-start until each is set:
+The daemon's constants are the plugin's defaults, so there is nothing to copy
+unless you want to change them:
 
-| `update_signalk_data.py` | Plugin config | Daemon's value |
+| `update_signalk_data.py` | Plugin config | Both |
 |---|---|---|
 | `UPDATE_INTERVAL_AWAY_SECONDS` | `interval.underway` | 120 |
 | `UPDATE_INTERVAL_HOME_SECONDS` | `interval.stationary` | 3600 |
 | `POSITION_RETENTION_HOURS` | `positionRetentionHours` | 24 |
 | `STALE_MAX_AGE_MINUTES` | `staleMaxAgeMinutes` | 60 |
 | `INSTRUMENT_LOG_ENTRIES` | `instrumentLog.entries` | 120 |
-| (none — logged everything) | `instrumentLog.paths` | see the README list |
+| (none — logged every numeric path) | `instrumentLog.paths` | the sparkline set |
 
-Those are the numbers the daemon ran with; entering them reproduces today's
-behaviour exactly, apart from the path list, which is the point of step 1.
+The one real difference is the path list, which is the point of step 1. Note
+also that `theme: "mermug"` in `info.yaml` is not the plugin's default
+(`marine`), so set it explicitly if you want the same look.
 
 Anything the frontend reads that the config page does not cover goes in
 `site.extraYaml` — `default_location`, for instance. The plugin rewrites

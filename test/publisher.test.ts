@@ -170,10 +170,10 @@ describe('Publisher', () => {
       'data/vessel/info.yaml',
       yaml.dump({ ...first, passage: { from: 'SF', to: 'Santa Cruz' } }),
     );
-    const changed = makePublisher({ site: { theme: 'deep-sea' } });
+    const changed = makePublisher({ site: { theme: 'bright' } });
     await changed.runCycle(tree());
     const second = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
-    expect(second.theme).toBe('deep-sea');
+    expect(second.theme).toBe('bright');
     expect(second.passage).toEqual({ from: 'SF', to: 'Santa Cruz' });
   });
 

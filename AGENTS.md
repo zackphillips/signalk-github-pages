@@ -65,10 +65,17 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Keep the instrument-log path list tight.** The API uploads whole files, not
   deltas; this file is the entire bandwidth cost of a cycle. Every cycle logs
   its size and warns past `INSTRUMENT_LOG_WARN_BYTES`.
-- **Nothing numeric gets a default.** Intervals, retention, stale cutoff, log
-  length and the path list are all required; `resolveConfig` reports every
-  missing one at once and the plugin refuses to start. Adding a default to the
-  schema would quietly undo that.
+- **Default the operational numbers, never the boat.** Intervals, retention,
+  stale cutoff, log length and the path list all have defaults — the values
+  this tracker has run on for years — so a fresh install works. Privacy zones,
+  timezone, repo, token and the vessel identifiers have none: a guessed
+  privacy zone hides the wrong water, and a guessed timezone splits tracks on
+  the wrong midnight. An incomplete privacy zone is a hard config error, not a
+  warning.
+- **`SITE_THEMES` must match the themes in `public/assets/styles.css`.** It
+  once carried names from a stale comment in one boat's `info.yaml`; picking
+  one of those left the page unstyled. Today: `marine`, `mermug`, `bright`,
+  `dark`.
 - **Publish state stays out of the Signal K tree.** Cost, commit SHA and
   failures go to `app.debug` / `app.error` and the plugin status line. Do not
   add `setPluginStatus`-style state as data paths.
