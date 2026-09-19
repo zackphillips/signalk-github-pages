@@ -62,15 +62,21 @@ branch → `main` / `(root)`.
 **2. A token.** [Fine-grained PAT](https://github.com/settings/personal-access-tokens),
 **only** this repository, **Contents: read and write**. Nothing else.
 
-**3. Install and point it at both.**
+**3. Install it.** Not on npm yet, so not in the App Store either — install
+straight from git into the Signal K home directory:
 
 ```bash
-cd ~/.signalk/node_modules && npm install signalk-github-pages
+cd ~/.signalk
+npm install github:zackphillips/signalk-github-pages
+sudo systemctl restart signalk        # or however you run the server
 ```
 
-Restart Signal K, open **Server → Plugin Config → GitHub Pages vessel
-tracker**, fill in the repository and the token, enable. Everything else has a
-working default.
+npm clones it, installs the dependencies and runs the TypeScript build via the
+package's `prepare` script, leaving a loadable plugin in
+`~/.signalk/node_modules/signalk-github-pages`.
+
+Then open **Server → Plugin Config → GitHub Pages vessel tracker**, fill in
+the repository and the token, enable. Everything else has a working default.
 
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
 only. Give Pages a minute, then open the URL.
@@ -266,6 +272,38 @@ Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
 
 Publish state deliberately stays out of the Signal K data tree: it is log
 output and the plugin status line, not paths in the model.
+
+## It is not in the plugin list
+
+The server discovers plugins by scanning `~/.signalk/node_modules` for
+packages whose `package.json` carries the `signalk-node-server-plugin`
+keyword, then `require`-ing each one. A plugin that fails to load is reported
+as a provider error rather than shown in the menu, so the server log is the
+first place to look.
+
+```bash
+ls ~/.signalk/node_modules/signalk-github-pages/dist/index.js   # 1
+grep -i signalk-github-pages ~/.signalk/signalk-server.log      # 2
+node -e "console.log(require(process.env.HOME + \
+  '/.signalk/node_modules/signalk-github-pages'))"              # 3
+```
+
+1. **No such file** — the build did not run. This is the usual one after a
+   `git clone` straight into `node_modules`, which skips npm entirely and so
+   skips `prepare`. Fix it in place:
+   ```bash
+   cd ~/.signalk/node_modules/signalk-github-pages && npm install && npm run build
+   ```
+2. **`Failed to start`, or a stack trace** — the module threw on load. The
+   trace names the reason; a missing `js-yaml` means the dependencies were
+   never installed.
+3. **Prints a function** — the package is fine and the problem is elsewhere:
+   confirm the server was restarted, that it is reading the `~/.signalk` you
+   are looking at (`SIGNALK_NODE_CONFIG_DIR` overrides it), and that Node is
+   18 or newer (`node -v`).
+
+`npm install signalk-github-pages` by name fails with a 404 until this is
+published. Use the git form above.
 
 ## Development
 

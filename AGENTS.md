@@ -88,6 +88,15 @@ Run `npm test` and `npm run typecheck` before committing.
   an off-by-one in the prune let ~32k of them accumulate and grew the
   repository past a gigabyte.
 
+## Installing on a server
+
+`dist/` is not committed. The `prepare` script builds it on `npm install`,
+which covers installing from a git URL or from a local checkout — the only
+routes there are until this is published to npm. A `git clone` directly into
+`~/.signalk/node_modules` bypasses npm and therefore `prepare`, leaving no
+`dist/index.js`; the server then reports a provider error instead of listing
+the plugin. Do not "fix" that by committing `dist/`.
+
 ## Published file formats
 
 `data/telemetry/*.json` carry a `schema_version` so a plugin and a frontend of
