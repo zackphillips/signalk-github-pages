@@ -83,8 +83,10 @@ carrying `passage:` across untouched.
 
 ## 4. Cut over
 
-1. Install the plugin on the Pi from the App Store and enable it against the
-   real repository.
+1. Install the plugin on the Pi and enable it against the real repository.
+   Until it is published to npm the App Store cannot see it, so install from
+   git: `cd ~/.signalk && npm install github:zackphillips/signalk-github-pages`,
+   then restart the server.
 2. Stop and disable the daemon:
    ```bash
    sudo systemctl disable --now vesselwebsite.service
