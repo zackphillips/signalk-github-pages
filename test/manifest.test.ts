@@ -48,7 +48,7 @@ describe('ownership', () => {
     expect(isOwnedPath('assets/custom.css', FULL)).toBe(false);
   });
 
-  it('leaves the polar table alone until the config page supplies one', () => {
+  it('leaves the polar table alone until the server has an active polar', () => {
     // A polars.csv committed by hand years ago is not the plugin's to rewrite.
     expect(isOwnedPath('data/vessel/polars.csv', FULL)).toBe(false);
     expect(isOwnedPath('data/vessel/polars.csv', { ...FULL, publishPolars: true })).toBe(true);

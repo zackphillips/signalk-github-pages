@@ -3,7 +3,6 @@ import yaml from 'js-yaml';
 import {
   extractPassage,
   mergeVesselIdentity,
-  parseExtraFields,
   readVesselDetails,
   renderVesselInfo,
 } from '../src/vesselInfo';
@@ -72,49 +71,22 @@ describe('renderVesselInfo', () => {
   });
 });
 
-describe('extra site fields', () => {
-  const render = (extraYaml: string, problems: string[] = []) =>
-    yaml.load(
-      renderVesselInfo(makeConfig({ site: { extraYaml } }), IDENTITY, null, (p) =>
-        problems.push(p),
-      ),
-    ) as any;
-
-  it('merges free-form YAML into the published file', () => {
-    const parsed = render('default_location:\n  lat: 37.806\n  lon: -122.465\n  label: The Bay\n');
-    expect(parsed.default_location).toEqual({ lat: 37.806, lon: -122.465, label: 'The Bay' });
-    expect(parsed.name).toBe('S.V.Mermug');
+describe('home waters', () => {
+  it('writes default_location, which is where the site looks before a fix', () => {
+    const config = makeConfig({
+      site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'San Francisco Bay' } },
+    });
+    const parsed = yaml.load(renderVesselInfo(config, IDENTITY)) as any;
+    expect(parsed.default_location).toEqual({
+      lat: 37.806,
+      lon: -122.465,
+      label: 'San Francisco Bay',
+    });
   });
 
-  it('lets an extra field override what the config page would have written, and says so', () => {
-    const problems: string[] = [];
-    const parsed = render('theme: kelp\n', problems);
-    expect(parsed.theme).toBe('kelp');
-    expect(problems.join(' ')).toContain('overrides the value from the plugin config');
-  });
-
-  it('refuses to set passage, which lives in the repository', () => {
-    const problems: string[] = [];
-    const parsed = render('passage:\n  from: SF\n', problems);
-    expect(parsed.passage).toBeUndefined();
-    expect(problems.join(' ')).toContain('must not set "passage:"');
-  });
-
-  it('skips invalid YAML rather than stopping the publish', () => {
-    const problems: string[] = [];
-    const parsed = render('key: [unclosed\n', problems);
-    expect(parsed.name).toBe('S.V.Mermug');
-    expect(problems.join(' ')).toContain('not valid YAML');
-  });
-
-  it('skips a scalar or a list, which cannot merge into a mapping', () => {
-    const problems: string[] = [];
-    expect(parseExtraFields('- one\n- two\n', (p) => problems.push(p))).toEqual({});
-    expect(problems.join(' ')).toContain('must be a YAML mapping');
-  });
-
-  it('treats a blank block as no extras', () => {
-    expect(parseExtraFields('   \n')).toEqual({});
+  it('leaves it out when it is not set, so the frontend uses its own default', () => {
+    const parsed = yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any;
+    expect(parsed.default_location).toBeUndefined();
   });
 });
 

@@ -23,10 +23,11 @@
  * The vessel's own details — name, MMSI, callsign, registrations, dimensions —
  * are not on this page at all: they are read from the Signal K tree, which is
  * where the server already keeps them. The fields here are fallbacks for what
- * a server does not carry.
+ * a server does not carry. The polar table is not here either: it belongs to
+ * the Polar Management plugin, and this one publishes whichever polar that
+ * plugin has made active.
  */
 
-import { renderPolars } from './polars';
 import { availableTimezones, serverTimezone } from './timezones';
 
 export interface PrivacyZone {
@@ -60,12 +61,6 @@ export interface PluginConfig {
   };
   positionRetentionHours: number;
   staleMaxAgeMinutes: number;
-  /**
-   * The polar table as `data/vessel/polars.csv` is published, already in the
-   * frontend's semicolon format. Empty means the plugin publishes no polars
-   * and leaves a hand-committed file alone.
-   */
-  polars: string;
   buildDocsIndex: boolean;
   publishFrontend: boolean;
   site: {
@@ -74,7 +69,12 @@ export interface PluginConfig {
     postgsailLogsUrl: string;
     uscgNumber: string;
     hullNumber: string;
-    extraYaml: string;
+    /**
+     * Where the site looks before it has a fix: the tide station it picks and
+     * the map it opens on. Null falls back to the frontend's own constant,
+     * which is San Francisco Bay.
+     */
+    defaultLocation: { lat: number; lon: number; label: string } | null;
   };
 }
 
@@ -295,19 +295,6 @@ export const configSchema = {
         'site shows them as unavailable rather than as current.',
       default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
-    polars: {
-      type: 'string',
-      title: 'Polar table (CSV)',
-      description:
-        'The boat\'s polars, for the target-speed chart. Paste the table as it ' +
-        'comes out of ORC, a VPP or a sailmaker: first line the true wind ' +
-        'speeds in knots, then one line per true wind angle in degrees ' +
-        'followed by the target boat speeds in knots. Semicolons, commas, tabs ' +
-        'or spaces all work, and lines starting with # are comments. Leave ' +
-        'blank to keep managing data/vessel/polars.csv by hand — blank never ' +
-        'deletes or overwrites a file already in the repository.',
-      default: '',
-    },
     buildDocsIndex: {
       type: 'boolean',
       title: "Maintain docs/index.json",
@@ -367,17 +354,18 @@ export const configSchema = {
             'a hull identification number, and only typed here when it is not.',
           default: '',
         },
-        extraYaml: {
-          type: 'string',
-          title: 'Extra site fields (YAML)',
+        defaultLocation: {
+          type: 'object',
+          title: 'Home waters',
           description:
-            'Free-form YAML merged into data/vessel/info.yaml, for anything the ' +
-            'frontend reads that this page does not cover. A key here overrides ' +
-            'the value the plugin would have written, which is logged when it ' +
-            'happens. Your passage: block is never touched — it stays in the ' +
-            'published file and is preserved on every rewrite. Invalid YAML is ' +
-            'logged and skipped; it never stops a publish.',
-          default: '',
+            'Where the site looks before the boat has reported a position: the ' +
+            'tide station it picks and the map it opens on. Leave the ' +
+            'coordinates blank to use the frontend default, San Francisco Bay.',
+          properties: {
+            lat: { type: 'number', title: 'Latitude' },
+            lon: { type: 'number', title: 'Longitude' },
+            label: { type: 'string', title: 'Label', default: '' },
+          },
         },
       },
     },
@@ -395,9 +383,7 @@ export const configUiSchema = {
     repo: { 'ui:widget': 'hidden' },
     token: { 'ui:widget': 'password' },
   },
-  polars: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
-  site: { extraYaml: { 'ui:widget': 'textarea', 'ui:options': { rows: 6 } } },
 };
 
 function str(value: unknown, fallback = ''): string {
@@ -545,6 +531,25 @@ export interface UnresolvedConfig {
  * told about the next one is a miserable way to configure a plugin over a
  * boat's wifi.
  */
+/**
+ * The home-waters coordinates, or null.
+ *
+ * Both halves or neither: a latitude with no longitude is not a place, and
+ * sending half a fix to the tide-station lookup would land the panel somewhere
+ * in the ocean rather than falling back to the frontend's default.
+ */
+export function resolveDefaultLocation(
+  value: unknown,
+): { lat: number; lon: number; label: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const { lat, lon, label } = value as Record<string, unknown>;
+  const latitude = Number(lat);
+  const longitude = Number(lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { lat: latitude, lon: longitude, label: str(label) };
+}
+
 export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
@@ -568,11 +573,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     const warning = tokenWarning(token);
     if (warning) warnings.push(warning);
   }
-
-  const polars = renderPolars(input.polars);
-  // A polar table is decoration on a chart, not a position: a typo in it is
-  // reported and the file is skipped, never a reason to stop publishing.
-  warnings.push(...polars.problems.map((problem) => `Polar table: ${problem}`));
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
@@ -632,7 +632,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       positionRetentionHours:
         num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
-      polars: polars.csv,
       buildDocsIndex: input.buildDocsIndex !== false,
       publishFrontend: input.publishFrontend !== false,
       site: {
@@ -641,7 +640,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         postgsailLogsUrl: str(site.postgsailLogsUrl),
         uscgNumber: str(site.uscgNumber),
         hullNumber: str(site.hullNumber),
-        extraYaml: typeof site.extraYaml === 'string' ? site.extraYaml : '',
+        defaultLocation: resolveDefaultLocation(site.defaultLocation),
       },
     },
   };

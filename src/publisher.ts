@@ -61,6 +61,18 @@ const INFO_PATH = 'data/vessel/info.yaml';
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
 
+/**
+ * What a cycle needs that is not in the tree.
+ *
+ * Only the polar table so far. It comes in as an argument rather than being
+ * read here because reading it means an async call into the server's Resources
+ * API, and this module stays a pure function of the tree.
+ */
+export interface CycleInput {
+  /** The rendered polar CSV, or empty to publish none and claim none. */
+  polars?: string;
+}
+
 export interface CycleResult {
   published: boolean;
   files: string[];
@@ -164,8 +176,9 @@ export class Publisher {
       : config.interval.stationary;
   }
 
-  async runCycle(rawTree: Tree): Promise<CycleResult> {
+  async runCycle(rawTree: Tree, input: CycleInput = {}): Promise<CycleResult> {
     const { config, store, log, client, version, publicDir } = this.deps;
+    const polars = input.polars ?? '';
     const startedAt = Date.now();
     const now = this.now();
     const state = await store.readState();
@@ -240,12 +253,12 @@ export class Publisher {
     }
 
     files.push(...(await this.vesselInfoFile(identity)));
-    files.push(...(await this.polarsFile()));
-    files.push(...(await this.manifestFile()));
+    files.push(...(await this.polarsFile(polars)));
+    files.push(...(await this.manifestFile(polars)));
     files.push(...(await this.frontendFiles(publicDir, version, state.frontendVersion)));
     files.push(...(await this.docsIndexFiles()));
 
-    const { owned, rejected } = partitionOwned(files, this.manifestOptions());
+    const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
     for (const file of rejected) {
       // Should be unreachable: a path here means a generator started writing
       // outside the manifest, which is exactly what the manifest is for.
@@ -379,39 +392,39 @@ export class Publisher {
   }
 
   /**
-   * `data/vessel/polars.csv`, when the config page supplies a polar table.
+   * `data/vessel/polars.csv`, when the server has an active polar.
    *
-   * An empty setting writes nothing and claims nothing: the file is the
-   * user's until they paste a table here, and a table removed later leaves the
-   * last published file in the repository rather than deleting a boat's
-   * performance data because a text box was cleared.
+   * Nothing active writes nothing and claims nothing: the file is the user's
+   * until Polar Management has a polar selected, and deselecting one later
+   * leaves the last published file in the repository rather than deleting a
+   * boat's performance data because a dropdown was cleared.
    */
-  private async polarsFile(): Promise<PublishFile[]> {
-    const { config, store, log } = this.deps;
-    if (!config.polars) return [];
+  private async polarsFile(polars: string): Promise<PublishFile[]> {
+    const { store, log } = this.deps;
+    if (!polars) return [];
     const previous = await store.readText('polars.csv');
-    if (previous === config.polars) return [];
-    await store.writeText('polars.csv', config.polars);
+    if (previous === polars) return [];
+    await store.writeText('polars.csv', polars);
     log(
       `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
-        `(${config.polars.trim().split('\n').length - 1} wind angles).`,
+        `(${polars.trim().split('\n').length - 1} wind angles).`,
     );
-    return [{ path: POLARS_PATH, content: config.polars }];
+    return [{ path: POLARS_PATH, content: polars }];
   }
 
   /** What the plugin claims to own this cycle. */
-  private manifestOptions(): ManifestOptions {
+  private manifestOptions(polars: string): ManifestOptions {
     const { config } = this.deps;
     return {
       buildDocsIndex: config.buildDocsIndex,
       publishFrontend: config.publishFrontend,
-      publishPolars: config.polars !== '',
+      publishPolars: polars !== '',
     };
   }
 
-  private async manifestFile(): Promise<PublishFile[]> {
+  private async manifestFile(polars: string): Promise<PublishFile[]> {
     const { store, version } = this.deps;
-    const options = this.manifestOptions();
+    const options = this.manifestOptions(polars);
     const fingerprint = JSON.stringify({ ...options, version });
     if ((await store.readText('manifest-fingerprint.txt')) === fingerprint) return [];
     await store.writeText('manifest-fingerprint.txt', fingerprint);

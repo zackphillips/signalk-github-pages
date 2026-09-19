@@ -18,6 +18,7 @@ import { configSchema, configUiSchema, resolveConfig, type PluginConfig } from '
 import { GitHubClient, tokenHint } from './github';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
+import { readActivePolar, type PolarResourceSource } from './polars';
 import { readSelfTree, type SelfTreeSource } from './snapshot';
 import { isValidTimezone } from './time';
 import type { VesselIdentity } from './vesselInfo';
@@ -25,7 +26,7 @@ import type { VesselIdentity } from './vesselInfo';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
 
-interface SignalKApp extends SelfTreeSource {
+interface SignalKApp extends SelfTreeSource, PolarResourceSource {
   debug: (message: string) => void;
   error: (message: string) => void;
   setPluginStatus: (message: string) => void;
@@ -131,8 +132,7 @@ module.exports = function (app: SignalKApp): Plugin {
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +
-          `tracks grouped by ${config.timezone || 'UTC'}, ` +
-          `${config.polars ? 'polars from the config page' : 'no polars in the config'}.`,
+          `tracks grouped by ${config.timezone || 'UTC'}.`,
       );
       if (config.privacyZones.length === 0) {
         app.debug('No privacy zones set: every position is published exactly as received.');
@@ -154,6 +154,27 @@ module.exports = function (app: SignalKApp): Plugin {
         version: PLUGIN_VERSION,
         log: (message) => app.debug(message),
       });
+
+      // The polar table belongs to the Polar Management plugin: it stores polars
+      // as Signal K `polars` resources and points at the selected one from
+      // `polars.activePolar`. Read it every cycle so a re-import or a switch to
+      // a different polar reaches the site without restarting anything.
+      //
+      // Problems are logged only when they change. A polar that will not
+      // convert would otherwise say so every two minutes for as long as it is
+      // selected, which buries everything else in the log.
+      let lastPolarReport = '';
+      const polarsCsv = async (tree: ReturnType<typeof readSelfTree>): Promise<string> => {
+        const { id, csv, problems } = await readActivePolar(app, tree);
+        const report = `${id ?? ''}|${problems.join(' ')}`;
+        if (report !== lastPolarReport) {
+          lastPolarReport = report;
+          for (const problem of problems) app.error(`Polar table: ${problem}`);
+          if (!id) app.debug('No active polar on the server; publishing none.');
+          else if (!problems.length) app.debug(`Active polar: "${id}".`);
+        }
+        return csv;
+      };
 
       const schedule = (seconds: number) => {
         if (stopped) return;
@@ -178,7 +199,7 @@ module.exports = function (app: SignalKApp): Plugin {
             return;
           }
           seconds = publisher.intervalSeconds(tree);
-          const result = await publisher.runCycle(tree);
+          const result = await publisher.runCycle(tree, { polars: await polarsCsv(tree) });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
             : (result.state ?? 'state unknown');

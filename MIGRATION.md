@@ -55,6 +55,7 @@ Copy the values out of `data/vessel/info.yaml` into the plugin config page:
 | `theme` | `site.theme` |
 | `marinetraffic_ship_id` | `site.marinetrafficShipId` |
 | `postgsail_logs_url` | `site.postgsailLogsUrl` |
+| `default_location` | `site.defaultLocation` — latitude, longitude and a label |
 | `uscg_number`, `hull_number` | nothing, if the server carries them as registrations; `site.uscgNumber` / `site.hullNumber` if it does not |
 | `name`, `mmsi`, `callsign` | nothing — read from the server |
 | `passage` | nothing — stays in the file, preserved on rewrite |
@@ -65,9 +66,11 @@ written against the old single `owner/name` field keeps working until the next
 save, and the two boxes are filled from it — but fill them in yourself while
 you are on the page.
 
-`data/vessel/polars.csv` can move onto the config page too: paste the table
-into the `polars` field and the plugin publishes it. Leave the field empty to
-go on managing the file by hand, which is what happens if you do nothing.
+`data/vessel/polars.csv` can move onto the server: install
+[Polar Management](https://www.npmjs.com/package/signalk-polar-management),
+import the boat's polar there (ORC lookup, or paste the existing CSV), mark it
+active, and this plugin publishes it from then on. Do nothing and the file
+stays yours, managed by hand.
 
 The daemon's constants are the plugin's defaults, so there is nothing to copy
 unless you want to change them:
@@ -85,10 +88,11 @@ The one real difference is the path list, which is the point of step 1. Note
 also that `theme: "mermug"` in `info.yaml` is not the plugin's default
 (`marine`), so set it explicitly if you want the same look.
 
-Anything the frontend reads that the config page does not cover goes in
-`site.extraYaml` — `default_location`, for instance. The plugin rewrites
-`info.yaml` from the config page on the first cycle after anything changes,
-carrying `passage:` across untouched.
+The plugin rewrites `info.yaml` from the config page on the first cycle after
+anything changes, carrying `passage:` across untouched. Any key the old file
+carried that the table above does not name is dropped on that first rewrite:
+the config page is the only source. Check the file for anything you still need
+before the cutover.
 
 ## 4. Cut over
 
@@ -129,8 +133,8 @@ plugin repository from that point on. Anything you want to keep local goes in
 `assets/custom.css`, which the plugin never writes and both pages load last.
 
 `docs/*.md` and `data/vessel/logo.png` are yours and are never written.
-`data/vessel/polars.csv` is too, unless you paste a polar table into the
-config page — then the plugin owns it and says so in the manifest.
+`data/vessel/polars.csv` is too, unless Polar Management has an active polar —
+then the plugin owns it and says so in the manifest.
 
 ## 6. Update the repository's own docs
 

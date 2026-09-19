@@ -1,99 +1,159 @@
 import { describe, expect, it } from 'vitest';
-import { parsePolarTable, renderPolarCsv, renderPolars } from '../src/polars';
+import {
+  activePolarId,
+  polarTableFromResource,
+  readActivePolar,
+  renderPolarCsv,
+} from '../src/polars';
 
-const ORC = `twa/tws;6;8;10;12
-52;4.10;5.10;5.80;6.10
-60;4.40;5.40;6.00;6.30
-90;4.80;5.90;6.50;6.80
-`;
+const KN = 0.514444;
+const RAD = Math.PI / 180;
 
-describe('parsePolarTable', () => {
-  it('reads the semicolon table the frontend already expects', () => {
-    const { table, problems } = parsePolarTable(ORC);
+/** A two-wind-speed, three-angle table in the canonical units Signal K stores. */
+const RESOURCE = {
+  kind: 'polarTable',
+  schemaVersion: '1.0.0',
+  name: 'Mermug ORC 2025',
+  units: { tws: 'm/s', twa: 'rad', boatSpeed: 'm/s' },
+  symmetry: { portStarboardSymmetric: true },
+  axes: {
+    tws: [6 * KN, 10 * KN],
+    twa: [52 * RAD, 90 * RAD, 150 * RAD],
+  },
+  values: {
+    boatSpeedMatrix: [
+      [4.1 * KN, 4.8 * KN, 4.0 * KN],
+      [5.8 * KN, 6.5 * KN, 6.0 * KN],
+    ],
+  },
+};
+
+const tree = (activePolar: unknown) => ({ polars: { activePolar: { value: activePolar } } });
+
+describe('activePolarId', () => {
+  it('reads the href the Polar Management plugin publishes', () => {
+    expect(activePolarId(tree({ href: '/resources/polars/mermug-orc' }))).toBe('mermug-orc');
+  });
+
+  it('takes a bare id too, so another provider can write one', () => {
+    expect(activePolarId(tree('mermug-orc'))).toBe('mermug-orc');
+  });
+
+  it('decodes an id with a space in it, which the admin UI allows', () => {
+    expect(activePolarId(tree({ href: '/resources/polars/Mermug%20ORC' }))).toBe('Mermug ORC');
+  });
+
+  it('is null when nothing is selected, or the plugin is not installed', () => {
+    expect(activePolarId(tree(null))).toBeNull();
+    expect(activePolarId({})).toBeNull();
+    expect(activePolarId(tree({ href: 'nonsense' }))).toBeNull();
+  });
+});
+
+describe('polarTableFromResource', () => {
+  it('converts SI canonical units into the knots and degrees the chart draws', () => {
+    const { table, problems } = polarTableFromResource(RESOURCE);
     expect(problems).toEqual([]);
-    expect(table?.windSpeeds).toEqual([6, 8, 10, 12]);
-    expect(table?.rows).toHaveLength(3);
-    expect(table?.rows[0]).toEqual({ twa: 52, speeds: [4.1, 5.1, 5.8, 6.1] });
-  });
-
-  it('takes commas, tabs and spaces, because that is what gets pasted', () => {
-    const expected = parsePolarTable(ORC).table;
-    for (const separator of [',', '\t', ' ']) {
-      const { table } = parsePolarTable(ORC.replace(/;/g, separator));
-      expect(table, separator).toEqual(expected);
-    }
-  });
-
-  it('reads a European export where the decimal separator is a comma', () => {
-    const { table } = parsePolarTable('twa/tws;6;8\n52;4,10;5,10\n');
-    expect(table?.rows[0]?.speeds).toEqual([4.1, 5.1]);
-  });
-
-  it('ignores blank lines and # comments', () => {
-    const { table, problems } = parsePolarTable(`# Mermug, measured 2025-06\n\n${ORC}\n`);
-    expect(problems).toEqual([]);
-    expect(table?.rows).toHaveLength(3);
-  });
-
-  it('sorts rows by wind angle, so the chart closes in order', () => {
-    const { table } = parsePolarTable('twa;6\n90;5.0\n52;4.1\n150;4.6\n');
+    expect(table?.windSpeeds).toEqual([6, 10]);
     expect(table?.rows.map((row) => row.twa)).toEqual([52, 90, 150]);
   });
 
-  it('pads a short row with zeros rather than shifting it onto the wrong wind speed', () => {
-    // The frontend indexes speeds by column: a ragged row would silently read
-    // a 12-knot target as the 8-knot one.
-    const { table, problems } = parsePolarTable('twa;6;8;10\n52;4.1;5.1\n');
-    expect(table?.rows[0]?.speeds).toEqual([4.1, 5.1, 0]);
-    expect(problems.join(' ')).toContain('read as zero');
+  it('transposes the matrix: it is [tws][twa], the CSV is one line per angle', () => {
+    const { table } = polarTableFromResource(RESOURCE);
+    // 52 degrees: 4.1 kn at 6 kn of wind, 5.8 kn at 10.
+    expect(table?.rows[0]?.speeds.map((speed) => Math.round(speed * 100) / 100)).toEqual([4.1, 5.8]);
   });
 
-  it('drops a row that does not start with an angle, and says which', () => {
-    const { table, problems } = parsePolarTable('twa;6\n52;4.1\nupwind;4.4\n');
-    expect(table?.rows).toHaveLength(1);
-    expect(problems.join(' ')).toContain('Row 3');
+  it('honours a document that declares knots and degrees rather than SI', () => {
+    const { table, problems } = polarTableFromResource({
+      ...RESOURCE,
+      units: { tws: 'kn', twa: 'deg', boatSpeed: 'kn' },
+      axes: { tws: [6, 10], twa: [52, 90, 150] },
+      values: { boatSpeedMatrix: [[4.1, 4.8, 4.0], [5.8, 6.5, 6.0]] },
+    });
+    expect(problems).toEqual([]);
+    expect(table?.windSpeeds).toEqual([6, 10]);
+    expect(table?.rows[0]?.speeds).toEqual([4.1, 5.8]);
   });
 
-  it('keeps the first of a duplicated angle', () => {
-    const { table, problems } = parsePolarTable('twa;6\n52;4.1\n52;9.9\n');
-    expect(table?.rows).toEqual([{ twa: 52, speeds: [4.1] }]);
-    expect(problems.join(' ')).toContain('more than once');
-  });
-
-  it('refuses a header with no wind speeds in it', () => {
-    const { table, problems } = parsePolarTable('angle;speed\n52;4.1\n');
+  it('refuses a schema major version it does not know rather than guessing', () => {
+    const { table, problems } = polarTableFromResource({ ...RESOURCE, schemaVersion: '2.0.0' });
     expect(table).toBeNull();
-    expect(problems.join(' ')).toContain('true wind speeds in knots');
+    expect(problems.join(' ')).toContain('schema version 2.0.0');
   });
 
-  it('refuses a header with no rows under it', () => {
-    const { table, problems } = parsePolarTable('twa;6;8;10\n');
+  it('reads an unknown minor version of a major it does know', () => {
+    const { table } = polarTableFromResource({ ...RESOURCE, schemaVersion: '1.7.0' });
+    expect(table?.windSpeeds).toEqual([6, 10]);
+  });
+
+  it('refuses a ragged matrix instead of shifting a row onto the wrong wind speed', () => {
+    const { table, problems } = polarTableFromResource({
+      ...RESOURCE,
+      values: { boatSpeedMatrix: [[4.1 * KN, 4.8 * KN], [5.8 * KN, 6.5 * KN, 6.0 * KN]] },
+    });
     expect(table).toBeNull();
-    expect(problems.join(' ')).toContain('at least one row');
+    expect(problems.join(' ')).toContain('row 1');
   });
 
-  it('treats an empty block as no polars at all, not as an error', () => {
-    for (const input of ['', '   \n\n', '# nothing but a comment\n', undefined]) {
-      const { table, problems } = parsePolarTable(input);
-      expect(table).toBeNull();
-      expect(problems).toEqual([]);
-    }
+  it('refuses units it cannot convert', () => {
+    const { table, problems } = polarTableFromResource({
+      ...RESOURCE,
+      units: { tws: 'furlongs/fortnight', twa: 'rad', boatSpeed: 'm/s' },
+    });
+    expect(table).toBeNull();
+    expect(problems.join(' ')).toContain('units this plugin does not know');
+  });
+
+  it('refuses a resource that is not a polar table', () => {
+    expect(polarTableFromResource({ kind: 'route' }).table).toBeNull();
+    expect(polarTableFromResource('nope').table).toBeNull();
+    expect(polarTableFromResource(null).table).toBeNull();
   });
 });
 
 describe('renderPolarCsv', () => {
   it('writes the semicolon format app.js parses, with a trailing newline', () => {
-    const { table } = parsePolarTable('twa/tws,6,10\n52,4.10,5.80\n');
-    expect(renderPolarCsv(table!)).toBe('twa/tws;6;10\n52;4.1;5.8\n');
+    const { table } = polarTableFromResource(RESOURCE);
+    expect(renderPolarCsv(table!)).toBe(
+      'twa/tws;6;10\n52;4.1;5.8\n90;4.8;6.5\n150;4;6\n',
+    );
+  });
+});
+
+describe('readActivePolar', () => {
+  const app = (resource: unknown) => ({
+    resourcesApi: {
+      getResource: async (type: string, id: string) => {
+        expect(type).toBe('polars');
+        if (id !== 'mermug-orc') throw new Error(`Polar not found: ${id}`);
+        return resource;
+      },
+    },
+  });
+  const selected = tree({ href: '/resources/polars/mermug-orc' });
+
+  it('fetches the selected polar and renders it', async () => {
+    const result = await readActivePolar(app(RESOURCE), selected);
+    expect(result.id).toBe('mermug-orc');
+    expect(result.csv).toContain('twa/tws;6;10');
+    expect(result.problems).toEqual([]);
   });
 
-  it('round-trips a table it has already rendered', () => {
-    const once = renderPolars(ORC).csv;
-    expect(renderPolars(once).csv).toBe(once);
+  it('publishes nothing when no polar is selected, and calls that no problem', async () => {
+    const result = await readActivePolar(app(RESOURCE), {});
+    expect(result).toEqual({ id: null, csv: '', problems: [] });
   });
 
-  it('gives an empty string when there is nothing to publish', () => {
-    expect(renderPolars('').csv).toBe('');
-    expect(renderPolars('rubbish').csv).toBe('');
+  it('reports a polar that has gone missing rather than throwing into the cycle', async () => {
+    const result = await readActivePolar(app(RESOURCE), tree({ href: '/resources/polars/gone' }));
+    expect(result.csv).toBe('');
+    expect(result.problems.join(' ')).toContain('Polar not found');
+  });
+
+  it('says so on a server with no Resources API', async () => {
+    const result = await readActivePolar({}, selected);
+    expect(result.csv).toBe('');
+    expect(result.problems.join(' ')).toContain('no Resources API');
   });
 });

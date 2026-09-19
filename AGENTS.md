@@ -19,7 +19,7 @@ src/
   docsIndex.ts      docs/index.json (port of the old Python builder)
   vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
                     and the user's passage block preserved
-  polars.ts         data/vessel/polars.csv from the table pasted into config
+  polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
   frontend.ts       Reading public/ and templating constants.js
   github.ts         Git Data API client and the publish-with-retry
@@ -45,7 +45,17 @@ Run `npm test` and `npm run typecheck` before committing.
 
 - **`publisher.ts` takes a tree and returns a result.** It never calls the
   Signal K server. Keep it that way: it is what makes a full cycle testable
-  without a server or a network.
+  without a server or a network. Anything that needs an async server call —
+  the active polar, so far — is read in `index.ts` and passed in as
+  `CycleInput`.
+- **No escape-hatch config.** There was a `polars` box to paste a table into
+  and a `site.extraYaml` block merged over everything the plugin wrote. Both
+  are gone. Both were a second copy of something the server already held, and
+  the second copy is the one that goes stale. A new `info.yaml` key is a
+  config field and a line in `renderVesselInfo`, not a YAML blob —
+  `site.defaultLocation` is what the blob was actually being used for. The
+  frontend reads nine keys out of `info.yaml`; `grep vesselData\. public/assets/app.js`
+  is the list, and every one of them needs a source before a field is removed.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
@@ -75,10 +85,19 @@ Run `npm test` and `npm run typecheck` before committing.
   "Vessel" until the next restart. Round anything numeric that goes into
   `info.yaml` — the file is rewritten whenever its content changes, and a
   draft that wobbles in the last decimal place would commit every two minutes.
-- **The polar table is only ours while the config field has one in it.**
-  `publishPolars` gates `data/vessel/polars.csv` in the manifest. Clearing the
-  field stops publishing it and stops claiming it; it never deletes the file,
-  because a polar table someone committed by hand is years of measurement.
+- **The polar table belongs to the Polar Management plugin.** It stores polars
+  as Signal K `polars` resources and publishes `{ href }` to the selected one
+  at `polars.activePolar`. This plugin reads that href off the self tree,
+  fetches the resource through `app.resourcesApi.getResource` and renders the
+  CSV; it never has a copy of its own. The resource is canonical polar-format
+  — m/s, radians, matrix `[tws][twa]` — so converting and transposing it is
+  the whole of `polars.ts`. Round to two decimals on the way out: the file is
+  rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
+  comes back as 5.999999999999999.
+- **The polar table is only ours while one is active.** `publishPolars` gates
+  `data/vessel/polars.csv` in the manifest. Clearing the active polar stops
+  publishing it and stops claiming it; it never deletes the file, because a
+  polar table someone committed by hand is years of measurement.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
@@ -88,9 +107,10 @@ Run `npm test` and `npm run typecheck` before committing.
   warning.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
-  nothing is fatal; a polar table that will not parse, or a token that is not
-  shaped like one, is a warning. The test is whether publishing anyway would
-  mislead someone about where the boat is.
+  nothing is fatal; a token that is not shaped like one is a warning. The test
+  is whether publishing anyway would mislead someone about where the boat is.
+  A polar that will not convert is neither: it is reported from `index.ts` on
+  the cycle that read it, and only when the report changes.
 - **The timezone field is a list, not a text box.** `timezones.ts` builds it
   from `Intl.supportedValuesOf('timeZone')`, so every name offered is one
   `localDay()` can group by. "PST" used to be accepted, silently fall back to

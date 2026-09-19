@@ -142,23 +142,18 @@ describe('resolveConfig', () => {
     expect(config.buildDocsIndex).toBe(true);
   });
 
-  it('publishes no polars until a table is pasted in', () => {
-    expect(makeConfig().polars).toBe('');
-  });
-
-  it('renders a pasted polar table into the format the frontend parses', () => {
-    const config = makeConfig({
-      polars: 'twa/tws,6,10,16\n52,4.1,5.8,6.6\n90,5.0,6.7,7.4\n',
-    });
-    expect(config.polars).toBe('twa/tws;6;10;16\n52;4.1;5.8;6.6\n90;5;6.7;7.4\n');
-  });
-
-  it('warns about a polar table it could not read, and publishes none', () => {
-    const resolved = resolveConfig({ ...COMPLETE_FORM, polars: 'not a table at all' });
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.config.polars).toBe('');
-    expect(resolved.warnings.join(' ')).toContain('Polar table:');
+  it('takes home waters only when both coordinates are there', () => {
+    expect(makeConfig().site.defaultLocation).toBeNull();
+    expect(
+      makeConfig({ site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'SF Bay' } } })
+        .site.defaultLocation,
+    ).toEqual({ lat: 37.806, lon: -122.465, label: 'SF Bay' });
+    // Half a fix would send the tide lookup somewhere in the ocean; the
+    // frontend's own default is the better answer.
+    expect(makeConfig({ site: { defaultLocation: { lat: 37.806 } } }).site.defaultLocation)
+      .toBeNull();
+    expect(makeConfig({ site: { defaultLocation: { lat: 137, lon: -122 } } }).site.defaultLocation)
+      .toBeNull();
   });
 
   it('still fails on a privacy zone that would hide nothing', () => {

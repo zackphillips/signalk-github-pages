@@ -221,34 +221,47 @@ describe('Publisher', () => {
     expect((yaml.load(fake.files.get('data/vessel/info.yaml')!) as any).name).toBe('S.V.Mermug');
   });
 
-  it('publishes a polar table pasted into the config, once', async () => {
-    const publisher = makePublisher({ polars: 'twa/tws;6;10\n52;4.1;5.8\n90;5.0;6.7\n' });
-    const first = await publisher.runCycle(tree());
+  it('publishes the active polar once, and claims the path while it has one', async () => {
+    const polars = 'twa/tws;6;10\n52;4.1;5.8\n90;5;6.7\n';
+    const publisher = makePublisher();
+    const first = await publisher.runCycle(tree(), { polars });
     expect(first.files).toContain('data/vessel/polars.csv');
-    expect(fake.files.get('data/vessel/polars.csv')).toBe('twa/tws;6;10\n52;4.1;5.8\n90;5;6.7\n');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe(polars);
     expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).toContain(
       'data/vessel/polars.csv',
     );
 
-    const second = await publisher.runCycle(tree());
+    const second = await publisher.runCycle(tree(), { polars });
     expect(second.files).not.toContain('data/vessel/polars.csv');
   });
 
   it('does not re-upload a polar table the repository already has', async () => {
     const polars = 'twa/tws;6;10\n52;4.1;5.8\n';
     fake.commitFile('data/vessel/polars.csv', polars);
-    const publisher = makePublisher({ polars });
+    const publisher = makePublisher();
     await publisher.seed();
-    const result = await publisher.runCycle(tree());
+    const result = await publisher.runCycle(tree(), { polars });
     expect(result.files).not.toContain('data/vessel/polars.csv');
   });
 
-  it('leaves a hand-committed polars.csv alone when the config has none', async () => {
+  it('leaves a hand-committed polars.csv alone when no polar is active', async () => {
     fake.commitFile('data/vessel/polars.csv', 'twa/tws;6\n52;4.1\n');
     const publisher = makePublisher();
     const result = await publisher.runCycle(tree());
     expect(result.files).not.toContain('data/vessel/polars.csv');
     expect(fake.files.get('data/vessel/polars.csv')).toBe('twa/tws;6\n52;4.1\n');
+    expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).not.toContain(
+      'data/vessel/polars.csv',
+    );
+  });
+
+  it('stops claiming polars.csv when the active polar is cleared, without deleting it', async () => {
+    const polars = 'twa/tws;6;10\n52;4.1;5.8\n';
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), { polars });
+    const after = await publisher.runCycle(tree());
+    expect(after.files).not.toContain('data/vessel/polars.csv');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe(polars);
     expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).not.toContain(
       'data/vessel/polars.csv',
     );
