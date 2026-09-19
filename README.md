@@ -362,6 +362,28 @@ Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
 Publish state deliberately stays out of the Signal K data tree: it is log
 output and the plugin status line, not paths in the model.
 
+## The site says "Data unavailable"
+
+If the panels read *Data unavailable* while the Raw Data tab shows a current
+snapshot, the page and the data have come from different places: the data is
+fetched network-first, the page was served by the service worker out of the
+device's cache.
+
+That used to be permanent. The shell cache was named by a constant, served
+cache-first and never revalidated, so a device that had loaded the site once
+kept that release's HTML and JavaScript for good — including across a plugin
+upgrade that published a new frontend. From 0.2.0 the cache is named after the
+plugin version, shell assets are stale-while-revalidate, and `data/` is never
+pre-cached, so a publish reaches a returning device on the next load or two.
+
+To clear a device that is still stuck on the old worker: open the site in a
+private tab to confirm that is what it is, then on iOS use Settings → Safari →
+Advanced → Website Data → your site → Delete, or on a desktop browser hard-
+reload it.
+
+A single panel reading *Data unavailable* now means only that panel failed;
+the message carries the error and the rest of the dashboard keeps rendering.
+
 ## It is not in the plugin list
 
 The server discovers plugins by scanning `~/.signalk/node_modules` for

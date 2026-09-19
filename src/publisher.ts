@@ -442,6 +442,7 @@ export class Publisher {
       repo: config.github.repo,
       branch: config.github.branch,
       instrumentLogEntries: config.instrumentLog.entries,
+      version,
     });
     await store.mergeState({ frontendVersion: fingerprint });
     log(`Publishing frontend (${files.length} files, version ${version}).`);

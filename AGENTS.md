@@ -102,6 +102,19 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Publish state stays out of the Signal K tree.** Cost, commit SHA and
   failures go to `app.debug` / `app.error` and the plugin status line. Do not
   add `setPluginStatus`-style state as data paths.
+- **The service worker's cache name must carry the version.** `sw.js` declares
+  `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it, the
+  same way it templates `constants.js`. The shell cache was once a constant
+  (`mermug-shell-v4`) served cache-first with no revalidation: a device that had
+  loaded the site once kept that release's HTML and JavaScript forever while the
+  telemetry beside it went on updating. Old code against new data is a dashboard
+  reading "Data unavailable" over a snapshot it downloaded successfully. Nothing
+  under `data/` goes in the shell list either — it is published output, so it is
+  network-first.
+- **One panel failing is not nine panels failing.** The dashboard grids go
+  through `paintPanel`, which isolates a missing element or a throwing section
+  to that panel. They used to be nine bare `getElementById(...).innerHTML`
+  writes in one `try`, where anything missing wiped the whole page.
 - **`public/assets/constants.js` must use `var`.** `const` at the top level of
   a classic script does not create `window.VESSEL_CONSTANTS`, and the page goes
   blank.
