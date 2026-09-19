@@ -14,7 +14,7 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { configError, normaliseConfig, configSchema, type PluginConfig } from './config';
+import { configSchema, resolveConfig, type PluginConfig } from './config';
 import { GitHubClient } from './github';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
@@ -89,17 +89,41 @@ module.exports = function (app: SignalKApp): Plugin {
 
     start(options: unknown) {
       stopped = false;
-      const config: PluginConfig = normaliseConfig(options as Partial<PluginConfig>);
 
-      const problem = configError(config);
-      if (problem) {
-        app.setPluginError(problem);
+      const resolved = resolveConfig(options);
+      if (!resolved.ok) {
+        // Nothing numeric has a default, so an unconfigured install stops here
+        // rather than publishing at a cadence nobody chose. Report every
+        // missing field at once: one restart per field is a miserable way to
+        // set this up over a boat's wifi.
+        for (const problem of resolved.problems) app.error(`Config: ${problem}`);
+        app.setPluginError(
+          resolved.problems.length === 1
+            ? resolved.problems[0]!
+            : `${resolved.problems.length} settings need attention: ${resolved.problems.join(' ')}`,
+        );
         return;
       }
+      const config: PluginConfig = resolved.config;
+
       if (config.timezone && !isValidTimezone(config.timezone)) {
         app.error(
           `Unknown timezone "${config.timezone}"; grouping tracks by UTC day instead.`,
         );
+      }
+
+      app.debug(
+        `Starting: ${config.github.repo}@${config.github.branch}, ` +
+          `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
+          `${config.instrumentLog.paths.length} instrument path pattern(s) x ` +
+          `${config.instrumentLog.entries} entries, ` +
+          `${config.positionRetentionHours}h position retention, ` +
+          `${config.staleMaxAgeMinutes}min stale cutoff, ` +
+          `${config.privacyZones.length} privacy zone(s), ` +
+          `tracks grouped by ${config.timezone || 'UTC'}.`,
+      );
+      if (config.privacyZones.length === 0) {
+        app.debug('No privacy zones set: every position is published exactly as received.');
       }
 
       const store = new StateStore(app.getDataDirPath());
@@ -146,17 +170,24 @@ module.exports = function (app: SignalKApp): Plugin {
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
             : (result.state ?? 'state unknown');
+          const size = `${(result.bytes / 1024).toFixed(0)} kB`;
           app.setPluginStatus(
             result.published
-              ? `Published ${formatClock(new Date())}Z, ${where}, next in ${Math.round(seconds / 60)} min`
+              ? `Published ${formatClock(new Date())}Z (${result.files.length} files, ${size}), ` +
+                  `${where}, next in ${Math.round(seconds / 60)} min`
               : `Nothing to publish, ${where}, next in ${Math.round(seconds / 60)} min`,
           );
         } catch (error: any) {
           // One bad cycle is a skipped update, not a dead plugin: a 502 from
           // GitHub, a truncated body or a wedged hotspot all retry next tick.
           const message = error?.message ?? String(error);
-          app.error(`Publish cycle failed (will retry): ${message}`);
-          app.setPluginError(`Last cycle failed: ${message}`);
+          const detail = error?.status ? ` (HTTP ${error.status}: ${error.body ?? ''})` : '';
+          app.error(
+            `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}`,
+          );
+          app.setPluginError(
+            `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
+          );
         }
         schedule(seconds);
       };

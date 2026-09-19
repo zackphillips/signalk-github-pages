@@ -37,22 +37,31 @@ tracker**.
 
 ## Configure
 
-| Field | Default | Notes |
+| Field | Required | Notes |
 |---|---|---|
-| `github.repo` | — | `owner/name` of the Pages repository |
-| `github.branch` | `main` | Branch Pages serves |
-| `github.token` | — | Fine-grained PAT, Contents: read/write, this repo only |
-| `interval.underway` | 120 s | Used when `navigation.state` is sailing or motoring |
-| `interval.stationary` | 3600 s | Moored, anchored, or state unknown |
-| `privacyZones[]` | `[]` | `{name, lat, lon, radius_m}` — **empty by default** |
-| `timezone` | server TZ | IANA name; groups GPX tracks by local calendar day |
-| `instrumentLog.paths[]` | sparkline set | Allowlist of paths captured per cycle |
-| `instrumentLog.entries` | 120 | Rolling length of the sparkline log |
-| `positionRetentionHours` | 24 | How long raw positions are kept |
-| `staleMaxAgeMinutes` | 60 | Values older than this are dropped from the snapshot |
-| `buildDocsIndex` | true | Maintain `docs/index.json` for the docs reader |
-| `publishFrontend` | true | Write the bundled site into the repo on install and upgrade |
-| `site.*` | — | Theme and the display-only identifiers the site shows |
+| `github.repo` | yes | `owner/name` of the Pages repository |
+| `github.branch` | no (`main`) | Branch Pages serves |
+| `github.token` | yes | Fine-grained PAT, Contents: read/write, this repo only |
+| `interval.underway` | **yes** | Seconds between publishes when `navigation.state` is sailing or motoring |
+| `interval.stationary` | **yes** | Seconds between publishes when moored, anchored, or state unknown |
+| `instrumentLog.paths` | **yes** | One Signal K path per line — see [Instrument paths](#instrument-paths) |
+| `instrumentLog.entries` | **yes** | Rolling length of the sparkline log |
+| `positionRetentionHours` | **yes** | How long raw positions stay in the map track |
+| `staleMaxAgeMinutes` | **yes** | Values older than this are dropped from the snapshot |
+| `privacyZones[]` | no (empty) | `{name, lat, lon, radius_m}` |
+| `timezone` | no (UTC) | IANA name; groups GPX tracks by local calendar day |
+| `buildDocsIndex` | no (on) | Maintain `docs/index.json` for the docs reader |
+| `publishFrontend` | no (on) | Write the bundled site into the repo on install and upgrade |
+| `site.theme` | no (`mermug`) | Theme name the frontend understands |
+| `site.*` | no | Display-only identifiers the site shows |
+| `site.extraYaml` | no | Free-form YAML merged into `info.yaml` — see [Extra site fields](#extra-site-fields) |
+
+**Nothing numeric has a default.** A cadence, a retention window, a stale
+cutoff and the path list describe one boat's cellular plan and one boat's
+instruments; a default is a guess that publishes at someone else's cadence and
+bandwidth until they notice. The plugin refuses to start until each is set and
+names every missing field at once, so it takes one pass rather than one
+restart per field.
 
 Vessel name and MMSI come from the server (`navigation` self data), not from
 this page.
@@ -65,6 +74,65 @@ your hands.
 **Cadence.** Pacing comes from `navigation.state`, which
 [signalk-autostate](https://www.npmjs.com/package/signalk-autostate) sets from
 speed and anchor state. Without it every cycle uses the stationary interval.
+
+## Instrument paths
+
+`instrumentLog.paths` is a text box, one Signal K path per line. `*` matches
+one path segment, so `electrical.batteries.*.voltage` covers every bank. Lines
+starting with `#` are comments.
+
+This list is the entire bandwidth cost of a cycle: every path here is recorded
+for every entry and the whole file is re-uploaded on every publish. Start with
+what the bundled sparklines draw, then cut anything you do not look at:
+
+```
+navigation.speedOverGround
+navigation.speedThroughWater
+navigation.courseOverGroundTrue
+navigation.headingTrue
+navigation.attitude.roll
+navigation.attitude.pitch
+environment.wind.speedApparent
+environment.wind.angleApparent
+environment.wind.speedTrue
+environment.wind.directionTrue
+environment.depth.belowTransducer
+environment.water.temperature
+environment.outside.temperature
+environment.outside.pressure
+environment.inside.temperature
+environment.inside.humidity
+electrical.batteries.*.voltage
+electrical.batteries.*.current
+electrical.batteries.*.stateOfCharge
+electrical.batteries.*.capacity.timeRemaining
+electrical.solar.*.panelPower
+tanks.*.*.currentLevel
+propulsion.*.revolutions
+propulsion.*.temperature
+propulsion.*.runTime
+```
+
+A path that no instrument produces costs nothing — it simply never appears.
+
+## Extra site fields
+
+`site.extraYaml` is a free-form YAML mapping merged into
+`data/vessel/info.yaml`, for anything the frontend reads that the config page
+does not cover:
+
+```yaml
+default_location:
+  lat: 37.806
+  lon: -122.465
+  label: San Francisco Bay
+```
+
+A key here overrides what the plugin would have written, and every override is
+named in the log so a field that stopped tracking the config page is visible
+rather than mysterious. `passage:` is refused: it lives in the published file,
+edited from the GitHub web UI, and is preserved on every rewrite. Invalid YAML
+is logged and skipped — it never stops a publish.
 
 ## Privacy zones
 
@@ -118,16 +186,26 @@ perfectly fine.
 ## Bandwidth
 
 `git push` sends a delta. The Git Data API uploads each changed file in full,
-base64-encoded, and does not accept compressed request bodies. That makes the
-instrument log the whole cost of a cycle: logging every numeric leaf in the
-self tree produced ~167 paths per entry and a file around 1 MB, republished
-every two minutes — about 1.3 MB per cycle over a cellular hotspot.
+base64-encoded, and does not accept a compressed request body. The instrument
+log is therefore the whole cost of a cycle: logging every numeric leaf in the
+self tree produces ~167 paths per entry and a file around 1 MB, republished
+every two minutes — roughly 1.3 MB per cycle over a cellular hotspot, before
+the rest of the publish.
 
-`instrumentLog.paths` is the fix. The default allowlist covers what the
-sparklines actually draw, roughly a tenth of the size. Add a path when you add
-a sparkline; `*` matches one segment, so `electrical.batteries.*.voltage`
-covers every bank. Check the size of `data/telemetry/instrument_log.json` in
-the repository after any change to the list.
+The plugin measures this rather than assuming it. Every cycle logs the files
+it published, largest first, the content size, the size of the request bodies
+that actually crossed the link, the API call count and the rate limit left:
+
+```
+Instrument log: 120 entries, 14 paths this cycle, 96.4 kB.
+Publishing 5 file(s), 142.8 kB: data/telemetry/instrument_log.json 96.4 kB, …
+Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
+bodies, 5 API call(s), 1840 ms. Rate limit: 4993 left until …
+```
+
+Past half a megabyte the log line turns into a warning with the hourly cost at
+your configured cadence. The fix is always the same: shorten the path list, or
+keep fewer entries.
 
 ## Development
 
@@ -168,8 +246,11 @@ the Python daemon and carries the frontend in its own tree.
   never reaches the server's event loop.
 - **The token is stored in plain text** by Signal K, as above.
 - **Publishing is one commit per cycle.** The repository grows at the rate you
-  publish. Keep the allowlist tight, and rewrite history if it ever gets away
+  publish. Keep the path list tight, and rewrite history if it ever gets away
   from you.
+- **Publish state is not exposed as Signal K paths.** The last commit, the
+  cycle cost and the failures are in the server log and the plugin status line,
+  not in the data tree, so nothing here shows up in KIP.
 
 ## License
 

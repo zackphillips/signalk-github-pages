@@ -1,59 +1,106 @@
 import { describe, expect, it } from 'vitest';
-import {
-  configError,
-  DEFAULT_INSTRUMENT_LOG_PATHS,
-  DEFAULT_INTERVAL_STATIONARY,
-  DEFAULT_INTERVAL_UNDERWAY,
-  normaliseConfig,
-} from '../src/config';
+import { parsePathList, resolveConfig } from '../src/config';
+import { COMPLETE_FORM, makeConfig } from './helpers/config';
 
-describe('normaliseConfig', () => {
-  it('fills in the defaults for an empty form', () => {
-    const config = normaliseConfig(undefined);
-    expect(config.interval).toEqual({
-      underway: DEFAULT_INTERVAL_UNDERWAY,
-      stationary: DEFAULT_INTERVAL_STATIONARY,
-    });
-    expect(config.github.branch).toBe('main');
-    expect(config.instrumentLog.paths).toEqual(DEFAULT_INSTRUMENT_LOG_PATHS);
-    expect(config.privacyZones).toEqual([]);
+describe('resolveConfig', () => {
+  it('refuses an empty form and names every missing setting at once', () => {
+    // One restart per missing field is a miserable way to configure a plugin
+    // over a boat's wifi.
+    const resolved = resolveConfig({});
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    const joined = resolved.problems.join(' | ');
+    for (const expected of [
+      'repository',
+      'token',
+      'Underway interval',
+      'Stationary interval',
+      'Instrument log paths',
+      'entries retained',
+      'Position retention',
+      'Stale value cutoff',
+    ]) {
+      expect(joined, expected).toContain(expected);
+    }
   });
 
-  it("defaults privacy zones to empty rather than to anyone's home port", () => {
-    // The Python daemon hardcoded South Beach Harbor as a fallback, which is
-    // exactly wrong for every other boat that installs this.
-    expect(normaliseConfig({} as any).privacyZones).toEqual([]);
+  it('has no numeric defaults to fall back on', () => {
+    // Deliberate: an interval or a retention window is one boat's cellular
+    // plan, and a default here publishes at someone else's cadence.
+    const resolved = resolveConfig({ ...COMPLETE_FORM, interval: { underway: 120 } });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems).toEqual(['Stationary interval (seconds) is not set.']);
   });
 
-  it('drops incomplete privacy zones', () => {
-    const config = normaliseConfig({
+  it('rejects zero and negative numbers rather than treating them as set', () => {
+    const resolved = resolveConfig({ ...COMPLETE_FORM, positionRetentionHours: 0 });
+    expect(resolved.ok).toBe(false);
+  });
+
+  it('accepts the strings the admin UI hands back for number fields', () => {
+    const config = makeConfig({ staleMaxAgeMinutes: '45', positionRetentionHours: '12' });
+    expect(config.staleMaxAgeMinutes).toBe(45);
+    expect(config.positionRetentionHours).toBe(12);
+  });
+
+  it('requires owner/name for the repository', () => {
+    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { repo: 'site', token: 't' } });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems[0]).toContain('owner/name');
+  });
+
+  it("defaults privacy zones to empty rather than to anyone else's home port", () => {
+    expect(makeConfig().privacyZones).toEqual([]);
+  });
+
+  it('reports incomplete privacy zones instead of silently hiding nothing', () => {
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
       privacyZones: [
         { name: 'Good', lat: 37.8, lon: -122.4, radius_m: 200 },
         { name: 'No radius', lat: 37.8, lon: -122.4 },
-        { name: 'Not a number', lat: 'north', lon: -122.4, radius_m: 200 },
       ],
-    } as any);
-    expect(config.privacyZones.map((z) => z.name)).toEqual(['Good']);
+    });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems[0]).toContain('1 privacy zone(s) are incomplete');
   });
 
-  it('rejects nonsense intervals in favour of the defaults', () => {
-    const config = normaliseConfig({ interval: { underway: -5, stationary: 0 } } as any);
-    expect(config.interval.underway).toBe(DEFAULT_INTERVAL_UNDERWAY);
-    expect(config.interval.stationary).toBe(DEFAULT_INTERVAL_STATIONARY);
+  it('accepts a complete form', () => {
+    const config = makeConfig();
+    expect(config.interval).toEqual({ underway: 120, stationary: 3600 });
+    expect(config.instrumentLog.entries).toBe(120);
+    expect(config.site.theme).toBe('mermug');
+    expect(config.buildDocsIndex).toBe(true);
   });
 });
 
-describe('configError', () => {
-  it('names what is missing before anything is published', () => {
-    expect(configError(normaliseConfig({} as any))).toMatch(/repository/);
-    expect(configError(normaliseConfig({ github: { repo: 'owner/site' } } as any))).toMatch(
-      /token/,
-    );
-    expect(configError(normaliseConfig({ github: { repo: 'site', token: 't' } } as any))).toMatch(
-      /owner\/name/,
-    );
+describe('parsePathList', () => {
+  it('reads one path per line', () => {
+    expect(parsePathList('navigation.speedOverGround\nenvironment.wind.speedApparent')).toEqual([
+      'navigation.speedOverGround',
+      'environment.wind.speedApparent',
+    ]);
+  });
+
+  it('ignores blank lines, comments and surrounding whitespace', () => {
     expect(
-      configError(normaliseConfig({ github: { repo: 'owner/site', token: 't' } } as any)),
-    ).toBeNull();
+      parsePathList('  navigation.speedOverGround  \n\n# the wind ones\nenvironment.wind.speedApparent\n'),
+    ).toEqual(['navigation.speedOverGround', 'environment.wind.speedApparent']);
+  });
+
+  it('de-duplicates', () => {
+    expect(parsePathList('a.b\na.b\n')).toEqual(['a.b']);
+  });
+
+  it('still accepts an array, so an older config keeps loading', () => {
+    expect(parsePathList(['a.b', 'c.d'])).toEqual(['a.b', 'c.d']);
+  });
+
+  it('treats an empty or missing value as no paths', () => {
+    expect(parsePathList('   \n#only a comment\n')).toEqual([]);
+    expect(parsePathList(undefined)).toEqual([]);
   });
 });

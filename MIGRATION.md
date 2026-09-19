@@ -60,8 +60,25 @@ Copy the values out of `data/vessel/info.yaml` into the plugin config page:
 | `passage` | nothing — stays in the file, preserved on rewrite |
 | `signalk.host`, `signalk.port` | nothing — read from the server |
 
-The plugin rewrites `info.yaml` from the config page on the first cycle after
-anything changes, carrying `passage:` across untouched.
+The daemon's constants become required config fields — the plugin will not
+start until each is set:
+
+| `update_signalk_data.py` | Plugin config | Daemon's value |
+|---|---|---|
+| `UPDATE_INTERVAL_AWAY_SECONDS` | `interval.underway` | 120 |
+| `UPDATE_INTERVAL_HOME_SECONDS` | `interval.stationary` | 3600 |
+| `POSITION_RETENTION_HOURS` | `positionRetentionHours` | 24 |
+| `STALE_MAX_AGE_MINUTES` | `staleMaxAgeMinutes` | 60 |
+| `INSTRUMENT_LOG_ENTRIES` | `instrumentLog.entries` | 120 |
+| (none — logged everything) | `instrumentLog.paths` | see the README list |
+
+Those are the numbers the daemon ran with; entering them reproduces today's
+behaviour exactly, apart from the path list, which is the point of step 1.
+
+Anything the frontend reads that the config page does not cover goes in
+`site.extraYaml` — `default_location`, for instance. The plugin rewrites
+`info.yaml` from the config page on the first cycle after anything changes,
+carrying `passage:` across untouched.
 
 ## 4. Cut over
 

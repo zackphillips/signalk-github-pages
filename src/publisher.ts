@@ -19,7 +19,7 @@ import {
   type DocSource,
 } from './docsIndex';
 import { loadFrontend } from './frontend';
-import { GitHubClient, publishFiles, type PublishFile } from './github';
+import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
 import { MANIFEST_PATH, partitionOwned, renderManifest } from './manifest';
 import {
   buildPositionEntry,
@@ -59,7 +59,31 @@ export interface CycleResult {
   state: string | null;
   privacyZone: string | null;
   rejected: string[];
+  /** Bytes of file content in this commit, before base64 expansion. */
+  bytes: number;
+  /** Per-file content size, largest first — what to look at when a cycle is fat. */
+  fileSizes: Array<{ path: string; bytes: number }>;
+  /** What the cycle actually cost against the network and the rate limit. */
+  requests: RequestStats;
+  durationMs: number;
 }
+
+/**
+ * Size at which the instrument log is worth a warning.
+ *
+ * Every publish uploads this file in full, base64-encoded (~4/3 the size on
+ * the wire), so half a megabyte every two minutes is ~20 MB an hour underway.
+ * The fix is always the same: shorten the path list.
+ */
+export const INSTRUMENT_LOG_WARN_BYTES = 512 * 1024;
+
+const kb = (bytes: number): string =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+    : `${(bytes / 1024).toFixed(1)} kB`;
+
+const contentBytes = (content: string | Buffer): number =>
+  Buffer.isBuffer(content) ? content.length : Buffer.byteLength(content, 'utf-8');
 
 export interface PublisherDeps {
   client: GitHubClient;
@@ -122,7 +146,8 @@ export class Publisher {
   }
 
   async runCycle(rawTree: Tree): Promise<CycleResult> {
-    const { config, store, log, client, identity, version, publicDir } = this.deps;
+    const { config, store, log, client, version, publicDir } = this.deps;
+    const startedAt = Date.now();
     const now = this.now();
     const state = await store.readState();
     const files: PublishFile[] = [];
@@ -174,6 +199,20 @@ export class Publisher {
     const instrumentLogJson = `${JSON.stringify(instrumentLog)}\n`;
     await store.writeText('instrument_log.json', instrumentLogJson);
     files.push({ path: INSTRUMENT_LOG_PATH, content: instrumentLogJson });
+    const instrumentLogBytes = Buffer.byteLength(instrumentLogJson, 'utf-8');
+    log(
+      `Instrument log: ${instrumentLog.entries.length} entries, ` +
+        `${Object.keys(instrumentLog.entries[instrumentLog.entries.length - 1]?.values ?? {}).length} ` +
+        `paths this cycle, ${kb(instrumentLogBytes)}.`,
+    );
+    if (instrumentLogBytes > INSTRUMENT_LOG_WARN_BYTES) {
+      log(
+        `Instrument log is ${kb(instrumentLogBytes)} and is uploaded in full on ` +
+          `every publish. At the underway cadence of ${config.interval.underway}s ` +
+          `that is about ${kb((instrumentLogBytes * 4) / 3 * (3600 / config.interval.underway))} ` +
+          'per hour. Shorten the captured-path list or the entries retained.',
+      );
+    }
 
     files.push(...(await this.vesselInfoFile()));
     files.push(...(await this.manifestFile()));
@@ -190,8 +229,23 @@ export class Publisher {
       log(`Refusing to publish unowned path: ${file.path}`);
     }
 
+    const fileSizes = owned
+      .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
+      .sort((a, b) => b.bytes - a.bytes);
+    const bytes = fileSizes.reduce((total, file) => total + file.bytes, 0);
+    log(
+      `Publishing ${owned.length} file(s), ${kb(bytes)}: ` +
+        fileSizes
+          .slice(0, 6)
+          .map((file) => `${file.path} ${kb(file.bytes)}`)
+          .join(', ') +
+        (fileSizes.length > 6 ? `, +${fileSizes.length - 6} more` : ''),
+    );
+
     const message = this.commitMessage(navState, now);
     const result = await publishFiles(client, owned, message);
+    const requests = client.takeStats();
+    const durationMs = Date.now() - startedAt;
 
     await store.mergeState({
       lastCommit: result?.commitSha,
@@ -199,7 +253,15 @@ export class Publisher {
     });
 
     if (result) {
-      log(`Published ${result.files} file(s) as ${result.commitSha.slice(0, 7)}.`);
+      log(
+        `Published ${result.commitSha.slice(0, 7)}: ${result.files} file(s), ` +
+          `${kb(bytes)} of content in ${kb(requests.bytesUploaded)} of request bodies, ` +
+          `${requests.requests} API call(s), ${durationMs} ms` +
+          (result.retried ? ', after one retry on a lost ref race' : '') +
+          (requests.rateLimitRemaining !== null
+            ? `. Rate limit: ${requests.rateLimitRemaining} left until ${requests.rateLimitResetAt}`
+            : ''),
+      );
     }
     return {
       published: Boolean(result),
@@ -210,6 +272,10 @@ export class Publisher {
       state: navState,
       privacyZone: zone?.name ?? null,
       rejected: rejected.map((file) => file.path),
+      bytes,
+      fileSizes,
+      requests,
+      durationMs,
     };
   }
 
@@ -275,8 +341,16 @@ export class Publisher {
     if (previous === fingerprint) return [];
 
     const published = await client.getFile(INFO_PATH).catch(() => null);
-    const contents = renderVesselInfo(config, identity, published);
+    const contents = renderVesselInfo(config, identity, published, (problem) =>
+      this.deps.log(problem),
+    );
     await store.writeText('info-fingerprint.txt', fingerprint);
+    this.deps.log(
+      previous === null
+        ? `Writing ${INFO_PATH} for the first time.`
+        : `Config changed; rewriting ${INFO_PATH}` +
+            (published?.includes('passage:') ? ' (preserving the passage block).' : '.'),
+    );
     return [{ path: INFO_PATH, content: contents }];
   }
 

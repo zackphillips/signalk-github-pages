@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Branch pushes are covered by the pull_request trigger; running both fires
+  # every job twice on a PR branch.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:

@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
-import { normaliseConfig } from '../src/config';
-import { extractPassage, renderVesselInfo } from '../src/vesselInfo';
+import { extractPassage, parseExtraFields, renderVesselInfo } from '../src/vesselInfo';
+import { makeConfig } from './helpers/config';
 
-const CONFIG = normaliseConfig({
-  github: { repo: 'owner/site', branch: 'main', token: 't' },
-  timezone: 'America/Los_Angeles',
+const CONFIG = makeConfig({
   privacyZones: [
     { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 },
   ],
@@ -16,7 +14,7 @@ const CONFIG = normaliseConfig({
     uscgNumber: '1024168',
     hullNumber: 'BEY57004E494',
   },
-} as any);
+});
 
 const IDENTITY = {
   name: 'S.V.Mermug',
@@ -60,10 +58,56 @@ describe('renderVesselInfo', () => {
   });
 
   it('leaves out empty optional fields rather than writing blanks', () => {
-    const bare = normaliseConfig({ github: { repo: 'o/r', token: 't' } } as any);
+    const bare = makeConfig();
     const parsed = yaml.load(renderVesselInfo(bare, { name: 'Boat', mmsi: '' })) as any;
     expect(parsed.mmsi).toBeUndefined();
     expect(parsed.uscg_number).toBeUndefined();
     expect(parsed.privacy_zones).toEqual([]);
+  });
+});
+
+describe('extra site fields', () => {
+  const render = (extraYaml: string, problems: string[] = []) =>
+    yaml.load(
+      renderVesselInfo(makeConfig({ site: { extraYaml } }), IDENTITY, null, (p) =>
+        problems.push(p),
+      ),
+    ) as any;
+
+  it('merges free-form YAML into the published file', () => {
+    const parsed = render('default_location:\n  lat: 37.806\n  lon: -122.465\n  label: The Bay\n');
+    expect(parsed.default_location).toEqual({ lat: 37.806, lon: -122.465, label: 'The Bay' });
+    expect(parsed.name).toBe('S.V.Mermug');
+  });
+
+  it('lets an extra field override what the config page would have written, and says so', () => {
+    const problems: string[] = [];
+    const parsed = render('theme: kelp\n', problems);
+    expect(parsed.theme).toBe('kelp');
+    expect(problems.join(' ')).toContain('overrides the value from the plugin config');
+  });
+
+  it('refuses to set passage, which lives in the repository', () => {
+    const problems: string[] = [];
+    const parsed = render('passage:\n  from: SF\n', problems);
+    expect(parsed.passage).toBeUndefined();
+    expect(problems.join(' ')).toContain('must not set "passage:"');
+  });
+
+  it('skips invalid YAML rather than stopping the publish', () => {
+    const problems: string[] = [];
+    const parsed = render('key: [unclosed\n', problems);
+    expect(parsed.name).toBe('S.V.Mermug');
+    expect(problems.join(' ')).toContain('not valid YAML');
+  });
+
+  it('skips a scalar or a list, which cannot merge into a mapping', () => {
+    const problems: string[] = [];
+    expect(parseExtraFields('- one\n- two\n', (p) => problems.push(p))).toEqual({});
+    expect(problems.join(' ')).toContain('must be a YAML mapping');
+  });
+
+  it('treats a blank block as no extras', () => {
+    expect(parseExtraFields('   \n')).toEqual({});
   });
 });

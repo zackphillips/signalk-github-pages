@@ -62,8 +62,16 @@ Run `npm test` and `npm run typecheck` before committing.
   voyage in half.
 - **Past GPX days are frozen.** The position index holds 24 hours; rebuilding
   yesterday from what is left of it truncates a day that is already complete.
-- **Keep the instrument-log allowlist tight.** The API uploads whole files, not
-  deltas; this file is the entire bandwidth cost of a cycle.
+- **Keep the instrument-log path list tight.** The API uploads whole files, not
+  deltas; this file is the entire bandwidth cost of a cycle. Every cycle logs
+  its size and warns past `INSTRUMENT_LOG_WARN_BYTES`.
+- **Nothing numeric gets a default.** Intervals, retention, stale cutoff, log
+  length and the path list are all required; `resolveConfig` reports every
+  missing one at once and the plugin refuses to start. Adding a default to the
+  schema would quietly undo that.
+- **Publish state stays out of the Signal K tree.** Cost, commit SHA and
+  failures go to `app.debug` / `app.error` and the plugin status line. Do not
+  add `setPluginStatus`-style state as data paths.
 - **`public/assets/constants.js` must use `var`.** `const` at the top level of
   a classic script does not create `window.VESSEL_CONSTANTS`, and the page goes
   blank.

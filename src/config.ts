@@ -1,11 +1,17 @@
 /**
  * Plugin configuration: the JSON Schema the Signal K admin UI renders, the
- * TypeScript shape it produces, and the normaliser that turns a partially
- * filled form into values the rest of the plugin can rely on.
+ * TypeScript shape it produces, and the resolver that turns a filled-in form
+ * into values the rest of the plugin can rely on.
  *
  * The config page is the only place any of this is set. There is no YAML to
  * hand-edit and no wizard to run: `data/vessel/info.yaml` in the published
  * repo is an *output* of this file, written for the frontend to read.
+ *
+ * Nothing numeric has a default. An interval, a retention window, a stale
+ * cutoff and the instrument-path list all describe one boat's cellular plan
+ * and one boat's instruments; a default here is a guess that publishes at
+ * someone else's cadence and bandwidth until they notice. The plugin refuses
+ * to publish until each one is set, and says exactly which are missing.
  */
 
 export interface PrivacyZone {
@@ -15,6 +21,7 @@ export interface PrivacyZone {
   radius_m: number;
 }
 
+/** A fully resolved configuration: every required value present. */
 export interface PluginConfig {
   github: {
     repo: string;
@@ -41,31 +48,36 @@ export interface PluginConfig {
     postgsailLogsUrl: string;
     uscgNumber: string;
     hullNumber: string;
+    extraYaml: string;
   };
 }
 
-/** Cadence while `navigation.state` says the boat is moving, in seconds. */
-export const DEFAULT_INTERVAL_UNDERWAY = 120;
-/** Cadence while moored, anchored, or state unknown, in seconds. */
-export const DEFAULT_INTERVAL_STATIONARY = 3600;
-/** Rolling length of `instrument_log.json`; the frontend reads the same number. */
-export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 120;
-/** How long raw positions stay in `positions_index.json`. */
-export const DEFAULT_POSITION_RETENTION_HOURS = 24;
-/** Values older than this are dropped from the published snapshot. */
-export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
+/** Theme names understood by the frontend's `constants.js`. */
+export const SITE_THEMES = [
+  'mermug',
+  'light',
+  'dark',
+  'deep-sea',
+  'starboard',
+  'port-light',
+  'midnight-watch',
+  'chart-room',
+  'fog-bank',
+  'overcast',
+  'coral',
+  'kelp',
+  'dusk',
+];
 
 /**
- * Default instrument-log allowlist: the paths the sparklines actually draw.
+ * A starting point for `instrumentLog.paths`, documented rather than applied.
  *
- * The Python daemon logged every numeric leaf in the self tree — ~167 paths
- * per entry, a ~1 MB file republished every two minutes. `git push` sent a
- * delta; the Git Data API uploads the whole blob, so the unfiltered file is a
- * real regression over a cellular hotspot. Capturing only what the frontend
- * draws takes an order of magnitude off it. Add paths here (or in the config
- * page) if you add a sparkline.
+ * These are the paths the bundled frontend's sparklines draw. They are in the
+ * README to paste into the config page, not in the schema as a default: which
+ * instruments a boat has, and which of them are worth a megabyte a day over a
+ * hotspot, is not something this plugin can guess.
  */
-export const DEFAULT_INSTRUMENT_LOG_PATHS = [
+export const SUGGESTED_INSTRUMENT_LOG_PATHS = [
   'navigation.speedOverGround',
   'navigation.speedThroughWater',
   'navigation.courseOverGroundTrue',
@@ -93,23 +105,6 @@ export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'propulsion.*.runTime',
 ];
 
-/** Theme names understood by the frontend's `constants.js`. */
-export const SITE_THEMES = [
-  'mermug',
-  'light',
-  'dark',
-  'deep-sea',
-  'starboard',
-  'port-light',
-  'midnight-watch',
-  'chart-room',
-  'fog-bank',
-  'overcast',
-  'coral',
-  'kelp',
-  'dusk',
-];
-
 export const configSchema = {
   type: 'object',
   required: ['github'],
@@ -124,7 +119,6 @@ export const configSchema = {
           title: 'Repository (owner/name)',
           description:
             'The repository GitHub Pages serves, e.g. "yourname/yourname.github.io".',
-          default: '',
         },
         branch: {
           type: 'string',
@@ -140,25 +134,25 @@ export const configSchema = {
             'Signal K stores plugin configuration as plain JSON on disk, so this ' +
             'token is readable by anyone with a shell on the server — scope it to ' +
             'the one repository and nothing else.',
-          default: '',
         },
       },
     },
     interval: {
       type: 'object',
-      title: 'Publish cadence',
+      title: 'Publish cadence (required)',
       properties: {
         underway: {
           type: 'number',
           title: 'Underway interval (seconds)',
-          description: 'Used when navigation.state is sailing or motoring.',
-          default: DEFAULT_INTERVAL_UNDERWAY,
+          description:
+            'Used when navigation.state is sailing or motoring. 120 is one ' +
+            'publish every two minutes; each publish costs the size of the ' +
+            'changed files, uploaded in full.',
         },
         stationary: {
           type: 'number',
           title: 'Stationary interval (seconds)',
-          description: 'Used when moored, anchored, or the state is unknown.',
-          default: DEFAULT_INTERVAL_STATIONARY,
+          description: 'Used when moored, anchored, or the state is unknown. 3600 is hourly.',
         },
       },
     },
@@ -168,15 +162,15 @@ export const configSchema = {
       description:
         'Positions inside any of these circles are redacted before they are ' +
         'stored or published: the zone centre is shown instead, and the point ' +
-        'is left out of the GPX track entirely. Empty by default.',
+        'is left out of the GPX track entirely. Empty means nothing is hidden.',
       items: {
         type: 'object',
         required: ['lat', 'lon', 'radius_m'],
         properties: {
-          name: { type: 'string', title: 'Name', default: '' },
+          name: { type: 'string', title: 'Name' },
           lat: { type: 'number', title: 'Latitude' },
           lon: { type: 'number', title: 'Longitude' },
-          radius_m: { type: 'number', title: 'Radius (metres)', default: 200 },
+          radius_m: { type: 'number', title: 'Radius (metres)' },
         },
       },
       default: [],
@@ -187,46 +181,46 @@ export const configSchema = {
       description:
         'Calendar day used to group GPX tracks. Stored timestamps are UTC; ' +
         'grouping by UTC date splits a voyage mid-afternoon on the US west ' +
-        'coast. Leave blank to use the server timezone.',
+        'coast. Leave blank to group by UTC.',
       default: '',
     },
     instrumentLog: {
       type: 'object',
-      title: 'Instrument log (sparklines)',
+      title: 'Instrument log (sparklines, required)',
       properties: {
         paths: {
-          type: 'array',
+          type: 'string',
           title: 'Captured paths',
           description:
-            'Allowlist of Signal K paths recorded each cycle. "*" matches one ' +
-            'path segment, so electrical.batteries.*.voltage covers every bank. ' +
-            'Keep this tight: every path costs bandwidth on every publish.',
-          items: { type: 'string' },
-          default: DEFAULT_INSTRUMENT_LOG_PATHS,
+            'One Signal K path per line. "*" matches one path segment, so ' +
+            'electrical.batteries.*.voltage covers every bank. Lines starting ' +
+            'with # are comments. This list is the entire bandwidth cost of a ' +
+            'cycle: every path here is uploaded, for every entry, on every ' +
+            'publish. The README has the set the bundled sparklines draw.',
         },
         entries: {
           type: 'number',
           title: 'Entries retained',
           description:
-            'Rolling length of instrument_log.json. Must match ' +
-            'INSTRUMENT_LOG_ENTRIES in the frontend constants.',
-          default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
+            'Rolling length of instrument_log.json — 120 entries is about five ' +
+            'hours at a two-minute cadence. The frontend is told this number, ' +
+            'so the sparklines and the publisher cannot drift apart.',
         },
       },
     },
     positionRetentionHours: {
       type: 'number',
-      title: 'Position retention (hours)',
-      description: 'How long raw positions stay in positions_index.json.',
-      default: DEFAULT_POSITION_RETENTION_HOURS,
+      title: 'Position retention (hours, required)',
+      description:
+        'How long raw positions stay in positions_index.json — the map track. ' +
+        'Past days survive as GPX regardless.',
     },
     staleMaxAgeMinutes: {
       type: 'number',
-      title: 'Stale value cutoff (minutes)',
+      title: 'Stale value cutoff (minutes, required)',
       description:
         'Values older than this are dropped from the published snapshot so the ' +
         'site shows them as unavailable rather than as current.',
-      default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
     buildDocsIndex: {
       type: 'boolean',
@@ -266,95 +260,164 @@ export const configSchema = {
         },
         uscgNumber: { type: 'string', title: 'USCG documentation number', default: '' },
         hullNumber: { type: 'string', title: 'Hull number (HIN)', default: '' },
+        extraYaml: {
+          type: 'string',
+          title: 'Extra site fields (YAML)',
+          description:
+            'Free-form YAML merged into data/vessel/info.yaml, for anything the ' +
+            'frontend reads that this page does not cover. A key here overrides ' +
+            'the value the plugin would have written, which is logged when it ' +
+            'happens. Your passage: block is never touched — it stays in the ' +
+            'published file and is preserved on every rewrite. Invalid YAML is ' +
+            'logged and skipped; it never stops a publish.',
+          default: '',
+        },
       },
     },
   },
 };
 
-function positiveNumber(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-    ? value
-    : fallback;
-}
-
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.trim() : fallback;
 }
 
-/** Coerce whatever the admin UI stored into a complete, usable config. */
-export function normaliseConfig(raw: Partial<PluginConfig> | undefined): PluginConfig {
+function num(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  // The admin UI hands back a string for a number field often enough to matter.
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Parse the free-form path list: one path per line, `#` comments allowed.
+ *
+ * An array is accepted too, so a config written against the array form of
+ * this field still loads.
+ */
+export function parsePathList(value: unknown): string[] {
+  const lines = Array.isArray(value)
+    ? value.map((item) => String(item))
+    : typeof value === 'string'
+      ? value.split(/[\r\n,]+/)
+      : [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const path = line.trim();
+    if (!path || path.startsWith('#')) continue;
+    seen.add(path);
+  }
+  return [...seen];
+}
+
+export interface ResolvedConfig {
+  ok: true;
+  config: PluginConfig;
+}
+
+export interface UnresolvedConfig {
+  ok: false;
+  /** One line per missing or invalid setting, in the order of the form. */
+  problems: string[];
+}
+
+/**
+ * Validate the admin-UI payload and produce a complete config, or the list of
+ * everything that is missing.
+ *
+ * Every problem is reported at once: filling one field, restarting, and being
+ * told about the next one is a miserable way to configure a plugin over a
+ * boat's wifi.
+ */
+export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
   const interval = input.interval ?? {};
   const instrumentLog = input.instrumentLog ?? {};
   const site = input.site ?? {};
+  const problems: string[] = [];
+
+  const repo = str(github.repo);
+  if (!repo) problems.push('GitHub repository (owner/name) is not set.');
+  else if (!/^[^/\s]+\/[^/\s]+$/.test(repo))
+    problems.push(`GitHub repository must be "owner/name", got "${repo}".`);
+
+  const token = typeof github.token === 'string' ? github.token.trim() : '';
+  if (!token) problems.push('GitHub personal access token is not set.');
+
+  const underway = num(interval.underway);
+  if (underway === null) problems.push('Underway interval (seconds) is not set.');
+  const stationary = num(interval.stationary);
+  if (stationary === null) problems.push('Stationary interval (seconds) is not set.');
+
+  const paths = parsePathList(instrumentLog.paths);
+  if (!paths.length)
+    problems.push(
+      'Instrument log paths are not set — nothing would be recorded for the ' +
+        'sparklines. The README lists the set the bundled frontend draws.',
+    );
+  const entries = num(instrumentLog.entries);
+  if (entries === null) problems.push('Instrument log entries retained is not set.');
+
+  const retention = num(input.positionRetentionHours);
+  if (retention === null) problems.push('Position retention (hours) is not set.');
+
+  const stale = num(input.staleMaxAgeMinutes);
+  if (stale === null) problems.push('Stale value cutoff (minutes) is not set.');
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
-        .filter((z: any) => z && typeof z === 'object')
-        .map((z: any) => ({
-          name: str(z.name),
-          lat: Number(z.lat),
-          lon: Number(z.lon),
-          radius_m: Number(z.radius_m),
+        .filter((zone: any) => zone && typeof zone === 'object')
+        .map((zone: any) => ({
+          name: str(zone.name),
+          lat: Number(zone.lat),
+          lon: Number(zone.lon),
+          radius_m: Number(zone.radius_m),
         }))
         .filter(
-          (z: PrivacyZone) =>
-            Number.isFinite(z.lat) &&
-            Number.isFinite(z.lon) &&
-            Number.isFinite(z.radius_m) &&
-            z.radius_m > 0,
+          (zone: PrivacyZone) =>
+            Number.isFinite(zone.lat) &&
+            Number.isFinite(zone.lon) &&
+            Number.isFinite(zone.radius_m) &&
+            zone.radius_m > 0,
         )
     : [];
+  const droppedZones = Array.isArray(input.privacyZones)
+    ? input.privacyZones.length - zones.length
+    : 0;
+  if (droppedZones > 0) {
+    // Not fatal, but a half-entered zone hides nothing and the operator has
+    // every reason to think it does.
+    problems.push(
+      `${droppedZones} privacy zone(s) are incomplete (each needs a latitude, ` +
+        'longitude and a radius in metres) and would hide nothing.',
+    );
+  }
 
-  const paths = Array.isArray(instrumentLog.paths)
-    ? instrumentLog.paths.filter((p: unknown): p is string => typeof p === 'string' && !!p.trim())
-    : DEFAULT_INSTRUMENT_LOG_PATHS;
+  if (problems.length) return { ok: false, problems };
 
   return {
-    github: {
-      repo: str(github.repo),
-      branch: str(github.branch) || 'main',
-      token: typeof github.token === 'string' ? github.token.trim() : '',
-    },
-    interval: {
-      underway: positiveNumber(interval.underway, DEFAULT_INTERVAL_UNDERWAY),
-      stationary: positiveNumber(interval.stationary, DEFAULT_INTERVAL_STATIONARY),
-    },
-    privacyZones: zones,
-    timezone: str(input.timezone),
-    instrumentLog: {
-      paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
-      entries: Math.max(
-        1,
-        Math.floor(positiveNumber(instrumentLog.entries, DEFAULT_INSTRUMENT_LOG_ENTRIES)),
-      ),
-    },
-    positionRetentionHours: positiveNumber(
-      input.positionRetentionHours,
-      DEFAULT_POSITION_RETENTION_HOURS,
-    ),
-    staleMaxAgeMinutes: positiveNumber(
-      input.staleMaxAgeMinutes,
-      DEFAULT_STALE_MAX_AGE_MINUTES,
-    ),
-    buildDocsIndex: input.buildDocsIndex !== false,
-    publishFrontend: input.publishFrontend !== false,
-    site: {
-      theme: str(site.theme) || 'mermug',
-      marinetrafficShipId: str(site.marinetrafficShipId),
-      postgsailLogsUrl: str(site.postgsailLogsUrl),
-      uscgNumber: str(site.uscgNumber),
-      hullNumber: str(site.hullNumber),
+    ok: true,
+    config: {
+      github: { repo, branch: str(github.branch) || 'main', token },
+      interval: { underway: underway!, stationary: stationary! },
+      privacyZones: zones,
+      timezone: str(input.timezone),
+      instrumentLog: { paths, entries: Math.max(1, Math.floor(entries!)) },
+      positionRetentionHours: retention!,
+      staleMaxAgeMinutes: stale!,
+      buildDocsIndex: input.buildDocsIndex !== false,
+      publishFrontend: input.publishFrontend !== false,
+      site: {
+        theme: str(site.theme) || 'mermug',
+        marinetrafficShipId: str(site.marinetrafficShipId),
+        postgsailLogsUrl: str(site.postgsailLogsUrl),
+        uscgNumber: str(site.uscgNumber),
+        hullNumber: str(site.hullNumber),
+        extraYaml: typeof site.extraYaml === 'string' ? site.extraYaml : '',
+      },
     },
   };
-}
-
-/** Human-readable reason the plugin cannot publish, or null when it can. */
-export function configError(config: PluginConfig): string | null {
-  if (!config.github.repo) return 'Set the GitHub repository (owner/name) in the plugin config.';
-  if (!/^[^/\s]+\/[^/\s]+$/.test(config.github.repo))
-    return `GitHub repository must be "owner/name", got "${config.github.repo}".`;
-  if (!config.github.token) return 'Set a GitHub personal access token in the plugin config.';
-  return null;
 }

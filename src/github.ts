@@ -45,6 +45,28 @@ export class GitHubError extends Error {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/**
+ * What one cycle cost, for the log line.
+ *
+ * `bytesUploaded` is the real number to watch: the Git Data API takes each
+ * changed file as a base64 blob in the request body and does not accept a
+ * compressed one, so this is what actually crosses the hotspot — not the size
+ * of a git delta.
+ */
+export interface RequestStats {
+  requests: number;
+  bytesUploaded: number;
+  rateLimitRemaining: number | null;
+  rateLimitResetAt: string | null;
+}
+
+const emptyStats = (): RequestStats => ({
+  requests: 0,
+  bytesUploaded: 0,
+  rateLimitRemaining: null,
+  rateLimitResetAt: null,
+});
+
 export class GitHubClient {
   private readonly repo: string;
   private readonly branch: string;
@@ -52,6 +74,7 @@ export class GitHubClient {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
+  private stats: RequestStats = emptyStats();
 
   constructor(options: GitHubOptions) {
     this.repo = options.repo;
@@ -69,6 +92,9 @@ export class GitHubClient {
     extraHeaders: Record<string, string> = {},
   ): Promise<{ status: number; data: T; headers: Headers }> {
     const url = `https://api.github.com${path}`;
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    this.stats.requests += 1;
+    if (payload) this.stats.bytesUploaded += Buffer.byteLength(payload, 'utf-8');
     const response = await this.fetchImpl(url, {
       method,
       headers: {
@@ -79,9 +105,16 @@ export class GitHubClient {
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...extraHeaders,
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: payload,
       signal: AbortSignal.timeout(this.timeoutMs),
     });
+
+    const remaining = response.headers.get('x-ratelimit-remaining');
+    if (remaining !== null) this.stats.rateLimitRemaining = Number(remaining);
+    const reset = response.headers.get('x-ratelimit-reset');
+    if (reset !== null) {
+      this.stats.rateLimitResetAt = new Date(Number(reset) * 1000).toISOString();
+    }
 
     if (response.status === 304) {
       return { status: 304, data: undefined as T, headers: response.headers };
@@ -96,6 +129,13 @@ export class GitHubClient {
     }
     const data = response.status === 204 ? (undefined as T) : ((await response.json()) as T);
     return { status: response.status, data, headers: response.headers };
+  }
+
+  /** Read the counters for the cycle that just ran and start the next one. */
+  takeStats(): RequestStats {
+    const stats = this.stats;
+    this.stats = emptyStats();
+    return stats;
   }
 
   /** HEAD commit SHA of the configured branch. */

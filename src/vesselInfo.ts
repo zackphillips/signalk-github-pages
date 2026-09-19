@@ -46,10 +46,43 @@ export function extractPassage(existingYaml: string | null | undefined): unknown
   return undefined;
 }
 
+/**
+ * Parse the free-form extras block.
+ *
+ * Invalid YAML is reported and skipped: a typo in an optional field must not
+ * stop the boat publishing its position.
+ */
+export function parseExtraFields(
+  extraYaml: string,
+  onProblem: (message: string) => void = () => {},
+): Record<string, unknown> {
+  if (!extraYaml.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = yaml.load(extraYaml);
+  } catch (error: any) {
+    onProblem(`Extra site fields are not valid YAML and were skipped: ${error?.message ?? error}`);
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    onProblem('Extra site fields must be a YAML mapping (key: value); they were skipped.');
+    return {};
+  }
+  const fields = parsed as Record<string, unknown>;
+  if ('passage' in fields) {
+    // passage is read back off the published file every rewrite, so a copy
+    // here would fight with the one edited on GitHub.
+    onProblem('Extra site fields must not set "passage:" — edit it in the repository instead. Ignoring it.');
+    delete fields.passage;
+  }
+  return fields;
+}
+
 export function renderVesselInfo(
   config: PluginConfig,
   identity: VesselIdentity,
   existingYaml?: string | null,
+  onProblem: (message: string) => void = () => {},
 ): string {
   const passage = extractPassage(existingYaml);
   const document: Record<string, unknown> = {};
@@ -77,6 +110,17 @@ export function renderVesselInfo(
     lon: zone.lon,
     radius_m: zone.radius_m,
   }));
+
+  // Extras are applied last and win, which is what makes them an escape
+  // hatch rather than decoration. Every override is named in the log, so a
+  // field that stopped tracking the config page is visible rather than
+  // mysterious.
+  for (const [key, value] of Object.entries(parseExtraFields(config.site.extraYaml, onProblem))) {
+    if (key in document && document[key] !== value) {
+      onProblem(`Extra site field "${key}" overrides the value from the plugin config.`);
+    }
+    document[key] = value;
+  }
 
   return `${HEADER}\n${yaml.dump(document, { lineWidth: 100, noRefs: true })}`;
 }
