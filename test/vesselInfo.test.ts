@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
-import { extractPassage, parseExtraFields, renderVesselInfo } from '../src/vesselInfo';
+import {
+  extractPassage,
+  mergeVesselIdentity,
+  parseExtraFields,
+  readVesselDetails,
+  renderVesselInfo,
+} from '../src/vesselInfo';
 import { makeConfig } from './helpers/config';
 
 const CONFIG = makeConfig({
@@ -109,5 +115,134 @@ describe('extra site fields', () => {
 
   it('treats a blank block as no extras', () => {
     expect(parseExtraFields('   \n')).toEqual({});
+  });
+});
+
+describe('readVesselDetails', () => {
+  const TREE = {
+    name: 'S.V.Mermug',
+    mmsi: '338543654',
+    uuid: 'urn:mrn:signalk:uuid:c0d79334-4e25-4245-8892-54e8ccc8021d',
+    flag: 'US',
+    port: 'San Francisco',
+    communication: { callsignVhf: 'WDL1234' },
+    registrations: {
+      imo: 'IMO 9074729',
+      national: {
+        usa: { country: 'US', registrationNumber: '1024168', description: 'USCG documentation' },
+      },
+      other: {
+        hin: { registrationNumber: 'BEY57004E494', description: 'Hull identification number' },
+      },
+    },
+    design: {
+      length: { value: { overall: 12.8, hull: 12.5, waterline: 11.2 } },
+      beam: { value: 3.99 },
+      draft: { value: { maximum: 2.13, minimum: 1.9 } },
+      airHeight: { value: 19.5 },
+      displacement: { value: 8200 },
+      keel: { value: { type: 'fin' } },
+      aisShipType: { value: { id: 36, name: 'Sailing' } },
+    },
+  };
+
+  it('reads the identity the server already holds, so nobody types it twice', () => {
+    const details = readVesselDetails(TREE);
+    expect(details.name).toBe('S.V.Mermug');
+    expect(details.mmsi).toBe('338543654');
+    expect(details.callsign).toBe('WDL1234');
+    expect(details.flag).toBe('US');
+    expect(details.homePort).toBe('San Francisco');
+    expect(details.imo).toBe('IMO 9074729');
+    expect(details.uuid).toContain('urn:mrn:signalk:uuid:');
+  });
+
+  it('finds the documentation and hull numbers among the registrations', () => {
+    const details = readVesselDetails(TREE);
+    expect(details.uscgNumber).toBe('1024168');
+    expect(details.hullNumber).toBe('BEY57004E494');
+    expect(details.registrations).toMatchObject({
+      'national.usa': '1024168',
+      'other.hin': 'BEY57004E494',
+    });
+  });
+
+  it('reads the dimensions, rounded so a float does not commit every cycle', () => {
+    const details = readVesselDetails({
+      design: { draft: { value: { maximum: 2.1300000000000003 } }, beam: { value: 3.99 } },
+    });
+    expect(details.design).toEqual({ draft_max_m: 2.13, beam_m: 3.99 });
+  });
+
+  it('takes a plain value as readily as a { value } node', () => {
+    const details = readVesselDetails({ name: 'Boat', communication: { callsignVhf: { value: 'WDL1' } } });
+    expect(details.name).toBe('Boat');
+    expect(details.callsign).toBe('WDL1');
+  });
+
+  it('ignores an MMSI that is not nine digits', () => {
+    expect(readVesselDetails({ mmsi: '12345' }).mmsi).toBeUndefined();
+  });
+
+  it('returns nothing at all for a tree with nothing in it', () => {
+    expect(readVesselDetails({})).toEqual({});
+    expect(readVesselDetails(null as any)).toEqual({});
+  });
+});
+
+describe('mergeVesselIdentity', () => {
+  const BASE = { name: 'Vessel', mmsi: '338543654', signalk: { host: '192.168.8.50' } };
+
+  it('lets the live tree win over what the server object said at start', () => {
+    const merged = mergeVesselIdentity(BASE, { name: 'S.V.Mermug', callsign: 'WDL1234' });
+    expect(merged.name).toBe('S.V.Mermug');
+    expect(merged.callsign).toBe('WDL1234');
+    expect(merged.signalk).toEqual({ host: '192.168.8.50' });
+  });
+
+  it('keeps the MMSI from the server ID when the tree does not repeat it', () => {
+    expect(mergeVesselIdentity(BASE, { name: 'S.V.Mermug' }).mmsi).toBe('338543654');
+  });
+
+  it('falls back to "Vessel" rather than publishing a site with no name', () => {
+    expect(mergeVesselIdentity({ name: '', mmsi: '' }, {}).name).toBe('Vessel');
+  });
+});
+
+describe('what is read from Signal K versus typed on the config page', () => {
+  const FROM_SIGNALK = {
+    name: 'S.V.Mermug',
+    mmsi: '338543654',
+    callsign: 'WDL1234',
+    uscgNumber: '1024168',
+    hullNumber: 'BEY57004E494',
+    design: { draft_max_m: 2.13 },
+    registrations: { 'national.usa': '1024168' },
+  };
+
+  it('publishes everything the tree carried', () => {
+    const parsed = yaml.load(renderVesselInfo(makeConfig(), FROM_SIGNALK)) as any;
+    expect(parsed.callsign).toBe('WDL1234');
+    expect(parsed.uscg_number).toBe('1024168');
+    expect(parsed.hull_number).toBe('BEY57004E494');
+    expect(parsed.design).toEqual({ draft_max_m: 2.13 });
+    expect(parsed.registrations).toEqual({ 'national.usa': '1024168' });
+  });
+
+  it('prefers the config page and says so when the two disagree', () => {
+    const problems: string[] = [];
+    const config = makeConfig({ site: { uscgNumber: '9999999' } });
+    const parsed = yaml.load(
+      renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem)),
+    ) as any;
+    expect(parsed.uscg_number).toBe('9999999');
+    expect(problems.join(' ')).toContain('differs from the one Signal K reports');
+  });
+
+  it('says nothing when the config page agrees with Signal K', () => {
+    const problems: string[] = [];
+    const config = makeConfig({ site: { uscgNumber: '1024168' } });
+    renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
+    expect(problems).toEqual([]);
   });
 });

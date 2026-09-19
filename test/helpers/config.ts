@@ -8,7 +8,7 @@
 import { resolveConfig, type PluginConfig } from '../../src/config';
 
 export const COMPLETE_FORM = {
-  github: { repo: 'owner/site', branch: 'main', token: 'token' },
+  github: { owner: 'owner', name: 'site', branch: 'main', token: 'ghp_token' },
   interval: { underway: 120, stationary: 3600 },
   instrumentLog: {
     paths: 'navigation.speedOverGround\nelectrical.batteries.*.voltage\n',

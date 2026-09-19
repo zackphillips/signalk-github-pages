@@ -59,8 +59,35 @@ the live `HEAD`.
 at the apex, anything else at `/<repo>/`. Settings → Pages → Deploy from a
 branch → `main` / `(root)`.
 
-**2. A token.** [Fine-grained PAT](https://github.com/settings/personal-access-tokens),
-**only** this repository, **Contents: read and write**. Nothing else.
+**2. A token.** [Make a fine-grained
+PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
+this much:
+
+| In the token form | Set it to |
+|---|---|
+| Resource owner | You, or the organisation that owns the repository |
+| Repository access | **Only select repositories** → the Pages repository |
+| Repository permissions → **Contents** | **Read and write** |
+| Repository permissions → Metadata | Read-only — added for you, cannot be removed |
+| Expiration | Your call; publishing stops with a 401 the day it lapses |
+
+Nothing else is needed: no Actions, no Pages, no account permissions. The
+commonly missed one is **Contents**, because a token without it reads the
+repository perfectly and fails on the first commit with a 403.
+
+An **organisation-owned** repository needs one more step: an organisation
+owner has to approve the token (Organisation settings → Personal access
+tokens → Pending requests) before it can see the repository at all. Until
+they do, publishing fails with a 404 for a repository that plainly exists.
+
+A **classic** token works too if you prefer one: the `repo` scope, or
+`public_repo` if the repository is public. It is a blunter instrument — it
+reaches every repository you can push to — so use a fine-grained one unless
+you have a reason not to.
+
+The plugin reads the failure status back to you: 401 says the token is wrong
+or expired, 403 says it lacks Contents: read and write, 404 says it cannot see
+the repository.
 
 **3. Install it.** Not on npm yet, so not in the App Store either — install
 straight from git into the Signal K home directory:
@@ -76,7 +103,8 @@ package's `prepare` script, leaving a loadable plugin in
 `~/.signalk/node_modules/signalk-github-pages`.
 
 Then open **Server → Plugin Config → GitHub Pages vessel tracker**, fill in
-the repository and the token, enable. Everything else has a working default.
+the repository owner, the repository name and the token, enable. Everything
+else has a working default.
 
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
 only. Give Pages a minute, then open the URL.
@@ -90,7 +118,8 @@ only. Give Pages a minute, then open the URL.
 
 | Field | Default | Notes |
 |---|---|---|
-| `github.repo` | **required** | `owner/name` of the Pages repository |
+| `github.owner` | **required** | The user or organisation, e.g. `yourname` |
+| `github.name` | **required** | The repository alone, e.g. `yourname.github.io` |
 | `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
 | `github.branch` | `main` | Branch Pages serves |
 | `interval.underway` | `120` s | When `navigation.state` is sailing or motoring |
@@ -100,7 +129,8 @@ only. Give Pages a minute, then open the URL.
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
-| `timezone` | *server* | IANA name, for grouping tracks by local day |
+| `timezone` | UTC | Chosen from a list of IANA zones, for grouping tracks by local day |
+| `polars` | *empty* | Polar table pasted in — [see below](#polars) |
 | `site.theme` | `marine` | `marine`, `mermug`, `bright`, `dark` |
 | `site.extraYaml` | *empty* | Free-form YAML merged into `info.yaml` |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
@@ -108,8 +138,14 @@ only. Give Pages a minute, then open the URL.
 
 The defaults are the numbers this tracker has run on since it was a Python
 daemon on a Raspberry Pi. What has no default is anything belonging to one
-particular boat: privacy zones start empty, the timezone follows the server,
-and the vessel's name and MMSI come from Signal K rather than from this page.
+particular boat: privacy zones start empty, the timezone starts at UTC (the
+field names the zone your server is set to, so you know which one to pick),
+and [the vessel's own details](#what-comes-from-signal-k) come from Signal K
+rather than from this page.
+
+Upgrading from a version with a single `owner/name` box: it still works until
+you next save the config page, and the two new fields are filled from it the
+first time the plugin reads it. Fill them in and the old field can go.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
@@ -190,6 +226,58 @@ you say what to hide.
 > half-entered zone hides nothing while looking like it does, and the failure
 > mode is a published position someone believed was redacted.
 
+## What comes from Signal K
+
+The boat's own details are not typed on the config page. Every cycle the
+plugin reads the self tree and writes what it found into
+`data/vessel/info.yaml`:
+
+| `info.yaml` | Read from |
+|---|---|
+| `name`, `mmsi`, `uuid`, `flag`, `home_port` | `vessels.self` |
+| `callsign` | `communication.callsignVhf`, then `callsignHf` |
+| `imo`, `registrations` | `registrations.imo` / `.national` / `.local` / `.other` |
+| `uscg_number` | The registration whose key or description says USCG, coast guard, documentation or official number — or a national one flagged `US` |
+| `hull_number` | The registration whose key or description says HIN or hull |
+| `design` | `design.length`, `.beam`, `.draft`, `.airHeight`, `.displacement`, `.keel`, `.aisShipType`, in metres and kilograms |
+| `signalk.host`, `.port`, `.protocol` | The server's own settings and the Pi's LAN address |
+
+It is read on every cycle, not once at start: a cold boot runs the first cycle
+before the first product-information frame arrives, and an identity read once
+would leave the site saying "Vessel" until the next restart. Dimensions are
+rounded to the millimetre, so a float that wobbles in the last decimal place
+does not commit `info.yaml` every two minutes.
+
+`site.uscgNumber` and `site.hullNumber` on the config page are fallbacks for a
+server that carries neither. Fill one in and it wins; if Signal K reports
+something different, the log says so rather than quietly picking one.
+
+## Polars
+
+Paste the boat's polar table into the `polars` field and the plugin publishes
+`data/vessel/polars.csv`, which is what the target-speed chart draws. The
+format is the one every VPP and ORC export already produces — first line the
+true wind speeds in knots, then a line per true wind angle in degrees:
+
+```
+twa/tws;6;8;10;12;14;16;20
+52;5.0;5.9;6.5;6.9;7.1;7.2;7.3
+90;5.6;6.5;7.2;7.6;7.9;8.2;8.7
+150;4.0;5.0;6.0;6.7;7.2;7.6;8.5
+```
+
+Semicolons, commas, tabs or spaces all work, `#` starts a comment, and a
+comma decimal separator is understood; the plugin re-renders whatever it reads
+into the semicolon form the frontend parses. A short row is padded with zeros
+rather than shifted onto the wrong wind speed, and anything it could not read
+is named in the log — a polar table is a chart, not a position, so a typo in
+one never stops a publish.
+
+Leaving the field empty means the plugin publishes no polars and does not
+claim the path: a `polars.csv` you committed by hand stays yours, and clearing
+the field later leaves the last published file in place rather than deleting
+the boat's performance data because a text box was emptied.
+
 ## What the plugin writes
 
 The repository is shared with you. The plugin writes `.tracker-manifest.json`
@@ -202,8 +290,9 @@ into a commit.
 | `data/vessel/info.yaml` | Plugin, when the config changes — your `passage:` block is preserved |
 | `docs/index.json` | Plugin, when the docs tree changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
+| `data/vessel/polars.csv` | Plugin, but only while the `polars` config field has a table in it |
 | `docs/*.md` | **You** |
-| `data/vessel/logo.png`, `data/vessel/polars.csv` | **You** |
+| `data/vessel/logo.png` | **You** |
 | `assets/custom.css` | **You** — loaded last by both pages, never written here |
 | Everything else | **You** |
 
@@ -273,6 +362,28 @@ Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
 Publish state deliberately stays out of the Signal K data tree: it is log
 output and the plugin status line, not paths in the model.
 
+## The site says "Data unavailable"
+
+If the panels read *Data unavailable* while the Raw Data tab shows a current
+snapshot, the page and the data have come from different places: the data is
+fetched network-first, the page was served by the service worker out of the
+device's cache.
+
+That used to be permanent. The shell cache was named by a constant, served
+cache-first and never revalidated, so a device that had loaded the site once
+kept that release's HTML and JavaScript for good — including across a plugin
+upgrade that published a new frontend. From 0.2.0 the cache is named after the
+plugin version, shell assets are stale-while-revalidate, and `data/` is never
+pre-cached, so a publish reaches a returning device on the next load or two.
+
+To clear a device that is still stuck on the old worker: open the site in a
+private tab to confirm that is what it is, then on iOS use Settings → Safari →
+Advanced → Website Data → your site → Delete, or on a desktop browser hard-
+reload it.
+
+A single panel reading *Data unavailable* now means only that panel failed;
+the message carries the error and the rest of the dashboard keeps rendering.
+
 ## It is not in the plugin list
 
 The server discovers plugins by scanning `~/.signalk/node_modules` for
@@ -316,7 +427,8 @@ npm run dev       # public/ + sample/ on http://localhost:8000
 ```
 
 `npm run dev` serves the real frontend against fixture telemetry: a day's
-track, sixty instrument-log entries, a sailing snapshot. No boat required.
+track, sixty instrument-log entries, a sailing snapshot and a polar table. No
+boat required.
 
 `Publisher.runCycle()` takes a self tree and returns what it did — it never
 calls back into the server — so a full publish cycle is tested without Signal
@@ -338,7 +450,9 @@ src/
   instrumentLog.ts  instrument_log.json + the path allowlist
   gpx.ts            Per-day GPX and tracks_index.json
   docsIndex.ts      docs/index.json
-  vesselInfo.ts     data/vessel/info.yaml
+  vesselInfo.ts     data/vessel/info.yaml, and reading the boat off the tree
+  polars.ts         data/vessel/polars.csv from the pasted table
+  timezones.ts      The IANA list behind the timezone dropdown
   frontend.ts       Reading public/, templating constants.js
   github.ts         Git Data API client, publish-with-retry
   manifest.ts       Ownership allowlist

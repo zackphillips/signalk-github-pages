@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { isValidTimezone } from '../src/time';
 import {
+  configSchema,
+  configUiSchema,
   DEFAULT_INSTRUMENT_LOG_ENTRIES,
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
@@ -18,13 +21,14 @@ describe('resolveConfig', () => {
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
     expect(resolved.problems).toEqual([
-      'GitHub repository (owner/name) is not set.',
+      'GitHub repository owner is not set (your username, or the organisation).',
+      'GitHub repository name is not set (the repository, without the owner).',
       'GitHub personal access token is not set.',
     ]);
   });
 
   it('runs on the documented defaults when only the repository is given', () => {
-    const resolved = resolveConfig({ github: { repo: 'owner/site', token: 't' } });
+    const resolved = resolveConfig({ github: { owner: 'owner', name: 'site', token: 't' } });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.config.interval).toEqual({
@@ -39,7 +43,7 @@ describe('resolveConfig', () => {
   });
 
   it('defaults nothing that belongs to one particular boat', () => {
-    const resolved = resolveConfig({ github: { repo: 'owner/site', token: 't' } });
+    const resolved = resolveConfig({ github: { owner: 'owner', name: 'site', token: 't' } });
     if (!resolved.ok) throw new Error('expected a resolved config');
     // A guessed privacy zone or timezone is worse than none: one hides the
     // wrong water, the other splits tracks on the wrong midnight.
@@ -69,11 +73,49 @@ describe('resolveConfig', () => {
     expect(config.positionRetentionHours).toBe(12);
   });
 
-  it('requires owner/name for the repository', () => {
-    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { repo: 'site', token: 't' } });
+  it('names the repository box that is empty', () => {
+    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { owner: 'owner', token: 't' } });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
-    expect(resolved.problems[0]).toContain('owner/name');
+    expect(resolved.problems).toEqual([
+      'GitHub repository name is not set (the repository, without the owner).',
+    ]);
+  });
+
+  it('still resolves a config written against the single owner/name field', () => {
+    // An installation upgraded in place has not been through the config page
+    // yet; it must keep publishing to the repository it was already using.
+    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { repo: 'owner/site', token: 't' } });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.config.github).toMatchObject({ owner: 'owner', name: 'site', repo: 'owner/site' });
+  });
+
+  it('splits a repository pasted whole into the owner box', () => {
+    for (const owner of ['owner/site', 'https://github.com/owner/site', 'github.com/owner/site.git']) {
+      const resolved = resolveConfig({ ...COMPLETE_FORM, github: { owner, token: 't' } });
+      expect(resolved.ok, owner).toBe(true);
+      if (!resolved.ok) return;
+      expect(resolved.config.github.repo, owner).toBe('owner/site');
+    }
+  });
+
+  it('rejects a name that is not a GitHub name', () => {
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      github: { owner: 'own er', name: 'si te', token: 't' },
+    });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems.join(' ')).toContain('is not a GitHub username or organisation');
+    expect(resolved.problems.join(' ')).toContain('is not a GitHub repository name');
+  });
+
+  it('warns about a token that is plainly not one, without refusing to start', () => {
+    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { ...COMPLETE_FORM.github, token: 'hunter2' } });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.warnings.join(' ')).toContain('does not look like one');
   });
 
   it("defaults privacy zones to empty rather than to anyone else's home port", () => {
@@ -100,6 +142,25 @@ describe('resolveConfig', () => {
     expect(config.buildDocsIndex).toBe(true);
   });
 
+  it('publishes no polars until a table is pasted in', () => {
+    expect(makeConfig().polars).toBe('');
+  });
+
+  it('renders a pasted polar table into the format the frontend parses', () => {
+    const config = makeConfig({
+      polars: 'twa/tws,6,10,16\n52,4.1,5.8,6.6\n90,5.0,6.7,7.4\n',
+    });
+    expect(config.polars).toBe('twa/tws;6;10;16\n52;4.1;5.8;6.6\n90;5;6.7;7.4\n');
+  });
+
+  it('warns about a polar table it could not read, and publishes none', () => {
+    const resolved = resolveConfig({ ...COMPLETE_FORM, polars: 'not a table at all' });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.config.polars).toBe('');
+    expect(resolved.warnings.join(' ')).toContain('Polar table:');
+  });
+
   it('still fails on a privacy zone that would hide nothing', () => {
     // Not a default question: the operator believes a position is redacted.
     const resolved = resolveConfig({
@@ -107,6 +168,50 @@ describe('resolveConfig', () => {
       privacyZones: [{ name: 'No radius', lat: 37.8, lon: -122.4 }],
     });
     expect(resolved.ok).toBe(false);
+  });
+});
+
+describe('the timezone dropdown', () => {
+  it('offers IANA names, not a free-text box where "PST" looked reasonable', () => {
+    const timezone = (configSchema.properties as any).timezone;
+    expect(timezone.enum).toContain('America/Los_Angeles');
+    expect(timezone.enum).toContain('Pacific/Auckland');
+    expect(timezone.enum.length).toBeGreaterThan(100);
+  });
+
+  it('leads with UTC, so a boat that has not chosen keeps the old behaviour', () => {
+    const timezone = (configSchema.properties as any).timezone;
+    expect(timezone.enum[0]).toBe('');
+    expect(timezone.default).toBe('');
+    expect(timezone.enumNames[0]).toContain('UTC');
+    expect(timezone.enumNames).toHaveLength(timezone.enum.length);
+  });
+
+  it('offers only names this runtime can group days by', () => {
+    for (const zone of (configSchema.properties as any).timezone.enum.slice(1)) {
+      expect(isValidTimezone(zone), zone).toBe(true);
+    }
+  });
+});
+
+describe('the repository fields', () => {
+  it('asks for the owner and the name separately', () => {
+    const github = (configSchema.properties as any).github;
+    expect(github.properties.owner.type).toBe('string');
+    expect(github.properties.name.type).toBe('string');
+    expect(github.required).toEqual(['owner', 'name', 'token']);
+  });
+
+  it('keeps the old single field, hidden, so an upgrade does not lose it', () => {
+    expect((configSchema.properties as any).github.properties.repo).toBeDefined();
+    expect((configUiSchema as any).github.repo['ui:widget']).toBe('hidden');
+  });
+
+  it('says what to tick when making the token', () => {
+    const description = (configSchema.properties as any).github.properties.token.description;
+    expect(description).toContain('Contents');
+    expect(description).toContain('Only select repositories');
+    expect(description).toContain('organisation');
   });
 });
 

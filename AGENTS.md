@@ -17,7 +17,10 @@ src/
   instrumentLog.ts  instrument_log.json + the path allowlist
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
-  vesselInfo.ts     data/vessel/info.yaml, preserving the user's passage block
+  vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
+                    and the user's passage block preserved
+  polars.ts         data/vessel/polars.csv from the table pasted into config
+  timezones.ts      The IANA list the timezone dropdown offers
   frontend.ts       Reading public/ and templating constants.js
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
@@ -65,6 +68,17 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Keep the instrument-log path list tight.** The API uploads whole files, not
   deltas; this file is the entire bandwidth cost of a cycle. Every cycle logs
   its size and warns past `INSTRUMENT_LOG_WARN_BYTES`.
+- **The boat's own details come from the tree, every cycle.** Name, MMSI,
+  callsign, registrations and dimensions are read in `runCycle`, not once in
+  `start`: a cold boot publishes its first cycle before the first
+  product-information frame arrives, and identity read at start would say
+  "Vessel" until the next restart. Round anything numeric that goes into
+  `info.yaml` — the file is rewritten whenever its content changes, and a
+  draft that wobbles in the last decimal place would commit every two minutes.
+- **The polar table is only ours while the config field has one in it.**
+  `publishPolars` gates `data/vessel/polars.csv` in the manifest. Clearing the
+  field stops publishing it and stops claiming it; it never deletes the file,
+  because a polar table someone committed by hand is years of measurement.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
@@ -72,6 +86,15 @@ Run `npm test` and `npm run typecheck` before committing.
   privacy zone hides the wrong water, and a guessed timezone splits tracks on
   the wrong midnight. An incomplete privacy zone is a hard config error, not a
   warning.
+- **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
+  that stop the plugin and `warnings` that do not. A privacy zone that hides
+  nothing is fatal; a polar table that will not parse, or a token that is not
+  shaped like one, is a warning. The test is whether publishing anyway would
+  mislead someone about where the boat is.
+- **The timezone field is a list, not a text box.** `timezones.ts` builds it
+  from `Intl.supportedValuesOf('timeZone')`, so every name offered is one
+  `localDay()` can group by. "PST" used to be accepted, silently fall back to
+  UTC, and split every track at 4pm.
 - **`SITE_THEMES` must match the themes in `public/assets/styles.css`.** It
   once carried names from a stale comment in one boat's `info.yaml`; picking
   one of those left the page unstyled. Today: `marine`, `mermug`, `bright`,
@@ -79,6 +102,19 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Publish state stays out of the Signal K tree.** Cost, commit SHA and
   failures go to `app.debug` / `app.error` and the plugin status line. Do not
   add `setPluginStatus`-style state as data paths.
+- **The service worker's cache name must carry the version.** `sw.js` declares
+  `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it, the
+  same way it templates `constants.js`. The shell cache was once a constant
+  (`mermug-shell-v4`) served cache-first with no revalidation: a device that had
+  loaded the site once kept that release's HTML and JavaScript forever while the
+  telemetry beside it went on updating. Old code against new data is a dashboard
+  reading "Data unavailable" over a snapshot it downloaded successfully. Nothing
+  under `data/` goes in the shell list either — it is published output, so it is
+  network-first.
+- **One panel failing is not nine panels failing.** The dashboard grids go
+  through `paintPanel`, which isolates a missing element or a throwing section
+  to that panel. They used to be nine bare `getElementById(...).innerHTML`
+  writes in one `try`, where anything missing wiped the whole page.
 - **`public/assets/constants.js` must use `var`.** `const` at the top level of
   a classic script does not create `window.VESSEL_CONSTANTS`, and the page goes
   blank.

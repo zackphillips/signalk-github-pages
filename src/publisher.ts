@@ -20,7 +20,12 @@ import {
 } from './docsIndex';
 import { loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
-import { MANIFEST_PATH, partitionOwned, renderManifest } from './manifest';
+import {
+  MANIFEST_PATH,
+  partitionOwned,
+  renderManifest,
+  type ManifestOptions,
+} from './manifest';
 import {
   buildPositionEntry,
   parsePositionIndex,
@@ -39,7 +44,13 @@ import {
 import type { PluginConfig } from './config';
 import { StateStore } from './state';
 import { parseTracksIndex, renderTracksIndex, updateTracks, type TrackMeta } from './gpx';
-import { renderVesselInfo, type VesselIdentity } from './vesselInfo';
+import { POLARS_PATH } from './polars';
+import {
+  mergeVesselIdentity,
+  readVesselDetails,
+  renderVesselInfo,
+  type VesselIdentity,
+} from './vesselInfo';
 
 const TELEMETRY_DIR = 'data/telemetry';
 const LATEST_PATH = `${TELEMETRY_DIR}/signalk_latest.json`;
@@ -89,6 +100,11 @@ export interface PublisherDeps {
   client: GitHubClient;
   store: StateStore;
   config: PluginConfig;
+  /**
+   * What the plugin knows about the boat before reading a tree: the LAN
+   * address the site links back to, and the MMSI from the server's own ID.
+   * Everything the tree carries is laid over this on every cycle.
+   */
   identity: VesselIdentity;
   /** Directory holding the bundled frontend (`public/`). */
   publicDir: string;
@@ -121,6 +137,9 @@ export class Publisher {
       [POSITIONS_PATH, 'positions_index.json'],
       [INSTRUMENT_LOG_PATH, 'instrument_log.json'],
       [TRACKS_INDEX_PATH, 'tracks_index.json'],
+      // Not state, but the same reasoning: a reinstall should not re-upload a
+      // polar table that is already published and unchanged.
+      [POLARS_PATH, 'polars.csv'],
     ] as const) {
       if ((await store.readText(local)) !== null) continue;
       const remote = await client.getFile(repoPath).catch(() => null);
@@ -157,6 +176,10 @@ export class Publisher {
       referenceTime: now,
     });
     const navState = navigationState(tree);
+    // Read every cycle, not once at start: on a cold boot the plugin is
+    // running before the first product-information frame arrives, and an
+    // identity read once would publish "Vessel" until the next restart.
+    const identity = mergeVesselIdentity(this.deps.identity, readVesselDetails(tree));
     const fix = extractPositionFix(tree);
     const zone = redactPosition(tree, config.privacyZones);
     if (zone) {
@@ -181,7 +204,9 @@ export class Publisher {
       );
       await store.writeText('positions_index.json', renderPositionIndex(entries));
       files.push({ path: POSITIONS_PATH, content: renderPositionIndex(entries) });
-      files.push(...(await this.updateTrackFiles(entries, now, state.publishedDays ?? [])));
+      files.push(
+        ...(await this.updateTrackFiles(entries, now, state.publishedDays ?? [], identity)),
+      );
     }
 
     const existingLog = await store.readJson<{ entries?: InstrumentLogEntry[] }>(
@@ -214,15 +239,13 @@ export class Publisher {
       );
     }
 
-    files.push(...(await this.vesselInfoFile()));
+    files.push(...(await this.vesselInfoFile(identity)));
+    files.push(...(await this.polarsFile()));
     files.push(...(await this.manifestFile()));
     files.push(...(await this.frontendFiles(publicDir, version, state.frontendVersion)));
     files.push(...(await this.docsIndexFiles()));
 
-    const { owned, rejected } = partitionOwned(files, {
-      buildDocsIndex: config.buildDocsIndex,
-      publishFrontend: config.publishFrontend,
-    });
+    const { owned, rejected } = partitionOwned(files, this.manifestOptions());
     for (const file of rejected) {
       // Should be unreachable: a path here means a generator started writing
       // outside the manifest, which is exactly what the manifest is for.
@@ -288,8 +311,9 @@ export class Publisher {
     entries: PositionEntry[],
     now: Date,
     publishedDays: string[],
+    identity: VesselIdentity,
   ): Promise<PublishFile[]> {
-    const { store, config, identity } = this.deps;
+    const { store, config } = this.deps;
     const existingIndex: TrackMeta[] = parseTracksIndex(
       await store.readText('tracks_index.json'),
     );
@@ -329,13 +353,13 @@ export class Publisher {
    * published copy is read back before every rewrite and its `passage:` block
    * carried across.
    */
-  private async vesselInfoFile(): Promise<PublishFile[]> {
-    const { store, config, identity, client } = this.deps;
+  private async vesselInfoFile(identity: VesselIdentity): Promise<PublishFile[]> {
+    const { store, config, client } = this.deps;
     const fingerprint = JSON.stringify({
       site: config.site,
       zones: config.privacyZones,
       timezone: config.timezone,
-      identity: { name: identity.name, mmsi: identity.mmsi, signalk: identity.signalk },
+      identity,
     });
     const previous = await store.readText('info-fingerprint.txt');
     if (previous === fingerprint) return [];
@@ -354,12 +378,40 @@ export class Publisher {
     return [{ path: INFO_PATH, content: contents }];
   }
 
-  private async manifestFile(): Promise<PublishFile[]> {
-    const { store, config, version } = this.deps;
-    const options = {
+  /**
+   * `data/vessel/polars.csv`, when the config page supplies a polar table.
+   *
+   * An empty setting writes nothing and claims nothing: the file is the
+   * user's until they paste a table here, and a table removed later leaves the
+   * last published file in the repository rather than deleting a boat's
+   * performance data because a text box was cleared.
+   */
+  private async polarsFile(): Promise<PublishFile[]> {
+    const { config, store, log } = this.deps;
+    if (!config.polars) return [];
+    const previous = await store.readText('polars.csv');
+    if (previous === config.polars) return [];
+    await store.writeText('polars.csv', config.polars);
+    log(
+      `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
+        `(${config.polars.trim().split('\n').length - 1} wind angles).`,
+    );
+    return [{ path: POLARS_PATH, content: config.polars }];
+  }
+
+  /** What the plugin claims to own this cycle. */
+  private manifestOptions(): ManifestOptions {
+    const { config } = this.deps;
+    return {
       buildDocsIndex: config.buildDocsIndex,
       publishFrontend: config.publishFrontend,
+      publishPolars: config.polars !== '',
     };
+  }
+
+  private async manifestFile(): Promise<PublishFile[]> {
+    const { store, version } = this.deps;
+    const options = this.manifestOptions();
     const fingerprint = JSON.stringify({ ...options, version });
     if ((await store.readText('manifest-fingerprint.txt')) === fingerprint) return [];
     await store.writeText('manifest-fingerprint.txt', fingerprint);
@@ -390,6 +442,7 @@ export class Publisher {
       repo: config.github.repo,
       branch: config.github.branch,
       instrumentLogEntries: config.instrumentLog.entries,
+      version,
     });
     await store.mergeState({ frontendVersion: fingerprint });
     log(`Publishing frontend (${files.length} files, version ${version}).`);

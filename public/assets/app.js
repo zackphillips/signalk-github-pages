@@ -225,6 +225,39 @@ function renderEmptyState(containerId, title, subtitle = '') {
     </div>`;
 }
 
+// Panels this load managed to draw. loadData's catch-all only clears the ones
+// that never got there, so a failure late in the render leaves the panels that
+// did work on screen.
+const paintedPanels = new Set();
+
+/**
+ * Draw one panel, and let the other eight live if it cannot.
+ *
+ * The nine grids used to be nine bare `getElementById(...).innerHTML =` writes
+ * in one try block: a missing element or a throw in any one of them took out
+ * the whole dashboard, every panel reading "Data unavailable" over a snapshot
+ * that had downloaded fine. A stale cached index.html against a newer app.js
+ * is exactly how that happens in the wild, and it is not a reason to hide the
+ * boat's position.
+ */
+function paintPanel(containerId, buildHtml) {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    console.warn(`Panel "${containerId}" is not in this page; skipping it.`);
+    return false;
+  }
+  try {
+    container.innerHTML = typeof buildHtml === 'function' ? buildHtml() : buildHtml;
+    paintedPanels.add(containerId);
+    return true;
+  } catch (err) {
+    console.error(`Panel "${containerId}" failed to render:`, err);
+    renderEmptyState(containerId, 'Data unavailable', `This panel failed to render: ${err.message}`);
+    paintedPanels.add(containerId);
+    return false;
+  }
+}
+
 // Pretty-print an already-fetched object into the Data tab's raw-data <pre>
 // blocks. No new network calls — callers pass data this app already fetched.
 function setRawDataPre(id, obj) {
@@ -1940,6 +1973,7 @@ async function loadData() {
 
     console.log('Fetch response status:', res?.status);
     setRawDataPre('raw-signalk-latest', data);
+    paintedPanels.clear();
     const nav = data.navigation || {};
     const elec = data.electrical || {};
     const env = data.environment || {};
@@ -2147,7 +2181,7 @@ async function loadData() {
     const tankValueWithBadge = (level, valueDisplay, waste = false, zones = null) =>
       colorValue(valueDisplay, classifyByZones(level, zones) || (waste ? classifyWasteTank(level) : classifyTankLevel(level)));
 
-    document.getElementById('navigation-grid').innerHTML = `
+    paintPanel('navigation-grid', () => `
       <div class="info-item" title="${withUpdated('Current vessel latitude position', nav.position)}"><div class="label">Latitude</div><div class="value">${lat?.toFixed(6) ?? 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Current vessel longitude position', nav.position)}"><div class="label">Longitude</div><div class="value">${lon?.toFixed(6) ?? 'N/A'}</div></div>
       <div class="info-item" data-path="navigation.speedOverGround" data-label="SOG" data-unit-group="speed" data-raw="${nav.speedOverGround?.value ?? ''}" title="${withUpdated('Speed Over Ground - actual speed relative to the seabed', nav.speedOverGround)}"><div class="label">SOG</div><div class="value">${fmtUnit('speed', nav.speedOverGround?.value)}</div></div>
@@ -2161,10 +2195,10 @@ async function loadData() {
       <div class="info-item" data-path="steering.rudderAngle" data-label="Rudder Angle" data-unit-group="angle" data-raw="${data.steering?.rudderAngle?.value ?? ''}" title="${withUpdated('Current rudder angle - positive is starboard, negative is port', data.steering?.rudderAngle)}"><div class="label">Rudder Angle</div><div class="value">${fmtUnit('angle', data.steering?.rudderAngle?.value)}</div></div>
       <div class="info-item" data-path="navigation.anchor.currentRadius" data-label="Anchor Distance" data-unit-group="length" data-raw="${nav.anchor?.currentRadius?.value ?? ''}" title="${withUpdated('Distance from anchor position - red if outside safe radius', nav.anchor?.currentRadius)}"><div class="label">Anchor Distance</div>${anchorValueHtml}</div>
       <div class="info-item" data-path="navigation.anchor.bearingTrue" data-label="Anchor Bearing" title="${withUpdated('Bearing to anchor position from current location', nav.anchor?.bearingTrue)}"><div class="label">Anchor Bearing</div><div class="value">${nav.anchor?.bearingTrue?.value ? (nav.anchor.bearingTrue.value * 180 / Math.PI).toFixed(0) + '°' : 'N/A'}</div></div>
-    `;
+    `);
 
     // Update wind data
-    document.getElementById('wind-grid').innerHTML = `
+    paintPanel('wind-grid', () => `
       <div class="info-item" data-path="environment.wind.speedTrue" data-label="Wind Speed" data-unit-group="speed" data-raw="${env.wind?.speedTrue?.value ?? ''}" title="${withUpdated('True wind speed - actual wind speed in the atmosphere', env.wind?.speedTrue)}"><div class="label">True Wind Speed</div><div class="value">${fmtUnit('speed', env.wind?.speedTrue?.value)}</div></div>
       <div class="info-item" data-path="environment.wind.angleTrue" data-label="Wind Dir" data-unit-group="angle" data-raw="${env.wind?.angleTrue?.value ?? ''}" title="${withUpdated('True wind direction - actual wind direction relative to true north', env.wind?.angleTrue)}"><div class="label">True Wind Dir</div><div class="value">${fmtUnit('angle', env.wind?.angleTrue?.value)}</div></div>
       <div class="info-item" data-path="environment.wind.angleApparent" data-label="Apparent Wind Angle" data-unit-group="angle" data-raw="${data.environment?.wind?.angleApparent?.value ?? ''}" title="${withUpdated('Apparent wind angle - wind direction relative to vessel heading', data.environment?.wind?.angleApparent)}"><div class="label">Apparent Angle</div><div class="value">${fmtUnit('angle', data.environment?.wind?.angleApparent?.value)}</div></div>
@@ -2172,10 +2206,10 @@ async function loadData() {
       <div class="info-item" data-path="environment.wind.oneMinute.gustTrue" data-label="1-Min Gust" data-unit-group="speed" data-raw="${env.wind?.oneMinute?.gustTrue?.value ?? ''}" title="${withUpdated('Maximum true wind gust over the past 1 minute', env.wind?.oneMinute?.gustTrue)}"><div class="label">1-Min Gust</div><div class="value">${fmtUnit('speed', env.wind?.oneMinute?.gustTrue?.value)}</div></div>
       <div class="info-item" data-path="environment.wind.fiveMinutes.gustTrue" data-label="5-Min Gust" data-unit-group="speed" data-raw="${env.wind?.fiveMinutes?.gustTrue?.value ?? ''}" title="${withUpdated('Maximum true wind gust over the past 5 minutes', env.wind?.fiveMinutes?.gustTrue)}"><div class="label">5-Min Gust</div><div class="value">${fmtUnit('speed', env.wind?.fiveMinutes?.gustTrue?.value)}</div></div>
       <div class="info-item" data-path="environment.wind.oneHour.gustTrue" data-label="1-Hour Gust" data-unit-group="speed" data-raw="${env.wind?.oneHour?.gustTrue?.value ?? ''}" title="${withUpdated('Maximum true wind gust over the past 1 hour', env.wind?.oneHour?.gustTrue)}"><div class="label">1-Hour Gust</div><div class="value">${fmtUnit('speed', env.wind?.oneHour?.gustTrue?.value)}</div></div>
-    `;
+    `);
 
     // Update power data
-    document.getElementById('power-grid').innerHTML = `
+    paintPanel('power-grid', () => `
       <div class="info-item" data-path="electrical.batteries.house.voltage" data-label="Battery Voltage" title="${withUpdated('House battery bank voltage', elec.batteries?.house?.voltage)}"><div class="label">Battery Voltage</div><div class="value">${elec.batteries?.house?.voltage?.value?.toFixed(2) ?? 'N/A'} V</div></div>
       <div class="info-item" data-path="electrical.batteries.house.current" data-label="Battery Current" title="${withUpdated('House battery bank current - positive is charging, negative is discharging', elec.batteries?.house?.current)}"><div class="label">Battery Current</div><div class="value">${elec.batteries?.house?.current?.value?.toFixed(1) ?? 'N/A'} A</div></div>
       <div class="info-item" data-path="electrical.batteries.house.power" data-label="Battery Power" title="${withUpdated('House battery bank power consumption or generation', elec.batteries?.house?.power)}"><div class="label">Battery Power</div><div class="value">${elec.batteries?.house?.power?.value?.toFixed(1) ?? 'N/A'} W</div></div>
@@ -2187,10 +2221,10 @@ async function loadData() {
       <div class="info-item" data-path="electrical.solar.bimini.yieldToday" data-label="Solar Yield Today" title="${withUpdated('Total solar energy generated today from bimini array', elec.solar?.bimini?.yieldToday)}"><div class="label">Solar Yield Today</div><div class="value">${elec.solar?.bimini?.yieldToday?.value != null ? (elec.solar.bimini.yieldToday.value / 3600).toFixed(0) + ' Wh' : 'N/A'}</div></div>
       <div class="info-item" data-path="electrical.batteries.house.capacity.dischargeSinceFull" data-label="Discharge Since Full" title="${withUpdated('Amp-hours drawn from the house bank since last full charge', elec.batteries?.house?.capacity?.dischargeSinceFull)}"><div class="label">Discharge Since Full</div><div class="value">${elec.batteries?.house?.capacity?.dischargeSinceFull?.value != null ? (elec.batteries.house.capacity.dischargeSinceFull.value / 3600).toFixed(1) + ' Ah' : 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Solar charge controller mode (off / bulk / absorption / float)', elec.solar?.bimini?.chargingMode)}"><div class="label">Solar Mode</div><div class="value value-text">${elec.solar?.bimini?.chargingMode?.value ?? 'N/A'}</div></div>
-    `;
+    `);
 
     // Update the vessel information with static vessel data
-    document.getElementById('vessel-grid').innerHTML = `
+    paintPanel('vessel-grid', () => `
       <div class="info-item" data-unit-group="length" data-raw="${data.design?.length?.value?.overall ?? ''}" title="${withUpdated('Overall vessel length from bow to stern', data.design?.length)}"><div class="label">Vessel Length</div><div class="value">${fmtUnit('length', data.design?.length?.value?.overall)}</div></div>
       <div class="info-item" data-unit-group="length" data-raw="${data.design?.beam?.value ?? ''}" title="${withUpdated('Vessel beam - maximum width of the vessel', data.design?.beam)}"><div class="label">Vessel Beam</div><div class="value">${fmtUnit('length', data.design?.beam?.value)}</div></div>
       <div class="info-item" data-unit-group="length" data-raw="${data.design?.draft?.value?.maximum ?? ''}" title="${withUpdated('Maximum vessel draft - depth below waterline', data.design?.draft)}"><div class="label">Vessel Draft</div><div class="value">${fmtUnit('length', data.design?.draft?.value?.maximum)}</div></div>
@@ -2200,7 +2234,7 @@ async function loadData() {
       <div class="info-item" title="${withUpdated('VHF radio callsign', data.communication)}"><div class="label">Callsign</div><div class="value value-text">${data.communication?.callsignVhf || 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Hull Number (Assigned by Beneteau)', vesselData)}"><div class="label">Hull #</div><div class="value value-text">${vesselData?.hull_number || 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('US Coast Guard vessel registration number', vesselData)}"><div class="label">USCG #</div><div class="value value-text">${vesselData?.uscg_number || 'N/A'}</div></div>
-    `;
+    `);
 
     const isNumericValue = (val) => typeof val === 'number' && Number.isFinite(val);
     const toPercent = (val, digits = 0) =>
@@ -2214,7 +2248,7 @@ async function loadData() {
       return levelDisplay !== 'N/A' ? levelDisplay : (volumeDisplay || 'N/A');
     };
     // Update onboard sensor readings (water/inside temp, humidity, air quality, sun times)
-    document.getElementById('sensors-grid').innerHTML = `
+    paintPanel('sensors-grid', () => `
       <div class="info-item" data-path="environment.water.temperature" data-label="Water Temp" data-unit-group="temperature" data-raw="${env.water?.temperature?.value ?? ''}" title="${withUpdated('Water temperature at the surface', env.water?.temperature)}"><div class="label">Water Temp</div><div class="value">${fmtUnit('temperature', env.water?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.inside.temperature" data-label="Inside Temp" data-unit-group="temperature" data-raw="${data.environment?.inside?.temperature?.value ?? ''}" title="${withUpdated('Inside air temperature from BME280 sensor', data.environment?.inside?.temperature)}"><div class="label">Inside Temp</div><div class="value">${fmtUnit('temperature', data.environment?.inside?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.inside.humidity" data-label="Inside Humidity" title="${withUpdated('Inside humidity from BME280 sensor', data.environment?.inside?.humidity)}"><div class="label">Inside Humidity</div><div class="value">${data.environment?.inside?.humidity?.value ? (data.environment.inside.humidity.value * 100).toFixed(1) + '%' : 'N/A'}</div></div>
@@ -2224,35 +2258,35 @@ async function loadData() {
       <div class="info-item" data-path="navigation.magneticVariation" data-label="Magnetic Variation" title="${withUpdated('Magnetic variation at current position - difference between true and magnetic north', data.navigation?.magneticVariation)}"><div class="label">Magnetic Variation</div><div class="value">${data.navigation?.magneticVariation?.value ? (data.navigation.magneticVariation.value * 180 / Math.PI).toFixed(1) + '°' : 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Sunrise time today', data.environment?.sunlight?.times?.sunrise)}"><div class="label">Sunrise</div><div class="value">${data.environment?.sunlight?.times?.sunrise?.value ? new Date(data.environment.sunlight.times.sunrise.value).toLocaleTimeString() : 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Sunset time today', data.environment?.sunlight?.times?.sunset)}"><div class="label">Sunset</div><div class="value">${data.environment?.sunlight?.times?.sunset?.value ? new Date(data.environment.sunlight.times.sunset.value).toLocaleTimeString() : 'N/A'}</div></div>
-    `;
+    `);
 
-    document.getElementById('internet-grid').innerHTML = `
+    paintPanel('internet-grid', () => `
       <div class="info-item" title="${withUpdated('Internet service provider', internet.ISP)}"><div class="label">ISP</div><div class="value value-text">${internet.ISP?.value || 'N/A'}</div></div>
       <div class="info-item" data-path="internet.speed.download" data-label="Download" title="${withUpdated('Download speed', internet.speed?.download)}"><div class="label">Download</div><div class="value">${isNumericValue(internet.speed?.download?.value) ? internet.speed.download.value.toFixed(1) + ' Mbps' : 'N/A'}</div></div>
       <div class="info-item" data-path="internet.speed.upload" data-label="Upload" title="${withUpdated('Upload speed', internet.speed?.upload)}"><div class="label">Upload</div><div class="value">${isNumericValue(internet.speed?.upload?.value) ? internet.speed.upload.value.toFixed(1) + ' Mbps' : 'N/A'}</div></div>
       <div class="info-item" data-path="internet.ping.latency" data-label="Latency" title="${withUpdated('Ping latency', internet.ping?.latency)}"><div class="label">Latency</div><div class="value">${isNumericValue(internet.ping?.latency?.value) ? internet.ping.latency.value.toFixed(1) + ' ms' : 'N/A'}</div></div>
       <div class="info-item" data-path="internet.ping.jitter" data-label="Jitter" title="${withUpdated('Ping jitter', internet.ping?.jitter)}"><div class="label">Jitter</div><div class="value">${isNumericValue(internet.ping?.jitter?.value) ? internet.ping.jitter.value.toFixed(1) + ' ms' : 'N/A'}</div></div>
       <div class="info-item" data-path="internet.packetLoss" data-label="Packet Loss" title="${withUpdated('Packet loss percentage', internet.packetLoss)}"><div class="label">Packet Loss</div>${packetLossHtml}</div>
-    `;
+    `);
 
     // Update system health (RPi)
     const rpi = env.rpi || {};
     const fmtCelsius = (k) => Number.isFinite(k) ? `${(k - 273.15).toFixed(1)} °C` : 'N/A';
     const fmtPercent = (v) => Number.isFinite(v) ? `${(v * 100).toFixed(0)}%` : 'N/A';
-    document.getElementById('system-grid').innerHTML = `
+    paintPanel('system-grid', () => `
       <div class="info-item" data-path="environment.rpi.cpu.temperature" data-label="CPU Temp" data-unit-group="temperature" data-raw="${rpi.cpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi CPU temperature', rpi.cpu?.temperature)}"><div class="label">CPU Temp</div><div class="value">${fmtCelsius(rpi.cpu?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.gpu.temperature" data-label="GPU Temp" data-unit-group="temperature" data-raw="${rpi.gpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi GPU temperature', rpi.gpu?.temperature)}"><div class="label">GPU Temp</div><div class="value">${fmtCelsius(rpi.gpu?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.cpu.utilisation" data-label="CPU Use" title="${withUpdated('Raspberry Pi CPU utilisation', rpi.cpu?.utilisation)}"><div class="label">CPU Use</div><div class="value">${fmtPercent(rpi.cpu?.utilisation?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.memory.utilisation" data-label="RAM Use" title="${withUpdated('Raspberry Pi memory utilisation', rpi.memory?.utilisation)}"><div class="label">RAM Use</div><div class="value">${fmtPercent(rpi.memory?.utilisation?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.sd.utilisation" data-label="SD Use" title="${withUpdated('Raspberry Pi SD card utilisation', rpi.sd?.utilisation)}"><div class="label">SD Use</div><div class="value">${fmtPercent(rpi.sd?.utilisation?.value)}</div></div>
-    `;
+    `);
 
     const propulsion = data.propulsion?.port || {};
     const rpmValue = propulsion.revolutions?.value;
-    document.getElementById('propulsion-grid').innerHTML = `
+    paintPanel('propulsion-grid', () => `
       <div class="info-item" title="${withUpdated('Engine state', propulsion.state)}"><div class="label">State</div><div class="value value-text">${propulsion.state?.value || 'N/A'}</div></div>
       <div class="info-item" data-path="propulsion.port.revolutions" data-label="RPM" data-unit-group="rotation" data-raw="${rpmValue ?? ''}" title="${withUpdated('Engine revolutions per minute', propulsion.revolutions)}"><div class="label">RPM</div><div class="value">${fmtUnit('rotation', rpmValue)}</div></div>
-    `;
+    `);
 
     const tanks = data.tanks || {};
     const fuelMain = tanks.fuel?.['0'] || {};
@@ -2263,7 +2297,7 @@ async function loadData() {
     const propaneB = tanks.propane?.b || {};
     const blackwaterBow = tanks.blackwater?.bow || {};
     const liveWell0 = tanks.liveWell?.['0'] || {};
-    document.getElementById('tanks-grid').innerHTML = `
+    paintPanel('tanks-grid', () => `
       <div class="info-item" data-path="tanks.fuel.0.currentLevel" data-label="Fuel (Main)" data-unit-group="volume" data-raw="${fuelMain.currentVolume?.value ?? ''}" data-level="${toPercent(fuelMain.currentLevel?.value)}" title="${withUpdatedNodes('Main fuel tank level, volume, and temperature (if available)', fuelMain.currentLevel, fuelMain.currentVolume, fuelMain.temperature)}"><div class="label">Fuel (Main)</div>${tankValueWithBadge(fuelMain.currentLevel?.value, formatTankDisplay(fuelMain.currentLevel?.value, fuelMain.currentVolume?.value), false, fuelMain.currentLevel?.meta?.zones)}</div>
       <div class="info-item" data-path="tanks.fuel.reserve.currentLevel" data-label="Fuel (Reserve)" data-unit-group="volume" data-raw="${fuelReserve.currentVolume?.value ?? ''}" data-level="${toPercent(fuelReserve.currentLevel?.value)}" title="${withUpdatedNodes('Reserve fuel tank level, volume, and temperature (if available)', fuelReserve.currentLevel, fuelReserve.currentVolume, fuelReserve.temperature)}"><div class="label">Fuel (Reserve)</div>${tankValueWithBadge(fuelReserve.currentLevel?.value, formatTankDisplay(fuelReserve.currentLevel?.value, fuelReserve.currentVolume?.value), false, fuelReserve.currentLevel?.meta?.zones)}</div>
       <div class="info-item" data-path="tanks.freshWater.0.currentLevel" data-label="Fresh Water 1" data-unit-group="volume" data-raw="${freshWater0.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater0.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 1 level and volume', freshWater0.currentLevel, freshWater0.currentVolume)}"><div class="label">Fresh Water 1</div>${tankValueWithBadge(freshWater0.currentLevel?.value, formatTankDisplay(freshWater0.currentLevel?.value, freshWater0.currentVolume?.value), false, freshWater0.currentLevel?.meta?.zones)}</div>
@@ -2272,11 +2306,20 @@ async function loadData() {
       <div class="info-item" data-path="tanks.propane.b.currentLevel" data-label="Propane B" title="${withUpdatedNodes('Propane tank B level and temperature', propaneB.currentLevel, propaneB.temperature)}"><div class="label">Propane B</div>${tankValueWithBadge(propaneB.currentLevel?.value, formatTankDisplay(propaneB.currentLevel?.value, null), false, propaneB.currentLevel?.meta?.zones)}</div>
       <div class="info-item" data-path="tanks.blackwater.bow.currentLevel" data-label="Blackwater" title="${withUpdatedNodes('Blackwater tank level and temperature', blackwaterBow.currentLevel, blackwaterBow.temperature)}"><div class="label">Blackwater</div>${tankValueWithBadge(blackwaterBow.currentLevel?.value, formatTankDisplay(blackwaterBow.currentLevel?.value, null), true, blackwaterBow.currentLevel?.meta?.zones)}</div>
       <div class="info-item" data-path="tanks.liveWell.0.currentLevel" data-label="Bilge" title="${withUpdated('Bilge level', liveWell0.currentLevel)}"><div class="label">Bilge</div>${tankValueWithBadge(liveWell0.currentLevel?.value, formatTankDisplay(liveWell0.currentLevel?.value, null), true, liveWell0.currentLevel?.meta?.zones)}</div>
-    `;
+    `);
 
-    // Render alert summary and inline sparklines now that all info-item cards are in the DOM.
-    renderAlertSummary();
-    initInlineSparklines();
+    // Render alert summary and inline sparklines now that all info-item cards
+    // are in the DOM. Neither is worth losing the other, or the panels above.
+    try {
+      renderAlertSummary();
+    } catch (err) {
+      console.error('Alert summary failed to render:', err);
+    }
+    try {
+      initInlineSparklines();
+    } catch (err) {
+      console.error('Inline sparklines failed to start:', err);
+    }
   } catch (err) {
     console.error("Failed to load data:", err);
     console.error("Error details:", err.message);
@@ -2285,8 +2328,12 @@ async function loadData() {
     const statusHero = document.getElementById('status-hero');
     if (statusHero) statusHero.classList.add('stale');
 
-    Object.keys(PANEL_SKELETONS).forEach((id) =>
-      renderEmptyState(id, 'Data unavailable', 'Could not load vessel data.'));
+    // Only the panels this load never reached: whatever did render is real
+    // data and more use on screen than a uniform wall of "unavailable".
+    Object.keys(PANEL_SKELETONS)
+      .filter((id) => !paintedPanels.has(id))
+      .forEach((id) =>
+        renderEmptyState(id, 'Data unavailable', `Could not load vessel data: ${err.message}`));
   }
 }
 

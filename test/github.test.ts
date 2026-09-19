@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GitHubClient, GitHubError, publishFiles } from '../src/github';
+import { GitHubClient, GitHubError, publishFiles, tokenHint } from '../src/github';
 import { FakeGitHub } from './helpers/fakeGitHub';
 
 const makeClient = (fake: FakeGitHub) =>
@@ -92,5 +92,23 @@ describe('GitHubClient', () => {
     const first = await client.listTree();
     fake.commitFile('docs/a.md', '# A renamed');
     expect((await client.listTree(first.etag)).changed).toBe(true);
+  });
+});
+
+describe('tokenHint', () => {
+  it('names the permission people actually miss on a 403', () => {
+    // A token with only Metadata reads the repository fine and fails on the
+    // first commit, which looks nothing like a permissions problem in a log.
+    expect(tokenHint(403, 'owner/site')).toContain('Contents: Read and write');
+  });
+
+  it('separates a rejected token from a repository the token cannot see', () => {
+    expect(tokenHint(401, 'owner/site')).toContain('expiry');
+    expect(tokenHint(404, 'owner/site')).toContain('owner/site is not visible');
+  });
+
+  it('says nothing about the token for a failure that is not about it', () => {
+    expect(tokenHint(502, 'owner/site')).toBe('');
+    expect(tokenHint(undefined, 'owner/site')).toBe('');
   });
 });
