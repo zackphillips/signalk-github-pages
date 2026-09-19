@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "name": "Sample Vessel",
+  "mmsi": "000000000",
+  "navigation": {
+    "position": {
+      "value": {
+        "latitude": 37.938,
+        "longitude": -122.5385
+      },
+      "timestamp": "2026-03-01T20:00:00Z"
+    },
+    "speedOverGround": {
+      "value": 4.1,
+      "timestamp": "2026-03-01T20:00:00Z"
+    },
+    "headingTrue": {
+      "value": 2.3,
+      "timestamp": "2026-03-01T20:00:00Z"
+    },
+    "state": {
+      "value": "sailing",
+      "timestamp": "2026-03-01T20:00:00Z"
+    }
+  },
+  "environment": {
+    "wind": {
+      "speedApparent": {
+        "value": 8.2,
+        "timestamp": "2026-03-01T20:00:00Z"
+      },
+      "angleApparent": {
+        "value": 0.75,
+        "timestamp": "2026-03-01T20:00:00Z"
+      }
+    },
+    "depth": {
+      "belowTransducer": {
+        "value": 21.5,
+        "timestamp": "2026-03-01T20:00:00Z"
+      }
+    },
+    "water": {
+      "temperature": {
+        "value": 285.4,
+        "timestamp": "2026-03-01T20:00:00Z"
+      }
+    }
+  },
+  "electrical": {
+    "batteries": {
+      "house": {
+        "voltage": {
+          "value": 12.8,
+          "timestamp": "2026-03-01T20:00:00Z"
+        },
+        "stateOfCharge": {
+          "value": 0.78,
+          "timestamp": "2026-03-01T20:00:00Z"
+        }
+      }
+    }
+  },
+  "tanks": {
+    "freshWater": {
+      "0": {
+        "currentLevel": {
+          "value": 0.56,
+          "timestamp": "2026-03-01T20:00:00Z"
+        }
+      }
+    }
+  }
+}

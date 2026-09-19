@@ -1,0 +1,6 @@
+Disables Jekyll on GitHub Pages.
+
+Without this file Pages runs the source tree through Jekyll, which converts
+docs/*.md into docs/*.html and stops serving the raw Markdown. docs.html fetches
+the .md files verbatim and renders them in the browser, so they must be served
+as-is. Do not delete.

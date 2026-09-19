@@ -1,0 +1,8 @@
+# Sample vessel config for the dev server. The plugin writes this file in a
+# real installation; this copy exists only so `npm run dev` has something to
+# render.
+theme: "mermug"
+name: "Sample Vessel"
+mmsi: "000000000"
+timezone: "America/Los_Angeles"
+privacy_zones: []
