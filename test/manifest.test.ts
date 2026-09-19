@@ -1,0 +1,79 @@
+import { describe, expect, it } from 'vitest';
+import { isOwnedPath, matchesPattern, partitionOwned, renderManifest } from '../src/manifest';
+
+const FULL = { buildDocsIndex: true, publishFrontend: true };
+
+describe('matchesPattern', () => {
+  it('matches a literal path', () => {
+    expect(matchesPattern('index.html', 'index.html')).toBe(true);
+    expect(matchesPattern('index.html', 'docs.html')).toBe(false);
+  });
+
+  it('treats ** as any number of segments', () => {
+    expect(matchesPattern('data/telemetry/**', 'data/telemetry/tracks/2026-03-01.gpx')).toBe(true);
+    expect(matchesPattern('data/telemetry/**', 'data/vessel/logo.png')).toBe(false);
+  });
+});
+
+describe('ownership', () => {
+  it('owns the telemetry, the frontend and the generated config', () => {
+    for (const path of [
+      'data/telemetry/positions_index.json',
+      'data/telemetry/tracks/2026-03-01.gpx',
+      'data/vessel/info.yaml',
+      'docs/index.json',
+      'assets/app.js',
+      'index.html',
+      '.nojekyll',
+    ]) {
+      expect(isOwnedPath(path, FULL), path).toBe(true);
+    }
+  });
+
+  it("never owns the user's own files", () => {
+    for (const path of [
+      'docs/mob-procedure.md',
+      'data/vessel/logo.png',
+      'data/vessel/polars.csv',
+      'README.md',
+      'CNAME',
+      '.github/workflows/pages.yml',
+    ]) {
+      expect(isOwnedPath(path, FULL), path).toBe(false);
+    }
+  });
+
+  it('carves assets/custom.css out of the assets directory it otherwise owns', () => {
+    expect(isOwnedPath('assets/styles.css', FULL)).toBe(true);
+    expect(isOwnedPath('assets/custom.css', FULL)).toBe(false);
+  });
+
+  it('drops the frontend and the docs index when those are turned off', () => {
+    const minimal = { buildDocsIndex: false, publishFrontend: false };
+    expect(isOwnedPath('assets/app.js', minimal)).toBe(false);
+    expect(isOwnedPath('docs/index.json', minimal)).toBe(false);
+    expect(isOwnedPath('data/telemetry/positions_index.json', minimal)).toBe(true);
+  });
+});
+
+describe('partitionOwned', () => {
+  it('separates what may be published from what may not', () => {
+    const { owned, rejected } = partitionOwned(
+      [{ path: 'data/telemetry/signalk_latest.json' }, { path: 'docs/mob-procedure.md' }],
+      FULL,
+    );
+    expect(owned.map((f) => f.path)).toEqual(['data/telemetry/signalk_latest.json']);
+    expect(rejected.map((f) => f.path)).toEqual(['docs/mob-procedure.md']);
+  });
+});
+
+describe('renderManifest', () => {
+  it('lists the owned patterns and the exceptions', () => {
+    const manifest = JSON.parse(
+      renderManifest({ ...FULL, version: '0.1.0', generated: '2026-03-01T12:00:00Z' }),
+    );
+    expect(manifest.owned).toContain('data/telemetry/**');
+    expect(manifest.user_owned_exceptions).toEqual(['assets/custom.css']);
+    expect(manifest.version).toBe('0.1.0');
+  });
+});
