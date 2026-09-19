@@ -2,11 +2,11 @@
  * Ownership manifest — the allowlist of paths this plugin may write.
  *
  * The published repository is shared with its owner: the docs are theirs, the
- * logo and the polars are theirs, `assets/custom.css` is theirs. The plugin
- * writes a manifest listing every path it manages and refuses to put anything
- * outside that list into a commit. It is an allowlist, not a blacklist —
- * anything not named here is the user's by default, including files that do
- * not exist yet.
+ * logo is theirs, `assets/custom.css` is theirs, and so are the polars unless
+ * the config page is what supplies them. The plugin writes a manifest listing
+ * every path it manages and refuses to put anything outside that list into a
+ * commit. It is an allowlist, not a blacklist — anything not named here is the
+ * user's by default, including files that do not exist yet.
  */
 
 export interface ManifestOptions {
@@ -14,12 +14,21 @@ export interface ManifestOptions {
   buildDocsIndex: boolean;
   /** The plugin ships the frontend into the repo. */
   publishFrontend: boolean;
+  /**
+   * A polar table was pasted into the config, so `data/vessel/polars.csv` is
+   * generated rather than hand-committed. Off by default, which is what keeps
+   * a polar file someone committed years ago out of reach of the publisher.
+   */
+  publishPolars?: boolean;
 }
 
 export const MANIFEST_PATH = '.tracker-manifest.json';
 
 /** Paths written every cycle, whatever the configuration. */
 const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/info.yaml'];
+
+/** The polar table, owned only while the config page supplies one. */
+export const POLARS_PATTERN = 'data/vessel/polars.csv';
 
 /** Paths written on install and after a version upgrade. */
 const FRONTEND_PATTERNS = [
@@ -39,6 +48,7 @@ export function ownedPatterns(options: ManifestOptions): string[] {
   const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS];
   if (options.publishFrontend) patterns.push(...FRONTEND_PATTERNS);
   if (options.buildDocsIndex) patterns.push('docs/index.json');
+  if (options.publishPolars) patterns.push(POLARS_PATTERN);
   return patterns;
 }
 

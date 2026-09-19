@@ -177,6 +177,83 @@ describe('Publisher', () => {
     expect(second.passage).toEqual({ from: 'SF', to: 'Santa Cruz' });
   });
 
+  it('fills info.yaml from the Signal K tree, not from the config page', async () => {
+    const publisher = makePublisher();
+    await publisher.runCycle({
+      ...tree(),
+      name: 'S.V.Mermug',
+      mmsi: '338543654',
+      communication: { callsignVhf: 'WDL1234' },
+      registrations: {
+        national: { usa: { registrationNumber: '1024168', description: 'USCG documentation' } },
+      },
+      design: { draft: { value: { maximum: 2.13 } }, beam: { value: 3.99 } },
+    });
+    const info = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
+    expect(info.callsign).toBe('WDL1234');
+    expect(info.uscg_number).toBe('1024168');
+    expect(info.design).toEqual({ draft_max_m: 2.13, beam_m: 3.99 });
+  });
+
+  it('picks up a vessel name that only arrives after the plugin started', async () => {
+    // A cold boot runs the first cycle before the first product-information
+    // frame; an identity read once at start would stay "Vessel" until restart.
+    const publisher = new Publisher({
+      client: new GitHubClient({
+        repo: 'owner/site',
+        branch: 'main',
+        token: 'token',
+        fetchImpl: fake.fetch,
+      }),
+      store,
+      config: makeConfig(),
+      identity: { name: 'Vessel', mmsi: '' },
+      publicDir: PUBLIC_DIR,
+      version: '0.1.0',
+      log: (message) => logs.push(message),
+      now: () => new Date('2026-03-01T20:00:00Z'),
+    });
+    const { name: _dropped, ...anonymous } = tree();
+    await publisher.runCycle(anonymous);
+    expect((yaml.load(fake.files.get('data/vessel/info.yaml')!) as any).name).toBe('Vessel');
+
+    await publisher.runCycle(tree());
+    expect((yaml.load(fake.files.get('data/vessel/info.yaml')!) as any).name).toBe('S.V.Mermug');
+  });
+
+  it('publishes a polar table pasted into the config, once', async () => {
+    const publisher = makePublisher({ polars: 'twa/tws;6;10\n52;4.1;5.8\n90;5.0;6.7\n' });
+    const first = await publisher.runCycle(tree());
+    expect(first.files).toContain('data/vessel/polars.csv');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe('twa/tws;6;10\n52;4.1;5.8\n90;5;6.7\n');
+    expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).toContain(
+      'data/vessel/polars.csv',
+    );
+
+    const second = await publisher.runCycle(tree());
+    expect(second.files).not.toContain('data/vessel/polars.csv');
+  });
+
+  it('does not re-upload a polar table the repository already has', async () => {
+    const polars = 'twa/tws;6;10\n52;4.1;5.8\n';
+    fake.commitFile('data/vessel/polars.csv', polars);
+    const publisher = makePublisher({ polars });
+    await publisher.seed();
+    const result = await publisher.runCycle(tree());
+    expect(result.files).not.toContain('data/vessel/polars.csv');
+  });
+
+  it('leaves a hand-committed polars.csv alone when the config has none', async () => {
+    fake.commitFile('data/vessel/polars.csv', 'twa/tws;6\n52;4.1\n');
+    const publisher = makePublisher();
+    const result = await publisher.runCycle(tree());
+    expect(result.files).not.toContain('data/vessel/polars.csv');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe('twa/tws;6\n52;4.1\n');
+    expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).not.toContain(
+      'data/vessel/polars.csv',
+    );
+  });
+
   it('builds the docs index from the published Markdown, skipping drafts', async () => {
     const publisher = makePublisher();
     await publisher.runCycle(tree());

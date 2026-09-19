@@ -14,8 +14,8 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { configSchema, resolveConfig, type PluginConfig } from './config';
-import { GitHubClient } from './github';
+import { configSchema, configUiSchema, resolveConfig, type PluginConfig } from './config';
+import { GitHubClient, tokenHint } from './github';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { readSelfTree, type SelfTreeSource } from './snapshot';
@@ -39,6 +39,7 @@ interface Plugin {
   name: string;
   description: string;
   schema: unknown;
+  uiSchema: unknown;
   start: (options: unknown) => void;
   stop: () => void;
 }
@@ -53,6 +54,12 @@ function lanAddress(): string | undefined {
   return undefined;
 }
 
+/**
+ * What only the server process knows: the address the site links back to, and
+ * an MMSI to fall back on. Everything else about the boat — callsign,
+ * registrations, dimensions — is read off the tree on every cycle, where it
+ * arrives after the plugin has already started.
+ */
 function readIdentity(app: SignalKApp): VesselIdentity {
   const name = typeof app.getSelfPath?.('name') === 'string' ? app.getSelfPath!('name') : '';
   const rawMmsi = app.getSelfPath?.('mmsi');
@@ -86,6 +93,7 @@ module.exports = function (app: SignalKApp): Plugin {
     description:
       'Publishes position, tracks and instrument history to a GitHub Pages site.',
     schema: configSchema,
+    uiSchema: configUiSchema,
 
     start(options: unknown) {
       stopped = false;
@@ -105,6 +113,9 @@ module.exports = function (app: SignalKApp): Plugin {
         return;
       }
       const config: PluginConfig = resolved.config;
+      // Warnings resolve to something usable, so they never stop a start; they
+      // are the settings most likely to be the reason the site looks wrong.
+      for (const warning of resolved.warnings) app.error(`Config: ${warning}`);
 
       if (config.timezone && !isValidTimezone(config.timezone)) {
         app.error(
@@ -120,7 +131,8 @@ module.exports = function (app: SignalKApp): Plugin {
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +
-          `tracks grouped by ${config.timezone || 'UTC'}.`,
+          `tracks grouped by ${config.timezone || 'UTC'}, ` +
+          `${config.polars ? 'polars from the config page' : 'no polars in the config'}.`,
       );
       if (config.privacyZones.length === 0) {
         app.debug('No privacy zones set: every position is published exactly as received.');
@@ -183,7 +195,8 @@ module.exports = function (app: SignalKApp): Plugin {
           const message = error?.message ?? String(error);
           const detail = error?.status ? ` (HTTP ${error.status}: ${error.body ?? ''})` : '';
           app.error(
-            `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}`,
+            `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}` +
+              tokenHint(error?.status, config.github.repo),
           );
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,

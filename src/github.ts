@@ -43,6 +43,34 @@ export class GitHubError extends Error {
   }
 }
 
+/**
+ * What a failing status usually means for the token.
+ *
+ * All three of these look identical in a stack trace and have completely
+ * different fixes, and the one people hit is 403: a token made without
+ * "Contents: read and write" reads the repository perfectly and fails on the
+ * first commit.
+ */
+export function tokenHint(status: number | undefined, repo: string): string {
+  if (status === 401) {
+    return ' The token was rejected: it is wrong, revoked, or past its expiry date.';
+  }
+  if (status === 403) {
+    return (
+      ` The token can reach GitHub but may not write ${repo}. A fine-grained token needs` +
+      ' Contents: Read and write on this repository, and an organisation-owned repository' +
+      " needs an owner to approve the token; a classic token needs the 'repo' scope."
+    );
+  }
+  if (status === 404) {
+    return (
+      ` ${repo} is not visible to this token. Check the owner and the repository name, and` +
+      " that the token's repository access includes this one."
+    );
+  }
+  return '';
+}
+
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**

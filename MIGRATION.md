@@ -51,14 +51,23 @@ Copy the values out of `data/vessel/info.yaml` into the plugin config page:
 | `info.yaml` | Plugin config |
 |---|---|
 | `privacy_zones` | `privacyZones[]` |
-| `timezone` | `timezone` |
+| `timezone` | `timezone` — pick the same zone from the dropdown |
 | `theme` | `site.theme` |
 | `marinetraffic_ship_id` | `site.marinetrafficShipId` |
 | `postgsail_logs_url` | `site.postgsailLogsUrl` |
-| `uscg_number`, `hull_number` | `site.uscgNumber`, `site.hullNumber` |
-| `name`, `mmsi` | nothing — read from the server |
+| `uscg_number`, `hull_number` | nothing, if the server carries them as registrations; `site.uscgNumber` / `site.hullNumber` if it does not |
+| `name`, `mmsi`, `callsign` | nothing — read from the server |
 | `passage` | nothing — stays in the file, preserved on rewrite |
 | `signalk.host`, `signalk.port` | nothing — read from the server |
+
+The repository field is two boxes, `github.owner` and `github.name`. A config
+written against the old single `owner/name` field keeps working until the next
+save, and the two boxes are filled from it — but fill them in yourself while
+you are on the page.
+
+`data/vessel/polars.csv` can move onto the config page too: paste the table
+into the `polars` field and the plugin publishes it. Leave the field empty to
+go on managing the file by hand, which is what happens if you do nothing.
 
 The daemon's constants are the plugin's defaults, so there is nothing to copy
 unless you want to change them:
@@ -119,8 +128,9 @@ package on install and after every upgrade. Frontend changes belong in the
 plugin repository from that point on. Anything you want to keep local goes in
 `assets/custom.css`, which the plugin never writes and both pages load last.
 
-`docs/*.md`, `data/vessel/logo.png` and `data/vessel/polars.csv` are yours and
-are never written.
+`docs/*.md` and `data/vessel/logo.png` are yours and are never written.
+`data/vessel/polars.csv` is too, unless you paste a polar table into the
+config page — then the plugin owns it and says so in the manifest.
 
 ## 6. Update the repository's own docs
 

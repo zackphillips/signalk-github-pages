@@ -48,6 +48,12 @@ describe('ownership', () => {
     expect(isOwnedPath('assets/custom.css', FULL)).toBe(false);
   });
 
+  it('leaves the polar table alone until the config page supplies one', () => {
+    // A polars.csv committed by hand years ago is not the plugin's to rewrite.
+    expect(isOwnedPath('data/vessel/polars.csv', FULL)).toBe(false);
+    expect(isOwnedPath('data/vessel/polars.csv', { ...FULL, publishPolars: true })).toBe(true);
+  });
+
   it('drops the frontend and the docs index when those are turned off', () => {
     const minimal = { buildDocsIndex: false, publishFrontend: false };
     expect(isOwnedPath('assets/app.js', minimal)).toBe(false);
@@ -73,6 +79,17 @@ describe('renderManifest', () => {
       renderManifest({ ...FULL, version: '0.1.0', generated: '2026-03-01T12:00:00Z' }),
     );
     expect(manifest.owned).toContain('data/telemetry/**');
+    expect(manifest.owned).not.toContain('data/vessel/polars.csv');
+    expect(
+      JSON.parse(
+        renderManifest({
+          ...FULL,
+          publishPolars: true,
+          version: '0.1.0',
+          generated: '2026-03-01T12:00:00Z',
+        }),
+      ).owned,
+    ).toContain('data/vessel/polars.csv');
     expect(manifest.user_owned_exceptions).toEqual(['assets/custom.css']);
     expect(manifest.version).toBe('0.1.0');
   });
