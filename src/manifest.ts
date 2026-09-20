@@ -57,6 +57,22 @@ const FRONTEND_PATTERNS = [
 /** Never written, even though it sits under an owned directory. */
 export const USER_OWNED_EXCEPTIONS = ['assets/custom.css'];
 
+/**
+ * Paths the console may write once, on request, and never again.
+ *
+ * Seeded is not owned. These are documents: the plugin creates them when a
+ * person asks it to and the path does not exist yet, and from that moment
+ * they belong to the owner like every other file under `docs/`. No cycle
+ * writes them, nothing rewrites them on upgrade, and deleting one is not
+ * undone by the next publish. They are listed in the manifest so the answer
+ * to "what put this here?" is in the repository rather than in a changelog.
+ */
+export const SEEDED_PATTERNS = [
+  'docs/AGENTS.md',
+  'docs/ships-docs.md',
+  'docs/maintenance/log.md',
+];
+
 export function ownedPatterns(options: ManifestOptions): string[] {
   const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS];
   if (options.buildDocsIndex) patterns.push('docs/index.json');
@@ -130,6 +146,12 @@ export function renderManifest(
         'be overwritten. Everything else in this repository belongs to you.',
       owned: ownedPatterns(options),
       user_owned_exceptions: USER_OWNED_EXCEPTIONS,
+      seeded_note:
+        'Paths listed under "seeded" are created once, from the plugin console, ' +
+        'only when they do not already exist. They are yours after that: nothing ' +
+        'here rewrites or deletes them. The maintenance log is appended to, at ' +
+        'the top, when you add an entry from the console.',
+      seeded: SEEDED_PATTERNS,
     },
     null,
     2,

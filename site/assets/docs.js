@@ -438,6 +438,66 @@ async function showDoc(slug, { scrollToHash = true } = {}) {
   }
 }
 
+/**
+ * What the Docs page says before there are any documents.
+ *
+ * A published site with an empty `docs/` used to render one grey line — "No
+ * documents yet. Add a Markdown file under docs/" — which is true and tells
+ * nobody what to do next. The plugin has a button for exactly this, and the
+ * starter set it writes includes the AGENTS.md that makes an agent useful
+ * here, so this is the page that says so. It disappears the moment a single
+ * .md file is committed.
+ */
+function showEmptyState() {
+  activeSlug = null;
+  activeToc = [];
+  expandedToc = new Set();
+  el.header.style.display = 'none';
+  el.article.innerHTML = `
+    <div class="docs-empty">
+      <h2>No ship's documents yet</h2>
+      <p>
+        <code>docs/</code> in this repository is empty. It is where the boat's own
+        documentation lives — procedures, systems notes, the maintenance log —
+        written as plain Markdown and rendered by this page. There is no build
+        step and no admin panel: a document exists as soon as its
+        <code>.md</code> file is committed.
+      </p>
+      <h3>Start it from the boat</h3>
+      <p>
+        Open the Signal K server on the boat's network, go to <strong>Webapps →
+        GitHub Pages Tracker</strong>, and press <strong>Initialize ship's
+        docs</strong>. It commits a start-here page and an
+        <code>AGENTS.md</code> that spells out the conventions, and nothing
+        else. It refuses to run once any document exists, so it can never
+        overwrite work already here.
+      </p>
+      <h3>Or start it by hand</h3>
+      <p>
+        Commit any <code>.md</code> file under <code>docs/</code> — from the
+        GitHub web UI on a phone, if that is what you have aboard. The plugin
+        rebuilds the index within a couple of minutes and the document appears
+        in the sidebar.
+      </p>
+      <h3>Then keep it up with an agent</h3>
+      <p>
+        Once <code>docs/AGENTS.md</code> is in place, point a coding agent at
+        the repository and let it read that file first. It carries the front
+        matter and category conventions, the house rules for writing a
+        procedure somebody will read one-handed in the dark, and the list of
+        paths the plugin overwrites on every publish, so an agent stays out of
+        them.
+      </p>
+      <p class="docs-empty__example">
+        “Read <code>docs/AGENTS.md</code>. Then draft
+        <code>docs/systems/raw-water.md</code> from the photos and notes below,
+        and mark anything you cannot verify rather than guessing a part
+        number.”
+      </p>
+    </div>`;
+  renderNav();
+}
+
 function showPlaceholder(message) {
   activeSlug = null;
   activeToc = [];
@@ -479,7 +539,7 @@ function route({ replace = false } = {}) {
     return;
   }
   if (docsIndex.length) navigate(docsIndex[0].slug, { replace: true });
-  else showPlaceholder('No documents yet. Add a Markdown file under <code>docs/</code>.');
+  else showEmptyState();
 }
 
 // ── Theme toggle ────────────────────────────────────────────────────────────
@@ -559,8 +619,9 @@ async function init() {
     el.header.style.display = 'none';
     el.article.innerHTML =
       `<p class="docs-error">Could not load the document index.<br />${escapeHtml(error.message)}` +
-      `<br /><span class="docs-error__hint">Run <code>make docs-index</code> to regenerate ` +
-      `<code>docs/index.json</code>.</span></p>`;
+      `<br /><span class="docs-error__hint">The Signal K plugin rebuilds ` +
+      `<code>docs/index.json</code> on its next publish cycle; if it never appears, check ` +
+      `that <code>buildDocsIndex</code> is on in the plugin config.</span></p>`;
     return;
   }
 

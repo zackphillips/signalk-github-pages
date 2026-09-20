@@ -11,7 +11,7 @@ src/
   index.ts          Plugin entry: schema, start/stop, tick scheduling, router
   config.ts         Config schema, defaults, normalisation, validation
   publisher.ts      One cycle end to end — the only module that orchestrates
-  webapp.ts         The console's routes: status, preview, prune
+  webapp.ts         The console's routes: status, preview, prune, docs
   preview.ts        The site's data files rendered live, never published
   prune.ts          Which voyages a prune takes, decided without doing it
   snapshot.ts       Reading the self tree, stale filter, position redaction
@@ -24,6 +24,8 @@ src/
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
+  docsSeed.ts       The starter documents and the maintenance log: the only
+                    writes that reach a path the plugin does not own
   siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
@@ -37,6 +39,7 @@ src/
   signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
+seed/               Starter documents copied into docs/ once, on request
 sample/             Fixture telemetry for `npm run dev`
 test/               vitest, including an in-memory GitHub fake
 ```
@@ -270,12 +273,47 @@ Run `npm test` and `npm run typecheck` before committing.
   "Vessel" until the next restart. Round anything numeric that goes into
   `info.yaml` — the file is rewritten whenever its content changes, and a
   draft that wobbles in the last decimal place would commit every two minutes.
+- **Seeded is not owned, and the difference is the whole feature.** The
+  manifest allowlist stays exactly as it was: no cycle writes a document, and
+  `partitionOwned` drops one that tries. The console's two docs actions go
+  round it on purpose, and `assertDocsPath` is what stands in its place — a
+  positive check that the path is Markdown under `docs/`, so a composed path
+  can never reach `index.html` or `data/`. Seeded paths are listed in the
+  manifest under `seeded` with a note saying they are written once and then
+  belong to the owner. Do not move them into `owned` to simplify the code: the
+  manifest is a promise to the person whose repository this is, and `owned`
+  means "overwritten without warning".
+- **Initializing is refused, not merged.** Two different questions, two
+  different guards. *A published document that is not part of the starter set*
+  means the boat has its own docs, and initializing is declined outright —
+  that is the whole of "only if the docs do not yet exist". The starter files
+  and `docs/maintenance/log.md` are excluded from that count on purpose: they
+  are the plugin's own doing, and counting the log would lock the starter set
+  out of any repository where somebody logged an oil change first. *This exact
+  path* existing means that one file is skipped, so a half-written starter set
+  can be completed without the other half being touched. A truncated tree
+  listing refuses everything: past GitHub's 100k cap, absence proves nothing,
+  and "there are no documents" would be a guess.
+- **A maintenance entry is an insert.** `insertMaintenanceEntry` splices one
+  block in above the first `##` and returns the rest of the file unchanged; it
+  never parses, reformats or reorders what is already there. The published copy
+  is read back on every entry for the same reason `info.yaml` is — the file is
+  edited from a phone between publishes and the boat's idea of it is never
+  authoritative. There is deliberately no local cache of the log.
+- **`AGENTS.md` and `CLAUDE.md` are not ship's documents.** `isPublishedDoc`
+  excludes them by name. They are instructions for whoever edits the docs, and
+  a sidebar entry called "Agents" is noise on a page that is meant to be read
+  at sea.
 - **`site/` is published; `public/` is not.** Two directories with different
   jobs, and the split is load-bearing: Signal K mounts a package's `public/`
   as its webapp, so anything put there is served to the boat, and everything
   in `site/` is walked by `loadFrontend` and committed to the repository. A
   file in the wrong one either fails to appear in the admin UI or turns up on
   a public website.
+- **The console writes documents; a cycle never does.** The two docs actions
+  live on the publisher because they need the client and the config, but
+  nothing in `runCycle` reaches them. A publish that could rewrite a document
+  is a publish that can lose one, and the cadence is every two minutes.
 - **The console's GET routes never write plugin state; its POST routes are
   what buttons are for.** `preview.ts` assembles the data files from the
   store and the tree and returns them; it does not call `runCycle`. Someone

@@ -7,11 +7,17 @@
 <!--
   The plugin's console, served by Signal K at /signalk-github-pages/.
 
-  Two jobs: show the site as it stands right now, from the boat's own data and
-  without a round trip to GitHub, and take away voyages that have outlived
-  their usefulness. Everything else about this plugin is configured on the
-  plugin config page; this is the page for looking and for the one destructive
-  thing it can do.
+  Three jobs: show the site as it stands right now, from the boat's own data
+  and without a round trip to GitHub; take away voyages that have outlived
+  their usefulness; and write to the ship's docs — starting them off if the
+  repository has none, and logging maintenance without opening a browser tab
+  on GitHub. Everything else about this plugin is configured on the plugin
+  config page.
+
+  The two docs actions are the only writes in this plugin that touch a file it
+  does not own, so both are conservative: initializing refuses outright if any
+  document already exists, and a maintenance entry is spliced into the top of
+  the log rather than the file being rewritten.
 
   Plain HTML, no build step and no framework: it is served off a Raspberry Pi
   to a phone over the boat's wifi, and it has to keep working after the plugin
@@ -74,7 +80,22 @@
   button:disabled { opacity: .5; cursor: default; }
   button.danger { border-color: var(--danger); color: var(--danger); }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  input[type=number] { font: inherit; width: 5.5em; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  input[type=number] { width: 5.5em; }
+  input, select, textarea {
+    font: inherit;
+    padding: 6px 8px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+  }
+  textarea { width: 100%; min-height: 84px; resize: vertical; }
+  h3 { font-size: 14px; margin: 18px 0 8px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { color: var(--muted); font-size: 13px; }
+  .fields { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); margin-bottom: 10px; }
+  .field--wide { grid-column: 1 / -1; }
+  .ok { color: var(--accent); }
   iframe { width: 100%; height: 70vh; min-height: 420px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
@@ -92,6 +113,10 @@
     background: color-mix(in srgb, var(--danger) 8%, transparent);
   }
   .confirm-question { margin: 0 0 10px; font-size: 14px; white-space: pre-line; }
+  /* Writing the starter documents is additive, not destructive: same shape as
+     the prune confirmation, without the red that says something is about to
+     be taken away. */
+  .confirm--plain { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .bad { color: var(--danger); }
   .empty { color: var(--muted); font-style: italic; }
 </style>
@@ -154,6 +179,79 @@
         <tbody id="tracks"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>Ship's docs</h2>
+    <p class="note" style="margin-top:0" id="docs-state">Loading…</p>
+    <div class="row">
+      <button id="docs-init-btn" disabled>Initialize ship's docs</button>
+      <a href="#" id="docs-link" target="_blank" rel="noopener" hidden>Open the docs</a>
+      <a href="#" id="docs-repo-link" target="_blank" rel="noopener" hidden>Edit on GitHub</a>
+    </div>
+    <p class="note" id="docs-init-note">
+      Initializing commits two Markdown files to <code>docs/</code>: a start-here
+      page and an <code>AGENTS.md</code> that tells a coding agent the
+      conventions and which paths belong to the plugin. It is offered only while
+      <code>docs/</code> holds no documents of your own, and it never overwrites
+      a file that is already there. After that, <code>docs/</code> is yours:
+      nothing here rewrites it.
+    </p>
+    <div class="confirm confirm--plain" id="docs-confirm" hidden>
+      <p class="confirm-question" id="docs-confirm-text"></p>
+      <div class="row">
+        <button id="docs-confirm-yes">Yes, write them</button>
+        <button id="docs-confirm-no">Cancel</button>
+      </div>
+    </div>
+    <p class="note" id="docs-result" hidden></p>
+
+    <h3>Maintenance entry</h3>
+    <form id="maint-form">
+      <div class="fields">
+        <div class="field">
+          <label for="maint-date">Date</label>
+          <input type="date" id="maint-date" required>
+        </div>
+        <div class="field">
+          <label for="maint-system">System</label>
+          <input type="text" id="maint-system" list="maint-systems" placeholder="Engine">
+          <datalist id="maint-systems">
+            <option value="Engine"></option>
+            <option value="Electrical"></option>
+            <option value="Plumbing"></option>
+            <option value="Rig"></option>
+            <option value="Sails"></option>
+            <option value="Hull &amp; Deck"></option>
+            <option value="Electronics"></option>
+            <option value="Ground Tackle"></option>
+            <option value="Safety"></option>
+          </datalist>
+        </div>
+        <div class="field">
+          <label for="maint-hours">Engine hours</label>
+          <input type="number" id="maint-hours" step="0.1" min="0" style="width:100%">
+        </div>
+        <div class="field">
+          <label for="maint-by">Logged by</label>
+          <input type="text" id="maint-by">
+        </div>
+        <div class="field field--wide">
+          <label for="maint-title">What was done</label>
+          <input type="text" id="maint-title" maxlength="120" required
+                 placeholder="Replaced the raw-water impeller">
+        </div>
+        <div class="field field--wide">
+          <label for="maint-notes">Notes (Markdown)</label>
+          <textarea id="maint-notes" placeholder="Two vanes torn. Jabsco 17370-0001; one spare left aboard."></textarea>
+        </div>
+      </div>
+      <div class="row">
+        <button type="submit" id="maint-submit">Add entry</button>
+        <span class="note" id="maint-hours-hint"></span>
+      </div>
+    </form>
+    <p class="note" id="maint-result" hidden></p>
   </section>
 
   <section class="panel">
@@ -404,6 +502,154 @@ el('publish-btn').addEventListener('click', function () {
 el('publish-site-btn').addEventListener('click', function () {
   publish('/publish/site', 'Rewriting the site');
 });
+
+// ── Ship's docs ─────────────────────────────────────────────────────────────
+// The only part of the console that writes a file the plugin does not own, so
+// it leads with what is already there: how many documents exist, and whether
+// the maintenance log has been started. Initializing is offered only while
+// docs/ is genuinely empty — the plugin refuses it otherwise, and a button
+// that looks available but always fails is worse than one that is greyed out.
+
+var docsState = null;
+
+function renderDocs(data) {
+  docsState = data;
+  var state = el('docs-state');
+  var initBtn = el('docs-init-btn');
+
+  if (data.truncated) {
+    state.textContent =
+      'This repository is too large to list in full, so the plugin cannot tell ' +
+      'whether docs/ already has documents. Add the starter files by hand.';
+    state.className = 'note bad';
+    initBtn.disabled = true;
+  } else {
+    var log = data.maintenanceLog.exists
+      ? 'The maintenance log is at ' + data.maintenanceLog.path + '.'
+      : 'No maintenance log yet \u2014 the first entry below starts one.';
+    state.textContent = data.initialized
+      ? data.documents + ' document' + (data.documents === 1 ? '' : 's') + ' in docs/. ' + log
+      : 'No documents in docs/ yet. The site\u2019s Docs page shows the placeholder ' +
+        'until there is one. ' + log;
+    state.className = 'note';
+    initBtn.disabled = !data.canInitialize;
+    initBtn.textContent = data.canInitialize
+      ? 'Initialize ship\u2019s docs'
+      : (data.ownDocuments > 0
+          ? 'Ship\u2019s docs already written'
+          : 'Starter files already in the repository');
+  }
+
+  var link = el('docs-link');
+  link.href = data.docsUrl;
+  link.hidden = !data.initialized;
+  var repoLink = el('docs-repo-link');
+  repoLink.href = data.repoUrl + '/tree/HEAD/docs';
+  repoLink.hidden = !data.initialized;
+
+  // The form opens on the boat's local day, not the browser's idea of today:
+  // a laptop still on the last port's timezone would otherwise file the work
+  // under the wrong date.
+  if (!el('maint-date').value) el('maint-date').value = data.today;
+
+  var hours = (data.engineHours || [])[0];
+  var hint = el('maint-hours-hint');
+  if (hours) {
+    if (!el('maint-hours').value) el('maint-hours').value = hours.hours;
+    hint.textContent =
+      'Signal K reports ' + hours.hours.toFixed(1) + ' h on ' + hours.engine +
+      ((data.engineHours.length > 1) ? ' (' + data.engineHours.length + ' engines)' : '') + '.';
+  } else {
+    hint.textContent = 'No propulsion.*.runTime on this server — type the hours if you track them.';
+  }
+}
+
+async function refreshDocs() {
+  try {
+    renderDocs(await api('/docs'));
+  } catch (error) {
+    el('docs-state').textContent = 'Could not read docs/: ' + error.message;
+    el('docs-state').className = 'note bad';
+    el('docs-init-btn').disabled = true;
+  }
+}
+
+function say(id, message, bad) {
+  var target = el(id);
+  target.textContent = message;
+  target.className = bad ? 'note bad' : 'note ok';
+  target.hidden = false;
+}
+
+// Named before it happens, the same way a prune is: the panel lists the files
+// and waits. The confirmation is markup rather than window.confirm(), which
+// the sandboxed webapp iframe ignores.
+el('docs-init-btn').addEventListener('click', function () {
+  if (busy || !docsState) return;
+  var missing = docsState.missing || [];
+  el('docs-confirm-text').textContent =
+    'Commit ' + missing.length + ' file(s) to docs/ on this repository?\n' +
+    missing.join('\n') + '\n' +
+    'Nothing already in the repository is changed.';
+  el('docs-confirm').hidden = false;
+  el('docs-confirm-no').focus();
+});
+
+el('docs-confirm-no').addEventListener('click', function () {
+  el('docs-confirm').hidden = true;
+  say('docs-result', 'Nothing was written.');
+});
+
+el('docs-confirm-yes').addEventListener('click', async function () {
+  if (busy) return;
+  el('docs-confirm').hidden = true;
+  el('docs-init-btn').disabled = true;
+  try {
+    var result = await api('/docs/init', { method: 'POST' });
+    say('docs-result',
+      result.created.length
+        ? 'Wrote ' + result.created.join(', ') +
+          (result.commitSha ? ' in ' + result.commitSha.slice(0, 7) + '.' : '.') +
+          ' They appear on the site once the next cycle rebuilds the index.'
+        : 'Nothing to write: every starter file is already in the repository.');
+  } catch (error) {
+    say('docs-result', 'Could not initialize the docs: ' + error.message, true);
+  }
+  await refreshDocs();
+});
+
+el('maint-form').addEventListener('submit', async function (event) {
+  event.preventDefault();
+  if (busy) return;
+  var entry = {
+    date: el('maint-date').value,
+    title: el('maint-title').value,
+    system: el('maint-system').value,
+    engineHours: el('maint-hours').value,
+    by: el('maint-by').value,
+    notes: el('maint-notes').value,
+  };
+  el('maint-submit').disabled = true;
+  try {
+    var result = await api('/docs/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(entry),
+    });
+    say('maint-result',
+      (result.created ? 'Started ' : 'Added to ') + result.path + ': ' +
+      result.entry.date + ', ' + result.entry.title +
+      (result.commitSha ? ' (' + result.commitSha.slice(0, 7) + ').' : '.'));
+    // The date, the hours and who logged it are the same for the next entry
+    // as often as not; what was done never is.
+    el('maint-title').value = '';
+    el('maint-notes').value = '';
+  } catch (error) {
+    say('maint-result', 'Could not add the entry: ' + error.message, true);
+  }
+  el('maint-submit').disabled = false;
+  await refreshDocs();
+});
 el('refresh-btn').addEventListener('click', refresh);
 el('prune-all-btn').addEventListener('click', function () { prune('all'); });
 el('prune-days-btn').addEventListener('click', function () {
@@ -422,6 +668,7 @@ el('reload-preview').addEventListener('click', function () {
 el('open-preview').href = PREVIEW;
 el('preview').src = PREVIEW;
 refresh();
+refreshDocs();
 </script>
 </body>
 </html>
