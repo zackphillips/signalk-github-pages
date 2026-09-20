@@ -20,6 +20,7 @@
  * assumes port/starboard symmetry. The chart wants knots and degrees, so
  * everything is converted on the way out.
  */
+import type { SignalKApp } from './signalk';
 import type { Tree } from './snapshot';
 
 /** Repository path the frontend fetches. */
@@ -64,12 +65,15 @@ export interface ParsedPolars {
   problems: string[];
 }
 
-/** Minimal shape of the server's Resources API — what this module needs of it. */
-export interface PolarResourceSource {
-  resourcesApi?: {
-    getResource: (type: string, id: string) => Promise<unknown>;
-  };
-}
+/**
+ * What reading the active polar needs of the server: its Resources API.
+ *
+ * Taken from the server's own type rather than described here, so a change to
+ * `getResource`'s signature is a build error instead of a polar chart that
+ * silently stops appearing. Optional because a server old enough to predate
+ * the Resources API still runs everything else this plugin does.
+ */
+export type PolarResourceSource = Partial<Pick<SignalKApp, 'resourcesApi'>>;
 
 /** Unwrap `{ value, timestamp }`, or take the node as it stands. */
 function leaf(node: unknown): unknown {

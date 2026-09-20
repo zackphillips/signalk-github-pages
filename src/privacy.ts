@@ -2,7 +2,7 @@
  * Privacy zones: circles around the home marina (or anywhere else) whose
  * positions never leave the boat unredacted.
  *
- * Two rules, both ported from the Python daemon:
+ * Two rules:
  *  - the *latest* position inside a zone is published as the zone centre, so
  *    the site still shows "at the dock" without showing the slip;
  *  - track points inside a zone are dropped entirely, never snapped to the

@@ -24,14 +24,17 @@ src/
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
-  vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
-                    and the user's passage block preserved
+  siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
+  course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
   frontend.ts       Reading site/ and templating constants.js
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
+  track.ts          navigation.position deltas, decimated by shape
+  alarm.ts          The one notification this plugin raises, and when
+  signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
 sample/             Fixture telemetry for `npm run dev`
@@ -58,28 +61,120 @@ Run `npm test` and `npm run typecheck` before committing.
   passed in as `CycleInput`.
 - **No free-form config.** `site.extraYaml` was YAML merged over everything
   the plugin wrote: an override with no schema, no validation and no way to
-  tell from the config page what `info.yaml` would end up saying. A new key is
-  a typed field and a line in `renderVesselInfo`, not a blob. `grep
-  vesselData\. site/assets/app.js` lists every key the frontend reads; each
-  one needs a source before a field is removed.
-- **Unknown renders as unknown.** The frontend carried three invented
-  fallbacks: a San Francisco Bay tide location, a privacy zone at one
-  particular dock, and a whole vessel identity — name, MMSI, documentation
-  number — used when `info.yaml` failed to load. Each one turned a missing
-  value into a confident wrong one on somebody else's boat. `resolveTidePosition`
+  tell from the config page what the published file would end up saying. A
+  new key is a typed field and a line in `renderSiteConfig`, not a blob.
+  `grep vesselData\. site/assets/app.js` lists every key the frontend reads;
+  each one needs a source before a field is removed.
+- **Nothing on the site is hand-edited, and nothing should become so.** The
+  last two things that were are gone: `info.yaml`, which carried the site
+  configuration, and the `passage:` block inside it, which someone had to
+  type before departure and delete on arrival — and therefore forgot, so a
+  boat home for a fortnight still said it was bound for Santa Cruz. A value
+  the boat already knows is read from the server; a value the adopter chooses
+  is a typed field on the config page. If a new feature needs a person to
+  edit a file in the published repository, that is a design smell — the one
+  deliberate exception is `docs/*.md`, which is prose with no other source,
+  and `assets/custom.css`.
+- **`site.json` is site configuration, not the boat.** Everything about the
+  vessel — name, MMSI, callsign, UUID, IMO, flag, home port, registrations,
+  dimensions — is in `data/telemetry/signalk_latest.json`, which is the whole
+  self tree. It used to be in both, and the frontend preferred the snapshot
+  and treated the other as a fallback, so the duplicate only ever had one
+  possible effect: disagreeing. What stays in `site.json` is what has no
+  other source (privacy zones, custom links, the default position, the
+  timezone, the address the site links back to), plus the USCG and hull
+  numbers, which are here because picking them out of a `registrations` tree
+  is a judgement the plugin already makes and the frontend should not make
+  twice.
+- **The passage comes from the Course API and carries no coordinates.**
+  `nextPoint.position` and `previousPoint.position` are raw positions, and
+  the privacy zones guard `navigation.position` on its way into the snapshot
+  and the track — not a course. A point with no name contributes nothing
+  rather than falling back to its position, which is why activating a
+  waypoint usually yields a destination and no "from": `previousPoint` is the
+  vessel's own position at activation, and publishing it would put the slip
+  the boat just left on a public page. The ETA is left out for a different
+  reason: `targetArrivalTime` is recomputed on every update, and `site.json`
+  is only rewritten when its content changes.
+- **A retired path is removable but not owned.** `ownedPatterns` is what the
+  published manifest lists and what `isOwnedPath` allows writing.
+  `RETIRED_PATTERNS` is a path this plugin used to write and now only deletes
+  — `data/vessel/info.yaml` so far — so it is absent from the manifest, which
+  would otherwise tell the repository's owner it is still maintained, while
+  `isRemovablePath` still lets the one-time deletion through the same
+  ownership check every other deletion passes. The deletion is recorded in
+  `state.retired` only after the commit carrying it landed.
+- **Unknown renders as unknown.** The frontend carried five invented
+  fallbacks, each of which turned a missing value into a confident wrong one
+  on somebody else's boat: a San Francisco Bay tide location; a privacy zone
+  at one particular dock; a whole vessel identity (name, MMSI, documentation
+  number) used when the vessel config failed to load; a one-station tide list
+  — San Francisco again — used when `tide_stations.json` failed to load, so
+  that every boat's "nearest station" was the Golden Gate; a retry of any
+  failed NOAA fetch against San Francisco "because it is known to work",
+  which drew real tides for water 3000 miles away under this boat's heading;
+  and a fabricated snapshot (a position in the Bay, 10 knots of true wind, a
+  house bank at 12.5 V and 80%) shown whenever `signalk_latest.json` would
+  not load, so a boat whose publishing had failed showed someone ashore a
+  plausible afternoon's sailing. All of them are gone. `resolveTidePosition`
   returns null and the panels say what is missing; `getPrivacyZones` returns
   an empty list, which is safe because the plugin already redacts before it
-  publishes; `vesselData` is `{}`. Do not add a fourth.
+  publishes; a failed station list is empty; a failed NOAA fetch throws; a
+  failed snapshot is `{}` and the banner reads "Telemetry unavailable". Do
+  not add another. If a value is not known, the page says so.
 - **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
   that anyone with write access can edit. One check is a config validation;
   two is a policy.
+- **The server's types come from the server.** `@signalk/server-api` is a
+  devDependency and `src/signalk.ts` is the only file that imports it. Every
+  module that touches the app object takes its slice from `SignalKApp`
+  (`Pick`/`Partial<Pick<...>>`) rather than describing the method again
+  locally: a structural interface of one's own compiles against a server that
+  no longer has the method, and fails on the boat instead. Two members are
+  narrowed to optional there — `notifications` and `getCourse` — because the
+  server declares them present and this plugin runs on releases where they
+  are not; that list is the honest inventory of what it assumes about the
+  server's age. `app.config.settings` is the one thing used that the
+  published contract does not describe, so it is declared beside them and
+  read defensively. Provider *responses* stay loosely typed on purpose: a
+  history provider is another package's output, and parsing it tolerantly is
+  the difference between a missing sparkline and a failed cycle.
+- **A `navigation.state` transition publishes immediately.** Leaving the dock
+  was otherwise invisible for up to an hour: the stationary timer was set
+  while the boat was still moored and nothing shortened it. Only the
+  transition fires, never the repeats — `navigation.state` arrives as a
+  delta on every update from signalk-autostate, and publishing on each would
+  ignore the cadence entirely — and the pending timer is rescheduled, since
+  it was set for the cadence that applied before the boat moved.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
+- **The track is recorded from deltas and thinned by shape.** A fix is kept
+  when dropping it would move the drawn track by more than
+  `track.detailMetres`, and at least once per publish cycle. Measured on a
+  synthetic hour of 60-second tacks: 60 points and the track exactly right,
+  against 30 points and 128 m of error for one-fix-per-cycle sampling; a mark
+  rounding is 9 points and 9 m against 5 points and 174 m. A straight leg
+  costs the same as before, because the time floor is what fires. Two things
+  that are easy to get wrong here: the time floor follows the *publish
+  cadence* rather than being a constant, so a night at anchor is one fix an
+  hour as it always was and not 720 points of a boat sitting still; and the
+  window cap commits the newest fix and clears, because committing the oldest
+  and dropping one leaves the window at the cap so every later fix commits
+  too — that bug turned a night at anchor into 42601 points of 43200.
+- **The tree fix is the fallback, not an addition.** With a recorder running,
+  `runCycle` uses its fixes; without one — an older server, or streams it
+  could not subscribe to — it uses the one on the tree, which is exactly what
+  this plugin did before. Appending both would put a near-duplicate a metre
+  away beside every recorded point.
+- **`track.ts` never redacts, and must not start.** Its output is a list of
+  candidates. `buildPositionEntry` is the single place a position becomes a
+  published value and the single place the privacy zones are applied;
+  recording more fixes must not become a second route to the repository.
 - **The track is ours, the instrument log is the provider's.** Positions are
-  accumulated here, one fix per cycle, straight from the tree: that is what
+  accumulated here, straight from the tree or its deltas: that is what
   the GPX archive is built from, it works on a server with no history provider
   at all, and it keeps exactly one path — and one redaction — between a
   position and a public repository. The instrument log is the opposite: a
@@ -155,7 +250,7 @@ Run `npm test` and `npm run typecheck` before committing.
   commit.
 - **The ref is never force-updated.** On a lost race, re-read HEAD and rebuild
   the tree, so a concurrent docs edit survives.
-- **Check every privacy zone, not just the first.** The Python daemon had this
+- **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
 - **Group tracks by local calendar day**, not by the UTC date in the
@@ -181,10 +276,29 @@ Run `npm test` and `npm run typecheck` before committing.
   in `site/` is walked by `loadFrontend` and committed to the repository. A
   file in the wrong one either fails to appear in the admin UI or turns up on
   a public website.
-- **The console never writes plugin state.** `preview.ts` assembles the data
-  files from the store and the tree and returns them; it does not call
-  `runCycle`. Someone holding the preview open on a phone must not be able to
-  roll the publisher's state forward, or to make the boat fetch anything.
+- **The console's GET routes never write plugin state; its POST routes are
+  what buttons are for.** `preview.ts` assembles the data files from the
+  store and the tree and returns them; it does not call `runCycle`. Someone
+  holding the preview open on a phone must not be able to roll the
+  publisher's state forward or make the boat fetch anything — a page can be
+  left open for a day, and a refresh is not an instruction. A button someone
+  pressed is an instruction, which is why `/publish`, `/publish/site` and
+  `/prune` are POSTs, and why they are the only things on the page that spend
+  the boat's bandwidth on request. Keep that split: a new route that costs
+  anything is a POST.
+- **The console confirms in the page, never with `window.confirm`.** Signal K
+  serves a plugin's webapp inside a sandboxed iframe, and the browser ignores
+  `confirm()` there and returns false — so the prune button asked for
+  confirmation nobody could see and then did nothing at all, which reads
+  exactly like a broken button. The confirmation is markup in
+  `public/index.html`; `alert` and `prompt` are out for the same reason.
+- **`/preview/*` is registered before `/preview`, and that order is load
+  bearing.** Express does not run in strict-routing mode, so `/preview` also
+  matches `/preview/` — the exact path its redirect sends the browser to.
+  Registered the other way round, `/preview/` answered with `Location:
+  preview/`, the browser resolved it against `/preview/` to get
+  `/preview/preview/`, and the console's iframe showed "Not found" instead of
+  the site. `test/webapp.test.ts` pins the order and both responses.
 - **Pruning is the only thing that deletes.** It runs when a person asks for
   it in the console, never on a timer — there is deliberately no retention
   setting for tracks. Deletions go through `partitionOwned` like every write,
@@ -249,9 +363,27 @@ Run `npm test` and `npm run typecheck` before committing.
   used to be hardcoded into `index.html` and fed by a `marinetraffic_ship_id`
   config field, which meant every site carried one vendor's link whether or
   not the boat was on it. Buttons are `site.customLinks` now, all of them.
-- **Publish state stays out of the Signal K tree.** Cost, commit SHA and
-  failures go to `app.debug` / `app.error` and the plugin status line. Do not
-  add `setPluginStatus`-style state as data paths.
+- **Publish state stays out of the Signal K tree, with exactly one
+  exception.** Cost, commit SHA, rate limits and per-cycle results go to
+  `app.debug` / `app.error` and the plugin status line: they are telemetry
+  about a plugin, and nobody needs an alarm for them. Do not add
+  `setPluginStatus`-style state as data paths.
+  The exception is `notifications.tracker.publishFailed`, raised once
+  publishing has failed continuously for `notifyAfterFailureMinutes` and
+  cleared on the next success. An expired token otherwise reaches nobody: the
+  admin UI is a browser tab nobody has open at sea, and the first anyone
+  ashore knows is that the boat appears to have stopped. A notification is
+  the mechanism the whole boat already has for getting someone's attention,
+  and it reaches KIP and the chartplotter without this plugin knowing they
+  exist. It waits, because a single failed cycle is a dropped hotspot and not
+  news; `method` is `['visual']`, because this plugin failing to reach GitHub
+  is not a reason to sound the boat's alarm at 0300. One condition, and the
+  test for adding another is whether a person would want to be told about it
+  while it is happening.
+- **A cycle that published nothing still counts as working.** It reached
+  GitHub and read HEAD; "nothing changed" is a successful cycle, so it clears
+  the failure alarm. Treating it as a non-event would leave an alarm up on a
+  boat sitting quietly at anchor with everything already published.
 - **The service worker's cache name must carry the version.** `sw.js` declares
   `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it, the
   same way it templates `constants.js`. The shell cache was once a constant
@@ -270,8 +402,23 @@ Run `npm test` and `npm run typecheck` before committing.
   blank.
 - **Never write `assets/custom.css`.** It is the user's override hook, loaded
   last by both pages.
-- **Never add a per-cycle file.** The daemon once wrote one snapshot per cycle;
-  an off-by-one in the prune let ~32k of them accumulate and grew the
+- **Record work as done only after the commit lands.** `frontendVersion`
+  used to be written the moment the frontend files were assembled, so a
+  publish that failed — a 502, a wedged hotspot — left the plugin believing
+  it had shipped this release's HTML and JavaScript, and the site kept
+  serving the previous one until the next version bump. It and
+  `state.retired` are both merged in `runCycle` after `publishFiles` returns
+  a commit. Anything else that records "this has been published" belongs
+  there too.
+- **An upgrade republishes the frontend by itself.** The fingerprint gating
+  `frontendFiles` is `version:repo:branch:entries`, so a new plugin version
+  rewrites every site file on the first cycle after the restart. The
+  console's "rewrite the whole site" button exists for what a version number
+  cannot see — a file deleted by hand on GitHub, a commit that landed
+  half-way, a repository rolled back — and does it by clearing the
+  fingerprint, not by a second code path.
+- **Never add a per-cycle file.** An earlier design wrote one snapshot per
+  cycle; an off-by-one in the prune let ~32k of them accumulate and grew the
   repository past a gigabyte.
 
 ## Installing on a server
@@ -286,9 +433,8 @@ the plugin. Do not "fix" that by committing `dist/`.
 ## Published file formats
 
 `data/telemetry/*.json` carry a `schema_version` so a plugin and a frontend of
-different versions can detect a mismatch. The shapes otherwise match what the
-Python daemon wrote, because the frontend reads them unchanged — check
-`site/assets/app.js` before altering any of them.
+different versions can detect a mismatch. The frontend reads these shapes
+directly, so check `site/assets/app.js` before altering any of them.
 
 - **A canvas has two sizes and they have to agree.** `.sparkline-inline` is
   `width: 100%` in the stylesheet, so the bitmap must be sized from the box the

@@ -85,8 +85,8 @@ describe('parsePositionIndex', () => {
     expect(JSON.parse(json).schema_version).toBe(1);
   });
 
-  it('reads a bare list, which is what the Python daemon once wrote', () => {
-    expect(parsePositionIndex('[{"timestamp":"2026-03-01T11:00:00Z","values":[]}]')).toHaveLength(1);
+  it('ignores a bare list: the only writer is this plugin, and it writes an object', () => {
+    expect(parsePositionIndex('[{"timestamp":"2026-03-01T11:00:00Z","values":[]}]')).toEqual([]);
   });
 
   it('returns an empty list for missing or corrupt input', () => {

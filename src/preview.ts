@@ -17,6 +17,7 @@
  * where they can be and simply missing where they cannot. The frontend already
  * isolates a panel that fails to load, which is what makes that acceptable.
  */
+import type { Passage } from './course';
 import type { PluginConfig } from './config';
 import { groupPointsByDay, renderGpxDocument, TRACKS_INDEX_SCHEMA_VERSION } from './gpx';
 import {
@@ -30,7 +31,7 @@ import { TRACKS_DIR } from './prune';
 import { filterStaleData, redactPosition, type Tree } from './snapshot';
 import type { StateStore } from './state';
 import { localDay } from './time';
-import { mergeVesselIdentity, readVesselDetails, renderVesselInfo, type VesselIdentity } from './vesselInfo';
+import { mergeVesselIdentity, readVesselDetails, renderSiteConfig, type VesselIdentity } from './siteConfig';
 
 const TELEMETRY_DIR = 'data/telemetry';
 
@@ -46,13 +47,18 @@ export interface PreviewInput {
   tree: Tree;
   /** The polar CSV the last cycle resolved, or empty. */
   polars: string;
+  /**
+   * The passage the last cycle read, or null. Handed in rather than read
+   * here: the console must not be able to make the boat call the Course API.
+   */
+  passage?: Passage | null;
 }
 
 /**
  * Build the `data/**` files the frontend fetches, keyed by repository path.
  *
- * Returns text only: everything the site reads under `data/` is JSON, YAML,
- * CSV or GPX.
+ * Returns text only: everything the site reads under `data/` is JSON, CSV or
+ * GPX.
  */
 export async function renderPreviewData(
   deps: PreviewDeps,
@@ -119,7 +125,9 @@ export async function renderPreviewData(
     files.set(`${TELEMETRY_DIR}/notifications.json`, renderNotifications(log, observed, now));
   }
 
-  files.set('data/vessel/info.yaml', renderVesselInfo(config, merged));
+  // The preview has no passage: reading the Course API is an async server
+  // call, and the console must not be able to make the boat do work.
+  files.set('data/vessel/site.json', renderSiteConfig(config, merged, input.passage ?? null));
   if (input.polars) files.set('data/vessel/polars.csv', input.polars);
 
   return files;

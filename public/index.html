@@ -81,6 +81,17 @@
   th { color: var(--muted); font-weight: 600; }
   .scroll { max-height: 260px; overflow: auto; }
   .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  /* The confirmation is in the page, not a window.confirm(): Signal K serves
+     webapps inside a sandboxed iframe, where the browser ignores confirm()
+     and returns false, so the button silently did nothing. */
+  .confirm {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+  }
+  .confirm-question { margin: 0 0 10px; font-size: 14px; white-space: pre-line; }
   .bad { color: var(--danger); }
   .empty { color: var(--muted); font-style: italic; }
 </style>
@@ -93,6 +104,24 @@
     <h2>Status</h2>
     <div class="grid" id="status"></div>
     <p class="note" id="polar-note"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Publish</h2>
+    <div class="row">
+      <button id="publish-btn">Publish now</button>
+      <button id="publish-site-btn">Rewrite the whole site</button>
+    </div>
+    <p class="note" id="publish-note">
+      <strong>Publish now</strong> runs a cycle immediately instead of waiting
+      for the next one, which at the stationary cadence can be an hour away.
+      <strong>Rewrite the whole site</strong> republishes every HTML, CSS,
+      JavaScript and icon file — around 700&nbsp;kB — on top of that. A plugin
+      upgrade already does this by itself; the button is for what a version
+      number cannot see, like a file deleted by hand on GitHub or a commit
+      that landed half-way.
+    </p>
+    <p class="note" id="publish-result" hidden></p>
   </section>
 
   <section class="panel">
@@ -111,6 +140,13 @@
       index still holds its points and the next cycle would write it straight
       back.
     </p>
+    <div class="confirm" id="prune-confirm" hidden>
+      <p class="confirm-question" id="prune-confirm-text"></p>
+      <div class="row">
+        <button id="prune-confirm-yes" class="danger">Yes, remove them</button>
+        <button id="prune-confirm-no">Cancel</button>
+      </div>
+    </div>
     <p class="note bad" id="prune-result" hidden></p>
     <div class="scroll">
       <table>
@@ -239,11 +275,15 @@ function renderTracks(tracks) {
 }
 
 var busy = false;
+// The prune the confirmation panel is currently asking about, or null.
+var pendingPrune = null;
 
 function setBusy(value) {
   busy = value;
   el('prune-days-btn').disabled = value;
   el('prune-all-btn').disabled = value;
+  el('publish-btn').disabled = value;
+  el('publish-site-btn').disabled = value;
   el('refresh-btn').disabled = value;
 }
 
@@ -263,11 +303,17 @@ async function refresh() {
 // Two steps on purpose: ask what would go, name it, and only then commit. The
 // page never sends the prune the button implies without the days being read
 // back out of the server's own plan first.
+function hideConfirm() {
+  el('prune-confirm').hidden = true;
+  pendingPrune = null;
+}
+
 async function prune(spec) {
   if (busy) return;
   setBusy(true);
   var result = el('prune-result');
   result.hidden = true;
+  hideConfirm();
   try {
     var plan = await api('/prune/' + spec);
     if (!plan.remove.length) {
@@ -278,12 +324,32 @@ async function prune(spec) {
     var range = plan.remove.length === 1
       ? plan.remove[0]
       : plan.remove[0] + ' to ' + plan.remove[plan.remove.length - 1];
-    var message =
-      'Remove ' + plan.remove.length + ' voyage(s) from the published site?\n\n' +
-      range + '\n\n' +
+    el('prune-confirm-text').textContent =
+      'Remove ' + plan.remove.length + ' voyage(s) from the published site?\n' +
+      range + '\n' +
       plan.keep.length + ' will remain. The GPX files are deleted from the ' +
       'repository in one commit; they stay in its git history.';
-    if (!window.confirm(message)) return;
+    pendingPrune = spec;
+    el('prune-confirm').hidden = false;
+    el('prune-confirm-no').focus();
+  } catch (error) {
+    result.textContent = 'Prune failed: ' + error.message;
+    result.hidden = false;
+  } finally {
+    setBusy(false);
+  }
+}
+
+// Only reached by pressing "Yes, remove them" on the panel above: the plan is
+// always fetched and named first, so the page never sends a prune whose scope
+// nobody has seen.
+async function confirmPrune() {
+  if (busy || !pendingPrune) return;
+  var spec = pendingPrune;
+  hideConfirm();
+  setBusy(true);
+  var result = el('prune-result');
+  try {
     var done = await api('/prune/' + spec, { method: 'POST' });
     result.textContent = 'Removed ' + done.summary + '. ' + done.remaining + ' left.';
     result.hidden = false;
@@ -296,6 +362,48 @@ async function prune(spec) {
   }
 }
 
+// Publishing on request. The button reports what the cycle actually did:
+// "nothing to publish" is a normal answer when no file changed.
+async function publish(endpoint, label) {
+  if (busy) return;
+  setBusy(true);
+  var result = el('publish-result');
+  result.textContent = label + '…';
+  result.hidden = false;
+  result.classList.remove('bad');
+  try {
+    var done = await api(endpoint, { method: 'POST' });
+    if (done.skipped) {
+      result.textContent = 'Nothing published: ' + done.skipped + '.';
+    } else if (!done.published) {
+      result.textContent = 'Nothing to publish — every file is already current.';
+    } else {
+      result.textContent =
+        'Published ' + done.files.length + ' file(s), ' +
+        Math.round(done.bytes / 1024) + ' kB' +
+        (done.commitSha ? ' in ' + done.commitSha.slice(0, 7) : '') + '.';
+    }
+    await refresh();
+  } catch (error) {
+    result.textContent = label + ' failed: ' + error.message;
+    result.classList.add('bad');
+  } finally {
+    setBusy(false);
+  }
+}
+
+el('prune-confirm-yes').addEventListener('click', confirmPrune);
+el('prune-confirm-no').addEventListener('click', function () {
+  hideConfirm();
+  el('prune-result').textContent = 'Nothing was removed.';
+  el('prune-result').hidden = false;
+});
+el('publish-btn').addEventListener('click', function () {
+  publish('/publish', 'Publishing');
+});
+el('publish-site-btn').addEventListener('click', function () {
+  publish('/publish/site', 'Rewriting the site');
+});
 el('refresh-btn').addEventListener('click', refresh);
 el('prune-all-btn').addEventListener('click', function () { prune('all'); });
 el('prune-days-btn').addEventListener('click', function () {
