@@ -8,6 +8,9 @@
  *   GET  /status            what the last cycle did, and what is on the site
  *   GET  /preview/*         the published site, rendered from live plugin data
  *   POST /prune             remove old voyages from the repository
+ *   GET  /docs              what docs/ holds, and what a maintenance form needs
+ *   POST /docs/init         write the starter documents, if there are none
+ *   POST /docs/maintenance  add one entry to the top of the maintenance log
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -20,10 +23,12 @@
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { MaintenanceInputError, parseMaintenanceEntry } from './docsSeed';
 import { renderPreviewData } from './preview';
 import { renderConstants } from './frontend';
 import { describePrune, type PruneRequest } from './prune';
-import type { Publisher } from './publisher';
+import { DocsExistError, type Publisher } from './publisher';
+import { localDay } from './time';
 import type { PluginConfig } from './config';
 import type { Tree } from './snapshot';
 import type { VesselIdentity } from './vesselInfo';
@@ -201,6 +206,58 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     }
   });
 
+  /**
+   * What `docs/` holds, and everything the maintenance form needs to open
+   * with sensible values: the boat's local day and the engine hours Signal K
+   * is reporting right now.
+   */
+  router.get('/docs', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      const status = await current.publisher.docsStatus();
+      response.json({
+        ...status,
+        today: localDay(new Date(), current.config.timezone),
+        engineHours: current.publisher.engineHours(current.readTree()),
+        repoUrl: `https://github.com/${current.config.github.repo}`,
+        docsUrl: `${pagesUrl(current.config.github.owner, current.config.github.name)}docs.html`,
+      });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * Write the starter documents into a repository that has none.
+   *
+   * 409, not 500, when documents already exist: the button was pressed on a
+   * boat whose docs are already written, which is a state to report rather
+   * than a failure to investigate.
+   */
+  router.post('/docs/init', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.publisher.initializeDocs());
+    } catch (error) {
+      fail(response, error, error instanceof DocsExistError ? 409 : 500);
+    }
+  });
+
+  router.post('/docs/maintenance', async (request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      const entry = parseMaintenanceEntry(readJsonBody(request), {
+        today: localDay(new Date(), current.config.timezone),
+      });
+      response.status(201).json(await current.publisher.addMaintenanceEntry(entry));
+    } catch (error) {
+      fail(response, error, error instanceof MaintenanceInputError ? 400 : 500);
+    }
+  });
+
   // Everything under /preview is the site itself. `data/**` is rendered from
   // the plugin's live state; every other path is a file out of `site/`, with
   // the same substitutions the publisher makes on the way to GitHub.
@@ -296,4 +353,35 @@ export function parsePruneRequest(days: string | undefined): PruneRequest {
     throw new Error(`"${days}" is not a number of days or "all".`);
   }
   return { olderThanDays: Math.floor(parsed) };
+}
+
+/**
+ * The POST body, however this server's Express handed it over.
+ *
+ * Signal K parses JSON bodies for the whole app, so the normal case is an
+ * object that is already parsed. A server that does not — an older release, a
+ * proxy in front, a `text/plain` content type from a hand-rolled request —
+ * would otherwise land in the validator as `undefined` and come back as "a
+ * maintenance entry needs a title", which sends the reader looking at the
+ * wrong end of the problem.
+ */
+export function readJsonBody(request: { body?: unknown }): unknown {
+  const body = request.body;
+  if (Buffer.isBuffer(body)) return parseJsonBody(body.toString('utf-8'));
+  if (typeof body === 'string') return parseJsonBody(body);
+  if (body && typeof body === 'object') return body;
+  throw new MaintenanceInputError(
+    'This request arrived without a JSON body. Send Content-Type: application/json.',
+  );
+}
+
+function parseJsonBody(text: string): unknown {
+  if (!text.trim()) {
+    throw new MaintenanceInputError('This request arrived with an empty body.');
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new MaintenanceInputError('The request body is not valid JSON.');
+  }
 }
