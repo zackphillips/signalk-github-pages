@@ -242,3 +242,17 @@ the plugin. Do not "fix" that by committing `dist/`.
 different versions can detect a mismatch. The shapes otherwise match what the
 Python daemon wrote, because the frontend reads them unchanged — check
 `site/assets/app.js` before altering any of them.
+
+- **A canvas has two sizes and they have to agree.** `.sparkline-inline` is
+  `width: 100%` in the stylesheet, so the bitmap must be sized from the box the
+  canvas actually occupies, times `devicePixelRatio`, with the drawing
+  transform scaled to match. It used to be sized from the card's `clientWidth`
+  — which includes the card's padding — at 1x, so every sparkline was squeezed
+  horizontally and then upscaled by the phone, and 10px axis labels came out as
+  smears. `sizeSparkline` is the only place that touches `canvas.width`.
+- **Measure a label before reserving room for it.** The sparkline's left gutter
+  was a fixed 34px while the y labels carry their unit; "0.01nm" is 38px at
+  that font, so it ran off the left edge of the canvas. The gutter is
+  `measureText` plus a margin now, and the x-axis tick count is whatever fits
+  the remaining width rather than always four — four "HH:MM" labels do not fit
+  the ~100px of plot a phone-width card leaves.
