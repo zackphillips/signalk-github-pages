@@ -148,6 +148,7 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideUscgNumber` | off | Type a documentation number instead of reading it from Signal K |
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
+| `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
@@ -637,8 +638,19 @@ Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
   bodies, 5 API call(s), 1840 ms. Rate limit: 4993 left until 2026-03-01T21:00Z
 ```
 
-Publish state deliberately stays out of the Signal K data tree: it is log
-output and the plugin status line, not paths in the model.
+Publish state deliberately stays out of the Signal K data tree: cost, commit
+SHAs and rate limits are log output and the plugin status line, not paths in
+the model.
+
+One thing is not. If publishing fails continuously for
+`notifyAfterFailureMinutes` — half an hour by default, which at the underway
+cadence is fifteen consecutive attempts — the plugin raises
+`notifications.tracker.publishFailed` and clears it on the next success. An
+expired token otherwise reaches nobody: the admin UI is a browser tab nobody
+has open at sea, and the first anyone ashore knows is that the boat appears
+to have stopped. The notification is `visual` only, so it shows up in KIP and
+on the chartplotter without sounding the boat's alarm at three in the
+morning.
 
 ## The site says "Data unavailable"
 

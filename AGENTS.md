@@ -33,6 +33,7 @@ src/
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
   track.ts          navigation.position deltas, decimated by shape
+  alarm.ts          The one notification this plugin raises, and when
   signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
@@ -362,9 +363,27 @@ Run `npm test` and `npm run typecheck` before committing.
   used to be hardcoded into `index.html` and fed by a `marinetraffic_ship_id`
   config field, which meant every site carried one vendor's link whether or
   not the boat was on it. Buttons are `site.customLinks` now, all of them.
-- **Publish state stays out of the Signal K tree.** Cost, commit SHA and
-  failures go to `app.debug` / `app.error` and the plugin status line. Do not
-  add `setPluginStatus`-style state as data paths.
+- **Publish state stays out of the Signal K tree, with exactly one
+  exception.** Cost, commit SHA, rate limits and per-cycle results go to
+  `app.debug` / `app.error` and the plugin status line: they are telemetry
+  about a plugin, and nobody needs an alarm for them. Do not add
+  `setPluginStatus`-style state as data paths.
+  The exception is `notifications.tracker.publishFailed`, raised once
+  publishing has failed continuously for `notifyAfterFailureMinutes` and
+  cleared on the next success. An expired token otherwise reaches nobody: the
+  admin UI is a browser tab nobody has open at sea, and the first anyone
+  ashore knows is that the boat appears to have stopped. A notification is
+  the mechanism the whole boat already has for getting someone's attention,
+  and it reaches KIP and the chartplotter without this plugin knowing they
+  exist. It waits, because a single failed cycle is a dropped hotspot and not
+  news; `method` is `['visual']`, because this plugin failing to reach GitHub
+  is not a reason to sound the boat's alarm at 0300. One condition, and the
+  test for adding another is whether a person would want to be told about it
+  while it is happening.
+- **A cycle that published nothing still counts as working.** It reached
+  GitHub and read HEAD; "nothing changed" is a successful cycle, so it clears
+  the failure alarm. Treating it as a non-event would leave an alarm up on a
+  boat sitting quietly at anchor with everything already published.
 - **The service worker's cache name must carry the version.** `sw.js` declares
   `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it, the
   same way it templates `constants.js`. The shell cache was once a constant

@@ -84,6 +84,11 @@ export interface PluginConfig {
   };
   /** How much detail the recorded track keeps. See `track.ts`. */
   track: { detailMetres: number };
+  /**
+   * Minutes of continuous publish failure before raising a Signal K
+   * notification. Zero turns it off. See `alarm.ts`.
+   */
+  notifyAfterFailureMinutes: number;
   buildDocsIndex: boolean;
   /**
    * Publish `data/telemetry/notifications.json`: the active notifications and
@@ -177,6 +182,14 @@ export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
  * a straight line are paid for again every two minutes until midnight.
  */
 export const DEFAULT_TRACK_DETAIL_METRES = 15;
+/**
+ * Minutes of continuous failure before the plugin raises a notification.
+ *
+ * Long enough that a dropped hotspot or a 502 from GitHub passes unremarked
+ * — at the underway cadence this is fifteen consecutive failed attempts — and
+ * short enough to hear about an expired token on the same passage it expired.
+ */
+export const DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES = 30;
 /** How long raw positions stay in `positions_index.json`. */
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
@@ -520,6 +533,16 @@ export const configSchema = {
           default: DEFAULT_TRACK_DETAIL_METRES,
         },
       },
+    },
+    notifyAfterFailureMinutes: {
+      type: 'number',
+      title: 'Warn after this many minutes of failure',
+      description:
+        'Raise a Signal K notification at notifications.tracker.publishFailed once ' +
+        'publishing has been failing continuously for this long, so an expired token ' +
+        'reaches KIP or the chartplotter rather than only the server log. Cleared on the ' +
+        'next successful publish. Zero turns it off.',
+      default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
     },
     buildDocsIndex: {
       type: 'boolean',
@@ -973,6 +996,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           num((input.track ?? {}).detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES,
         ),
       },
+      notifyAfterFailureMinutes: Math.max(
+        0,
+        num(input.notifyAfterFailureMinutes) ?? DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+      ),
       buildDocsIndex: input.buildDocsIndex !== false,
       publishNotifications: input.publishNotifications !== false,
       site: {

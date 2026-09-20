@@ -19,6 +19,7 @@ import {
   type PluginConfig,
   type PolarStatus,
 } from './config';
+import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
 import { HistoryReader } from './history';
@@ -89,6 +90,30 @@ function readIdentity(app: SignalKApp): VesselIdentity {
 
 function formatClock(date: Date): string {
   return date.toISOString().slice(11, 16);
+}
+
+/** Where the publish-failure notification lives in the tree. */
+const NOTIFICATION_PATH = 'tracker.publishFailed';
+
+/**
+ * Raise or clear the notification the long way, for a server without the
+ * Notifications API. This is what that API writes underneath.
+ */
+function sendNotification(app: SignalKApp, state: 'warn' | 'normal', message: string): void {
+  app.handleMessage('signalk-github-pages', {
+    updates: [
+      {
+        values: [
+          {
+            path: `notifications.${NOTIFICATION_PATH}`,
+            // `visual` only: this plugin failing to reach GitHub is not a
+            // reason to sound the boat's alarm in the middle of the night.
+            value: { state, message, method: state === 'warn' ? ['visual'] : [] },
+          },
+        ],
+      },
+    ],
+  } as never);
 }
 
 /**
@@ -295,6 +320,46 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         app.debug('No privacy zones set: every position is published exactly as received.');
       }
 
+      /**
+       * The one thing this plugin puts into the data model.
+       *
+       * Two ways to say it, because the Notifications API arrived in a
+       * specific server release and this plugin runs on older ones. The
+       * fallback writes the same notification with `handleMessage`, which
+       * every server has had for years and which is what the API does
+       * underneath.
+       */
+      const alarm = new FailureAlarm({ afterMinutes: config.notifyAfterFailureMinutes });
+      let alarmId: string | null = null;
+      const applyAlarm = (action: AlarmAction) => {
+        try {
+          if (action.kind === 'raise') {
+            app.error(action.message);
+            if (app.notifications?.raise) {
+              alarmId = app.notifications.raise({
+                state: 'warn' as never,
+                message: action.message,
+                path: NOTIFICATION_PATH as never,
+              });
+            } else {
+              sendNotification(app, 'warn', action.message);
+            }
+          } else if (action.kind === 'clear') {
+            app.debug('Publishing recovered; clearing the failure notification.');
+            if (app.notifications?.clear && alarmId) {
+              app.notifications.clear(alarmId as never);
+              alarmId = null;
+            } else {
+              sendNotification(app, 'normal', 'Publishing has recovered.');
+            }
+          }
+        } catch (error: any) {
+          // A server that will not take the notification is not a reason to
+          // stop publishing; the log still carries the failure.
+          app.error(`Could not update the publish notification: ${error?.message ?? error}`);
+        }
+      };
+
       const store = new StateStore(app.getDataDirPath());
       const client = new GitHubClient({
         repo: config.github.repo,
@@ -485,6 +550,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
                   `${where}, next in ${Math.round(seconds / 60)} min`
               : `Nothing to publish, ${where}, next in ${Math.round(seconds / 60)} min`,
           );
+          // A cycle that got as far as deciding there was nothing to publish
+          // reached GitHub and read HEAD, so it counts as working.
+          applyAlarm(alarm.recordSuccess());
         } catch (error: any) {
           // One bad cycle is a skipped update, not a dead plugin: a 502 from
           // GitHub, a truncated body or a wedged hotspot all retry next tick.
@@ -497,6 +565,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
           );
+          applyAlarm(alarm.recordFailure(new Date(), message));
         }
         schedule(seconds);
       };
