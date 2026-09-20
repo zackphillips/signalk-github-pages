@@ -26,8 +26,28 @@ var VESSEL_CONSTANTS = Object.freeze({
   TIDE_CACHE_TTL_MS:     3 * 60 * 60 * 1000,  // 3 hours
 
   // ── Data display ─────────────────────────────────────────────────────────
-  SPARKLINE_POINTS:           60,   // number of history points per sparkline
+  // Upper bound on points drawn in one sparkline, not a window. The window is
+  // chosen from HISTORY_WINDOWS; this only stops a very long, very fine log
+  // from queueing tens of thousands of lineTo calls per card for sub-pixel
+  // detail nobody can see. A card is at most ~400 CSS px wide.
+  SPARKLINE_MAX_POINTS:     2000,
   DEFAULT_RECENT_TRACK_COUNT:  3,   // coloured track days shown by default
+
+  // How far back the sparklines plot, offered in the panel header once
+  // history is shown. What is actually selectable depends on the published
+  // log: instrument_log.json covers `entries x resolution` (both set on the
+  // plugin config page), and a window longer than that would draw the same
+  // chart as the longest one that fits, so the frontend disables it rather
+  // than pretending. Defaults to the shortest, which every log covers.
+  HISTORY_WINDOWS: [
+    { label: '1 hour',   hours: 1  },
+    { label: '3 hours',  hours: 3  },
+    { label: '12 hours', hours: 12 },
+    { label: '24 hours', hours: 24 },
+  ],
+  HISTORY_WINDOW_DEFAULT_HOURS: 1,
+  // Per-device UI state, like the unit and theme preferences.
+  HISTORY_WINDOW_KEY: 'historyWindowHours',
 
   // Nothing here stands in for the boat's own position or the water it sits
   // in. Both used to: a fallback privacy zone at one particular dock and a

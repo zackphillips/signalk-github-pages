@@ -155,10 +155,14 @@ export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES *
 /**
  * Rolling length of the instrument log, in buckets.
  *
- * 60 is what the frontend's `SPARKLINE_POINTS` draws: it takes the last 60
- * entries and ignores the rest, so a longer log is bytes uploaded on every
- * publish that nothing has ever plotted. At the default 60 s resolution this
- * is the last hour.
+ * At the default 60 s resolution this is the last hour, which is the shortest
+ * window the site's history dropdown offers and the only one it can promise
+ * on a default install. The frontend plots whatever it is given, so raising
+ * this is what makes the 3, 12 and 24 hour windows selectable — at the cost
+ * of uploading every entry in full on every publish. 24 hours at 60 s is 1440
+ * entries, roughly half a megabyte a cycle: worth it on a dock, not on a
+ * hotspot, which is why the default stays an hour and the choice is the
+ * adopter's.
  */
 export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
 /** How long raw positions stay in `positions_index.json`. */
@@ -407,7 +411,9 @@ export const configSchema = {
           title: 'Entries retained',
           description:
             'Rolling length of instrument_log.json, and the query window: the log ' +
-            'covers entries x resolution. The bundled sparklines draw the last 60 points.',
+            'covers entries x resolution, which is also what the site’s history ' +
+            'dropdown can offer. 60 entries at 60 s is one hour; 24 hours needs 1440 ' +
+            'and uploads about half a megabyte on every publish.',
           default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
         },
       },

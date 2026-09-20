@@ -136,10 +136,17 @@ Run `npm test` and `npm run typecheck` before committing.
   omit the sparklines instead of drawing whatever an older version last
   accumulated. Collapsing any two of those into a nullable snapshot loses a
   behaviour someone will notice.
-- **`instrumentLog.entries` is the query window, and 60 is not arbitrary.**
-  The frontend's `SPARKLINE_POINTS` is 60: it plots the last 60 entries and
-  ignores the rest, so a longer log is bytes uploaded on every publish that
-  nothing has ever drawn.
+- **`instrumentLog.entries` is the query window, and it is also the history
+  dropdown.** `entries x resolutionSeconds` is how far back the log reaches,
+  and the sparklines' window dropdown offers 1/3/12/24 hours against exactly
+  that: a span the published file does not cover is disabled in the menu
+  rather than drawn as a duplicate of a shorter one. The frontend plots every
+  entry it is given, so raising `entries` is what makes the longer windows
+  selectable — and every one of those entries is uploaded in full on every
+  publish. At the default 60 s resolution, 24 hours is 1440 entries and about
+  half a megabyte a cycle, which is a real decision on a hotspot, not a knob
+  to turn up by default. `SPARKLINE_MAX_POINTS` is a draw cap, not a trim;
+  it does not shorten the window.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.

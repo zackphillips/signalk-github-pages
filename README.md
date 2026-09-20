@@ -130,7 +130,7 @@ only. Give Pages a minute, then open the URL.
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
-| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and what the sparklines draw |
+| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and the longest window the site's history dropdown will offer |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
 | `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
 | `history.providerId` | *empty* | Blank uses the server's default provider |
@@ -186,8 +186,9 @@ sparkline window on every cycle instead of accumulating readings itself:
 - The graphs are spaced at `history.resolutionSeconds` (60 s by default)
   rather than at the publish interval, so they are finer than a two-minute
   cadence can produce.
-- The log covers `entries x resolution`: 60 entries at 60 s is the last hour,
-  which is exactly what the bundled sparklines draw.
+- The log covers `entries x resolution`: 60 entries at 60 s is the last hour.
+  That span is also what the site's history dropdown can offer — see
+  [how far back the sparklines go](#how-far-back-the-sparklines-go).
 - A restart, a reinstall, a moved data directory or a plugin that was off for
   a day no longer leaves a hole. Nothing is accumulated, so there is nothing
   to lose.
@@ -215,11 +216,39 @@ Set `history.providerId` only if more than one provider is registered and you
 want a specific one; blank means the server's default.
 
 The whole log goes up on every publish, so its size is `entries` x paths: see
-[why that matters](#why-this-matters-more-than-it-looks-like-it-should). The
-default 60 entries is what the sparklines draw; more than that is uploaded and
-never plotted.
+[why that matters](#why-this-matters-more-than-it-looks-like-it-should).
 
 [signalk-to-influxdb2]: https://www.npmjs.com/package/signalk-to-influxdb2
+
+### How far back the sparklines go
+
+Open a panel's **Show History** and a window dropdown appears beside it: 1, 3,
+12 or 24 hours. It is one setting for the whole page, not one per panel —
+battery voltage is read against solar power and boat speed, and they only line
+up on a shared axis.
+
+What the dropdown can offer is decided by the published file, not by the site.
+`instrument_log.json` reaches back `entries x resolution`, so the defaults (60
+entries at 60 s) cover an hour, and the site marks the three longer windows
+*(not logged)* and disables them rather than drawing three copies of the same
+chart under different labels.
+
+To make them selectable, raise `instrumentLog.entries`:
+
+| Window | `entries` at 60 s | `entries` at 300 s |
+| --- | --- | --- |
+| 1 hour | 60 | 12 |
+| 3 hours | 180 | 36 |
+| 12 hours | 720 | 144 |
+| 24 hours | 1440 | 288 |
+
+Every one of those entries is uploaded in full on every publish, so this is a
+real decision and not a knob to turn up by reflex. At the default path list, 24
+hours at 60 s is roughly half a megabyte a cycle — fine on a dock, expensive on
+a hotspot at a two-minute cadence. Coarsening `history.resolutionSeconds` buys
+the same window for a fifth of the bytes and costs detail inside the shorter
+ones: at 300 s the 1-hour view is twelve points. Pick the pair you want, or
+leave it at an hour.
 
 ## Instrument paths
 
@@ -277,7 +306,8 @@ Asking for every path a database has stored is roughly 167 per entry, which at
 hour** over the hotspot, for data the sparklines never draw. The defaults are
 about two dozen patterns over 60 entries: tens of kilobytes, a megabyte or two
 an hour. Both halves are levers — the path list and `instrumentLog.entries` —
-and the second one is free below 60, because that is all the frontend plots.
+and the second one is what the history dropdown spends: see [how far back the
+sparklines go](#how-far-back-the-sparklines-go).
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
