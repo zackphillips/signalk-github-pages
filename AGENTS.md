@@ -24,8 +24,8 @@ src/
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
-  vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
-                    and the user's passage block preserved
+  siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
+  course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
   frontend.ts       Reading site/ and templating constants.js
@@ -59,10 +59,49 @@ Run `npm test` and `npm run typecheck` before committing.
   passed in as `CycleInput`.
 - **No free-form config.** `site.extraYaml` was YAML merged over everything
   the plugin wrote: an override with no schema, no validation and no way to
-  tell from the config page what `info.yaml` would end up saying. A new key is
-  a typed field and a line in `renderVesselInfo`, not a blob. `grep
-  vesselData\. site/assets/app.js` lists every key the frontend reads; each
-  one needs a source before a field is removed.
+  tell from the config page what the published file would end up saying. A
+  new key is a typed field and a line in `renderSiteConfig`, not a blob.
+  `grep vesselData\. site/assets/app.js` lists every key the frontend reads;
+  each one needs a source before a field is removed.
+- **Nothing on the site is hand-edited, and nothing should become so.** The
+  last two things that were are gone: `info.yaml`, which carried the site
+  configuration, and the `passage:` block inside it, which someone had to
+  type before departure and delete on arrival — and therefore forgot, so a
+  boat home for a fortnight still said it was bound for Santa Cruz. A value
+  the boat already knows is read from the server; a value the adopter chooses
+  is a typed field on the config page. If a new feature needs a person to
+  edit a file in the published repository, that is a design smell — the one
+  deliberate exception is `docs/*.md`, which is prose with no other source,
+  and `assets/custom.css`.
+- **`site.json` is site configuration, not the boat.** Everything about the
+  vessel — name, MMSI, callsign, UUID, IMO, flag, home port, registrations,
+  dimensions — is in `data/telemetry/signalk_latest.json`, which is the whole
+  self tree. It used to be in both, and the frontend preferred the snapshot
+  and treated the other as a fallback, so the duplicate only ever had one
+  possible effect: disagreeing. What stays in `site.json` is what has no
+  other source (privacy zones, custom links, the default position, the
+  timezone, the address the site links back to), plus the USCG and hull
+  numbers, which are here because picking them out of a `registrations` tree
+  is a judgement the plugin already makes and the frontend should not make
+  twice.
+- **The passage comes from the Course API and carries no coordinates.**
+  `nextPoint.position` and `previousPoint.position` are raw positions, and
+  the privacy zones guard `navigation.position` on its way into the snapshot
+  and the track — not a course. A point with no name contributes nothing
+  rather than falling back to its position, which is why activating a
+  waypoint usually yields a destination and no "from": `previousPoint` is the
+  vessel's own position at activation, and publishing it would put the slip
+  the boat just left on a public page. The ETA is left out for a different
+  reason: `targetArrivalTime` is recomputed on every update, and `site.json`
+  is only rewritten when its content changes.
+- **A retired path is removable but not owned.** `ownedPatterns` is what the
+  published manifest lists and what `isOwnedPath` allows writing.
+  `RETIRED_PATTERNS` is a path this plugin used to write and now only deletes
+  — `data/vessel/info.yaml` so far — so it is absent from the manifest, which
+  would otherwise tell the repository's owner it is still maintained, while
+  `isRemovablePath` still lets the one-time deletion through the same
+  ownership check every other deletion passes. The deletion is recorded in
+  `state.retired` only after the commit carrying it landed.
 - **Unknown renders as unknown.** The frontend carried five invented
   fallbacks, each of which turned a missing value into a confident wrong one
   on somebody else's boat: a San Francisco Bay tide location; a privacy zone

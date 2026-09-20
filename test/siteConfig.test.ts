@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import yaml from 'js-yaml';
 import {
-  extractPassage,
   mergeVesselIdentity,
   readVesselDetails,
-  renderVesselInfo,
-} from '../src/vesselInfo';
+  renderSiteConfig,
+} from '../src/siteConfig';
 import { makeConfig } from './helpers/config';
+
+/** Parse what the plugin publishes, the way the frontend does. */
+const render = (...args: Parameters<typeof renderSiteConfig>): any =>
+  JSON.parse(renderSiteConfig(...args));
 
 const CONFIG = makeConfig({
   privacyZones: [
@@ -27,44 +29,57 @@ const IDENTITY = {
   signalk: { host: '192.168.8.50', port: 3000, protocol: 'http' },
 };
 
-describe('renderVesselInfo', () => {
-  it('writes what the frontend reads', () => {
-    const parsed = yaml.load(renderVesselInfo(CONFIG, IDENTITY)) as any;
-    expect(parsed.name).toBe('S.V.Mermug');
-    expect(parsed.mmsi).toBe('338543654');
+describe('renderSiteConfig', () => {
+  it('writes the site configuration the snapshot cannot supply', () => {
+    const parsed = render(CONFIG, IDENTITY, null);
+    expect(parsed.schema_version).toBe(1);
     expect(parsed.signalk).toEqual({ host: '192.168.8.50', port: '3000', protocol: 'http' });
     expect(parsed.privacy_zones).toEqual([
       { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 },
     ]);
+    expect(parsed.uscg_number).toBe('1024168');
+    expect(parsed.hull_number).toBe('BEY57004E494');
   });
 
-  it('carries the passage block across a rewrite', () => {
-    // The passage banner is edited from the GitHub web UI by whoever is
-    // ashore; a config change on the boat must not wipe it.
-    const published = yaml.dump({
-      passage: { from: 'San Francisco, CA', to: 'Santa Cruz, CA', departed: '2026-02-20' },
-      name: 'Old name',
-    });
-    const parsed = yaml.load(renderVesselInfo(CONFIG, IDENTITY, published)) as any;
-    expect(parsed.passage).toEqual({
+  it('leaves the boat to the snapshot, which already carries all of it', () => {
+    // name, mmsi, callsign, uuid, imo, flag, home port, registrations and
+    // design are every one of them in signalk_latest.json. A second copy here
+    // was a second thing to keep right, and the frontend preferred the
+    // snapshot anyway.
+    const parsed = render(CONFIG, IDENTITY, null);
+    for (const key of [
+      'name',
+      'mmsi',
+      'callsign',
+      'uuid',
+      'imo',
+      'flag',
+      'home_port',
+      'registrations',
+      'design',
+    ]) {
+      expect(parsed[key]).toBeUndefined();
+    }
+  });
+
+  it('writes the passage it is given, and nothing when there is none', () => {
+    const withPassage = render(CONFIG, IDENTITY, {
       from: 'San Francisco, CA',
       to: 'Santa Cruz, CA',
-      departed: '2026-02-20',
+      departed: '2026-02-20T16:00:00Z',
     });
-    expect(parsed.name).toBe('S.V.Mermug');
-  });
-
-  it('omits passage when there is none, and survives an unparseable file', () => {
-    expect((yaml.load(renderVesselInfo(CONFIG, IDENTITY)) as any).passage).toBeUndefined();
-    expect(extractPassage('{: not yaml\n  - at all')).toBeUndefined();
-    expect(extractPassage(null)).toBeUndefined();
+    expect(withPassage.passage).toEqual({
+      from: 'San Francisco, CA',
+      to: 'Santa Cruz, CA',
+      departed: '2026-02-20T16:00:00Z',
+    });
+    expect(render(CONFIG, IDENTITY, null).passage).toBeUndefined();
   });
 
   it('leaves out empty optional fields rather than writing blanks', () => {
-    const bare = makeConfig();
-    const parsed = yaml.load(renderVesselInfo(bare, { name: 'Boat', mmsi: '' })) as any;
-    expect(parsed.mmsi).toBeUndefined();
+    const parsed = render(makeConfig(), { name: 'Boat', mmsi: '' }, null);
     expect(parsed.uscg_number).toBeUndefined();
+    expect(parsed.signalk).toBeUndefined();
     expect(parsed.privacy_zones).toEqual([]);
   });
 });
@@ -79,7 +94,7 @@ describe('custom buttons', () => {
         ],
       },
     });
-    const parsed = yaml.load(renderVesselInfo(config, IDENTITY)) as any;
+    const parsed = render(config, IDENTITY, null);
     expect(parsed.custom_links).toEqual([
       { label: "Ship's Log", url: 'https://example.com/log' },
       { label: 'Starlink', url: 'http://192.168.100.1/' },
@@ -89,7 +104,7 @@ describe('custom buttons', () => {
   });
 
   it('leaves the key out entirely when there are none', () => {
-    expect((yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any).custom_links).toBeUndefined();
+    expect(render(makeConfig(), IDENTITY, null).custom_links).toBeUndefined();
   });
 });
 
@@ -98,7 +113,7 @@ describe('the default position', () => {
     const config = makeConfig({
       site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'San Francisco Bay' } },
     });
-    const parsed = yaml.load(renderVesselInfo(config, IDENTITY)) as any;
+    const parsed = render(config, IDENTITY, null);
     expect(parsed.default_location).toEqual({
       lat: 37.806,
       lon: -122.465,
@@ -107,7 +122,7 @@ describe('the default position', () => {
   });
 
   it('leaves it out when it is not set, so the frontend uses its own default', () => {
-    const parsed = yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any;
+    const parsed = render(makeConfig(), IDENTITY, null);
     expect(parsed.default_location).toBeUndefined();
   });
 });
@@ -214,21 +229,23 @@ describe('what is read from Signal K versus typed on the config page', () => {
     registrations: { 'national.usa': '1024168' },
   };
 
-  it('publishes everything the tree carried', () => {
-    const parsed = yaml.load(renderVesselInfo(makeConfig(), FROM_SIGNALK)) as any;
-    expect(parsed.callsign).toBe('WDL1234');
+  it('publishes the two numbers derived from the tree, and no more of it', () => {
+    // The USCG and hull numbers are here because picking them out of a
+    // `registrations` tree is a judgement, and the frontend should not make
+    // it a second time. Everything else the tree carries — the callsign, the
+    // dimensions, the registrations themselves — is in the snapshot already.
+    const parsed = render(makeConfig(), FROM_SIGNALK, null);
     expect(parsed.uscg_number).toBe('1024168');
     expect(parsed.hull_number).toBe('BEY57004E494');
-    expect(parsed.design).toEqual({ draft_max_m: 2.13 });
-    expect(parsed.registrations).toEqual({ 'national.usa': '1024168' });
+    expect(parsed.callsign).toBeUndefined();
+    expect(parsed.design).toBeUndefined();
+    expect(parsed.registrations).toBeUndefined();
   });
 
   it('takes the config page only when the override is ticked, and says so', () => {
     const problems: string[] = [];
     const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '9999999' } });
-    const parsed = yaml.load(
-      renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem)),
-    ) as any;
+    const parsed = render(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
     expect(parsed.uscg_number).toBe('9999999');
     expect(problems.join(' ')).toContain('differs from the one Signal K reports');
   });
@@ -236,9 +253,7 @@ describe('what is read from Signal K versus typed on the config page', () => {
   it('ignores a number left in the box with the override unticked', () => {
     const problems: string[] = [];
     const config = makeConfig({ site: { uscgNumber: '9999999' } });
-    const parsed = yaml.load(
-      renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem)),
-    ) as any;
+    const parsed = render(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
     expect(parsed.uscg_number).toBe('1024168');
     expect(problems).toEqual([]);
   });
@@ -246,7 +261,7 @@ describe('what is read from Signal K versus typed on the config page', () => {
   it('says nothing when the config page agrees with Signal K', () => {
     const problems: string[] = [];
     const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '1024168' } });
-    renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
+    renderSiteConfig(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
     expect(problems).toEqual([]);
   });
 });

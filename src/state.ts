@@ -26,6 +26,12 @@ export interface PersistedState {
   lastPublishedAt?: string;
   /** True once the store has been seeded from the repository. */
   seeded?: boolean;
+  /**
+   * Paths this plugin used to publish and has now removed from the
+   * repository. Recorded only after the commit carrying the deletion landed,
+   * so a failed publish retries the removal rather than skipping it.
+   */
+  retired?: string[];
 }
 
 export class StateStore {

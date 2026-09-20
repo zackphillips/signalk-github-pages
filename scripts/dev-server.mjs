@@ -21,7 +21,6 @@ const TYPES = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.yaml': 'text/yaml; charset=utf-8',
   '.gpx': 'application/gpx+xml',
   '.csv': 'text/csv',
   '.png': 'image/png',

@@ -393,25 +393,44 @@ grow the file without bound.
 
 ## What comes from Signal K
 
-The boat's own details are not typed on the config page. Every cycle the
-plugin reads the self tree and writes what it found into
-`data/vessel/info.yaml`:
+The boat's own details are not typed on the config page and not published a
+second time: `data/telemetry/signalk_latest.json` is the whole self tree, so
+the name, MMSI, callsign, registrations and dimensions are already there and
+the site reads them from there.
 
-| `info.yaml` | Read from |
+`data/vessel/site.json` carries only what the snapshot cannot supply — the
+privacy zones, the custom links, the default position, the timezone, the
+address the site links back to — plus two numbers the plugin derives from the
+tree so the frontend does not have to:
+
+| Derived | Read from |
 |---|---|
-| `name`, `mmsi`, `uuid`, `flag`, `home_port` | `vessels.self` |
-| `callsign` | `communication.callsignVhf`, then `callsignHf` |
-| `imo`, `registrations` | `registrations.imo` / `.national` / `.local` / `.other` |
 | `uscg_number` | The registration whose key or description says USCG, coast guard, documentation or official number — or a national one flagged `US` |
 | `hull_number` | The registration whose key or description says HIN or hull |
-| `design` | `design.length`, `.beam`, `.draft`, `.airHeight`, `.displacement`, `.keel`, `.aisShipType`, in metres and kilograms |
 | `signalk.host`, `.port`, `.protocol` | The server's own settings and the Pi's LAN address |
 
 It is read on every cycle, not once at start: a cold boot runs the first cycle
 before the first product-information frame arrives, and an identity read once
-would leave the site saying "Vessel" until the next restart. Dimensions are
-rounded to the millimetre, so a float that wobbles in the last decimal place
-does not commit `info.yaml` every two minutes.
+would leave the GPX saying "Vessel" until the next restart.
+
+### The passage banner
+
+Activate a waypoint or a route on the plotter and the banner appears: where
+you are bound, where you departed from if the course names it, and when. It
+comes from the **Course API** — `startTime` is the departure, with no state
+for the plugin to keep — so clearing the destination on arrival takes the
+banner down by itself.
+
+This used to be a `passage:` block hand-edited into the published config from
+the GitHub web UI before departure and deleted on arrival, which meant it was
+wrong whenever anyone forgot. Nothing on the site is hand-edited now.
+
+No coordinates are published, only names: `previousPoint` is usually the
+vessel's own position at the moment you activated the waypoint, and falling
+back to its latitude and longitude would put the slip you just left on a
+public page through a path the privacy zones do not guard. The ETA is left
+out too — `targetArrivalTime` is recomputed continuously, and `site.json` is
+only rewritten when its content changes.
 
 The config page shows both numbers read-only. Tick `site.overrideUscgNumber`
 or `site.overrideHullNumber` to type one instead; if Signal K reports something
@@ -431,8 +450,11 @@ Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
 under a heading that read like its own — a wrong number presented as a right
 one. The same went for a fallback privacy zone at one particular dock, and for
 a whole fallback vessel identity (name, MMSI, documentation number) used when
-`info.yaml` failed to load, which made every such site introduce itself as
-somebody else's boat. All three are gone: unknown renders as unknown.
+the site configuration failed to load, which made every such site introduce
+itself as somebody else's boat. So was a fabricated telemetry snapshot shown
+when `signalk_latest.json` would not load, which told anyone following the
+boat it was sailing in ten knots off Ocean Beach when in fact publishing had
+broken. All of them are gone: unknown renders as unknown.
 
 ## Polars
 
@@ -490,7 +512,7 @@ into a commit.
 | Path | Owner |
 |---|---|
 | `data/telemetry/**` | Plugin, every cycle |
-| `data/vessel/info.yaml` | Plugin, when the config changes — your `passage:` block is preserved |
+| `data/vessel/site.json` | Plugin, when the configuration or the passage changes |
 | `docs/index.json` | Plugin, when the docs tree changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
@@ -673,7 +695,8 @@ src/
   instrumentLog.ts  instrument_log.json + the path allowlist
   gpx.ts            Per-day GPX and tracks_index.json
   docsIndex.ts      docs/index.json
-  vesselInfo.ts     data/vessel/info.yaml, and reading the boat off the tree
+  siteConfig.ts     data/vessel/site.json, and reading the boat off the tree
+  course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv, from the server or the config
   timezones.ts      The IANA list behind the timezone dropdown
   frontend.ts       Reading site/, templating constants.js

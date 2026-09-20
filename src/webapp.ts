@@ -20,13 +20,14 @@
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { Passage } from './course';
 import { renderPreviewData } from './preview';
 import { renderConstants } from './frontend';
 import { describePrune, type PruneRequest } from './prune';
 import type { Publisher } from './publisher';
 import type { PluginConfig } from './config';
 import type { Tree } from './snapshot';
-import type { VesselIdentity } from './vesselInfo';
+import type { VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
 
@@ -65,6 +66,8 @@ export interface WebappDeps {
   readTree: () => Tree;
   /** The polar CSV and status the last cycle resolved. */
   polars: () => { csv: string; status: PolarStatus | null };
+  /** The passage the last cycle read, for the preview's banner. */
+  passage: () => Passage | null;
   log: (message: string) => void;
 }
 
@@ -74,7 +77,6 @@ const TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.yaml': 'text/yaml; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8',
   '.gpx': 'application/gpx+xml',
   '.png': 'image/png',
@@ -224,7 +226,11 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       if (requested.startsWith('data/')) {
         const files = await renderPreviewData(
           { config, store, identity: current.identity },
-          { tree: current.readTree(), polars: current.polars().csv },
+          {
+            tree: current.readTree(),
+            polars: current.polars().csv,
+            passage: current.passage(),
+          },
         );
         const contents = files.get(requested);
         if (contents === undefined) {

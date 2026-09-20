@@ -19,6 +19,7 @@ import {
   type PluginConfig,
   type PolarStatus,
 } from './config';
+import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
 import { HistoryReader } from './history';
 import { Publisher } from './publisher';
@@ -28,7 +29,7 @@ import { extractPositionFix, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
-import { readVesselDetails, type VesselIdentity } from './vesselInfo';
+import { readVesselDetails, type VesselIdentity } from './siteConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
@@ -122,6 +123,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // resource again on a preview request: a page open must not be able to make
   // the boat do work it would not otherwise do.
   let polarCsv = '';
+  // The passage the last cycle read, for the console's preview. Same rule as
+  // the polar CSV: a page open must not make the boat call the Course API.
+  let passage: Passage | null = null;
   // Set on start, cleared on stop: the console's routes are registered once,
   // when the server loads the plugin, and answer 503 while it is not running.
   let webapp: WebappDeps | null = null;
@@ -366,9 +370,11 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
+          passage = await readPassage(app, (problem) => app.error(problem));
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
             history: await history.read(new Date()),
+            passage,
           });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
@@ -405,6 +411,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         version: PLUGIN_VERSION,
         readTree: () => readSelfTree(app),
         polars: () => ({ csv: polarCsv, status: polarStatus }),
+        passage: () => passage,
         log: (message) => app.debug(message),
       };
 
@@ -423,6 +430,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       if (timer) clearTimeout(timer);
       timer = undefined;
       webapp = null;
+      passage = null;
       app.setPluginStatus('Stopped');
     },
 

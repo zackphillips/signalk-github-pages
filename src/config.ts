@@ -3,7 +3,7 @@
  * TypeScript shape it produces, and the resolver that turns a filled-in form
  * into values the rest of the plugin can rely on.
  *
- * The config page is the only place any of this is set. `data/vessel/info.yaml`
+ * The config page is the only place any of this is set. `data/vessel/site.json`
  * in the published repo is an *output* of this file, written for the frontend
  * to read.
  *
@@ -515,7 +515,7 @@ export const configSchema = {
       title: 'Site details',
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
-        'tree every cycle and written into data/vessel/info.yaml.',
+        'tree every cycle and written into data/vessel/site.json.',
       dependencies: {
         ...readOnlyUnless('overrideUscgNumber', 'uscgNumber'),
         ...readOnlyUnless('overrideHullNumber', 'hullNumber'),
@@ -730,7 +730,7 @@ export interface UnresolvedConfig {
  * Keep the custom buttons that are actually buttons.
  *
  * The scheme check is not tidiness: the label and URL are published into
- * `info.yaml` and the frontend assigns the URL straight to `href`, so a
+ * `site.json` and the frontend assigns the URL straight to `href`, so a
  * `javascript:` entry here would be a script running on every visitor's
  * browser. http and https only, and the frontend checks again on the way in.
  */

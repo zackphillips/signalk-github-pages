@@ -8,6 +8,7 @@
  * what it did, which is what makes the whole cycle testable without a server
  * or a network.
  */
+import type { Passage } from './course';
 import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
 import {
   parseNotificationLog,
@@ -30,6 +31,7 @@ import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from 
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
   MANIFEST_PATH,
+  RETIRED_PATHS,
   partitionOwned,
   renderManifest,
   type ManifestOptions,
@@ -56,9 +58,9 @@ import { POLARS_PATH } from './polars';
 import {
   mergeVesselIdentity,
   readVesselDetails,
-  renderVesselInfo,
+  renderSiteConfig,
   type VesselIdentity,
-} from './vesselInfo';
+} from './siteConfig';
 
 const TELEMETRY_DIR = 'data/telemetry';
 const LATEST_PATH = `${TELEMETRY_DIR}/signalk_latest.json`;
@@ -66,7 +68,7 @@ const POSITIONS_PATH = `${TELEMETRY_DIR}/positions_index.json`;
 const INSTRUMENT_LOG_PATH = `${TELEMETRY_DIR}/instrument_log.json`;
 const NOTIFICATIONS_PATH = `${TELEMETRY_DIR}/notifications.json`;
 const TRACKS_INDEX_PATH = `${TELEMETRY_DIR}/tracks_index.json`;
-const INFO_PATH = 'data/vessel/info.yaml';
+const SITE_CONFIG_PATH = 'data/vessel/site.json';
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -88,6 +90,13 @@ export interface CycleInput {
    * what `unavailable` does too.
    */
   history?: HistoryResult;
+  /**
+   * The passage banner, read from the Course API in `index.ts` — async, like
+   * the other two, so this module stays a pure function of what it is given.
+   * Absent means no banner, which is the normal state of a boat that is not
+   * navigating to anything.
+   */
+  passage?: Passage | null;
 }
 
 export interface CycleResult {
@@ -249,7 +258,7 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now)));
 
-    files.push(...(await this.vesselInfoFile(identity)));
+    files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
     files.push(...(await this.frontendFiles(siteDir, version, state.frontendVersion)));
@@ -261,6 +270,8 @@ export class Publisher {
       // outside the manifest, which is exactly what the manifest is for.
       log(`Refusing to publish unowned path: ${file.path}`);
     }
+
+    const deletions = await this.retirementDeletions(state.retired ?? []);
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -276,13 +287,16 @@ export class Publisher {
     );
 
     const message = this.commitMessage(navState, now);
-    const result = await publishFiles(client, owned, message);
+    const result = await publishFiles(client, owned, message, { deletions });
     const requests = client.takeStats();
     const durationMs = Date.now() - startedAt;
 
     await store.mergeState({
       lastCommit: result?.commitSha,
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
+      // Only once the commit carrying them actually landed: a failed publish
+      // must leave the retirement to be retried, not recorded as done.
+      ...(result && deletions.length ? { retired: [...(state.retired ?? []), ...deletions] } : {}),
     });
 
     if (result) {
@@ -528,35 +542,65 @@ export class Publisher {
   }
 
   /**
-   * Rewrite `info.yaml` only when the rendered content actually changes.
+   * Paths this plugin used to write, removed once and then left alone.
    *
-   * The passage banner lives in this file and is edited on GitHub, so the
-   * published copy is read back before every rewrite and its `passage:` block
-   * carried across.
+   * `data/vessel/info.yaml` is the only one so far: `site.json` replaced it,
+   * and an install upgrading across that change would otherwise keep a file
+   * in the repository that looks like live configuration, is not read by
+   * anything, and will never be updated again.
+   *
+   * Checked against what is actually in the repository, because the Git Data
+   * API rejects the whole tree with a 422 if an entry names a path the base
+   * tree does not have — the same reason the voyage prune checks. A path that
+   * is already gone is recorded as retired without a commit, so a fresh
+   * install pays one `getFile` on its first cycle and nothing afterwards.
    */
-  private async vesselInfoFile(identity: VesselIdentity): Promise<PublishFile[]> {
-    const { store, config, client } = this.deps;
-    const fingerprint = JSON.stringify({
-      site: config.site,
-      zones: config.privacyZones,
-      timezone: config.timezone,
-      identity,
-    });
-    const previous = await store.readText('info-fingerprint.txt');
-    if (previous === fingerprint) return [];
+  private async retirementDeletions(alreadyRetired: string[]): Promise<string[]> {
+    const { client, log } = this.deps;
+    const pending = RETIRED_PATHS.filter((path) => !alreadyRetired.includes(path));
+    if (!pending.length) return [];
 
-    const published = await client.getFile(INFO_PATH).catch(() => null);
-    const contents = renderVesselInfo(config, identity, published, (problem) =>
-      this.deps.log(problem),
+    const present: string[] = [];
+    for (const path of pending) {
+      const existing = await client.getFile(path).catch(() => null);
+      if (existing !== null) present.push(path);
+    }
+    const { owned, rejected } = partitionOwned(
+      present.map((path) => ({ path })),
+      this.manifestOptions(''),
+      { allowRetired: true },
     );
-    await store.writeText('info-fingerprint.txt', fingerprint);
-    this.deps.log(
+    for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
+    if (owned.length) {
+      log(`Removing ${owned.map((file) => file.path).join(', ')}: replaced by site.json.`);
+    }
+    return owned.map((file) => file.path);
+  }
+
+  /**
+   * Rewrite `site.json` only when the rendered content actually changes.
+   *
+   * The fingerprint covers everything that goes into the file, the passage
+   * included: a leg activated on the plotter should reach the site on the
+   * next cycle, and nothing else should rewrite it. This is also why the
+   * passage carries no ETA — see `course.ts`.
+   */
+  private async siteConfigFile(
+    identity: VesselIdentity,
+    passage: Passage | null,
+  ): Promise<PublishFile[]> {
+    const { store, config, log } = this.deps;
+    const contents = renderSiteConfig(config, identity, passage, (problem) => log(problem));
+    const previous = await store.readText('site.json');
+    if (previous === contents) return [];
+
+    await store.writeText('site.json', contents);
+    log(
       previous === null
-        ? `Writing ${INFO_PATH} for the first time.`
-        : `Config changed; rewriting ${INFO_PATH}` +
-            (published?.includes('passage:') ? ' (preserving the passage block).' : '.'),
+        ? `Writing ${SITE_CONFIG_PATH} for the first time.`
+        : `Site configuration changed; rewriting ${SITE_CONFIG_PATH}.`,
     );
-    return [{ path: INFO_PATH, content: contents }];
+    return [{ path: SITE_CONFIG_PATH, content: contents }];
   }
 
   /**
