@@ -30,6 +30,20 @@ const tree = (over: { lat?: number; lon?: number; state?: string; timestamp?: st
   electrical: { batteries: { house: { voltage: { value: 12.7 } } } },
 });
 
+/** A history result as the reader would hand one back. */
+const fromHistory = (entries: Array<{ timestamp: string; values: Record<string, number> }>) =>
+  ({
+    status: 'ok' as const,
+    entries,
+    requestedPaths: Object.keys(entries[0]?.values ?? {}),
+    providerId: 'signalk-to-influxdb2',
+  });
+
+const LOG_ENTRIES = [
+  { timestamp: '2026-03-01T19:58:00.000Z', values: { 'navigation.speedOverGround': 4.2 } },
+  { timestamp: '2026-03-01T19:59:00.000Z', values: { 'navigation.speedOverGround': 4.4 } },
+];
+
 describe('Publisher', () => {
   let dataDir: string;
   let fake: FakeGitHub;
@@ -84,7 +98,7 @@ describe('Publisher', () => {
   it('publishes telemetry, the frontend, the config and the docs index on the first cycle', async () => {
     const publisher = makePublisher();
     await publisher.seed();
-    const result = await publisher.runCycle(tree());
+    const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
 
     expect(result.published).toBe(true);
     for (const expected of [
@@ -149,13 +163,55 @@ describe('Publisher', () => {
     expect(publisher.intervalSeconds({})).toBe(3600);
   });
 
-  it('keeps only the allowlisted instrument paths', async () => {
+  it('publishes the instrument log the history provider returned', async () => {
     const publisher = makePublisher();
-    await publisher.runCycle(tree());
+    const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
+
+    expect(result.files).toContain('data/telemetry/instrument_log.json');
     const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
-    expect(Object.keys(log.entries[0].values).sort()).toEqual([
-      'electrical.batteries.house.voltage',
-      'navigation.speedOverGround',
+    expect(log.entries).toEqual(LOG_ENTRIES);
+  });
+
+  it('publishes no instrument log at all when the provider did not answer', async () => {
+    // The copy already on the site is the last good one: a sparkline a few
+    // minutes stale beats a blank panel every time the database restarts.
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
+    const published = fake.files.get('data/telemetry/instrument_log.json');
+
+    const result = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }), {
+      history: { status: 'unavailable', reason: 'influxdb is starting' },
+    });
+    expect(result.files).not.toContain('data/telemetry/instrument_log.json');
+    expect(fake.files.get('data/telemetry/instrument_log.json')).toBe(published);
+  });
+
+  it('empties the instrument log once when there is no provider', async () => {
+    const publisher = makePublisher();
+    const first = await publisher.runCycle(tree(), { history: { status: 'none' } });
+    expect(first.files).toContain('data/telemetry/instrument_log.json');
+    expect(JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!).entries).toEqual([]);
+
+    // And not again on every cycle after that.
+    const second = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }), {
+      history: { status: 'none' },
+    });
+    expect(second.files).not.toContain('data/telemetry/instrument_log.json');
+  });
+
+  it('builds the track from the tree, not from the provider', async () => {
+    // The position index is the plugin's own: one point per cycle, from the
+    // fix it saw, through the privacy zones.
+    const publisher = makePublisher();
+    await publisher.runCycle(tree({ timestamp: '2026-03-01T19:00:00Z', lat: 37.9, lon: -122.5 }), {
+      history: fromHistory(LOG_ENTRIES),
+    });
+    await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
+
+    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+    expect(positions.positions.map((entry: any) => entry.timestamp)).toEqual([
+      '2026-03-01T19:00:00.000Z',
+      '2026-03-01T20:00:00.000Z',
     ]);
   });
 
@@ -419,129 +475,13 @@ describe('Publisher', () => {
 
   it('survives a cycle with no position at all', async () => {
     const publisher = makePublisher();
-    const result = await publisher.runCycle({ navigation: { state: { value: 'moored' } } });
+    const result = await publisher.runCycle(
+      { navigation: { state: { value: 'moored' } } },
+      { history: fromHistory(LOG_ENTRIES) },
+    );
     expect(result.published).toBe(true);
     expect(fake.files.has('data/telemetry/positions_index.json')).toBe(false);
     expect(fake.files.has('data/telemetry/instrument_log.json')).toBe(true);
-  });
-
-  it('publishes a track read back from the history provider, not just the live fix', async () => {
-    const publisher = makePublisher();
-    const result = await publisher.runCycle(tree(), {
-      history: {
-        providerId: 'signalk-to-influxdb2',
-        requestedPaths: ['navigation.speedOverGround'],
-        positions: [
-          {
-            timestamp: '2026-03-01T19:00:00.000Z',
-            values: [
-              { path: 'navigation.position', value: { latitude: 37.9, longitude: -122.5 } },
-            ],
-          },
-          {
-            timestamp: '2026-03-01T19:30:00.000Z',
-            values: [
-              { path: 'navigation.position', value: { latitude: 37.91, longitude: -122.51 } },
-            ],
-          },
-        ],
-        instrument: [
-          { timestamp: '2026-03-01T19:00:00.000Z', values: { 'navigation.speedOverGround': 3.9 } },
-          { timestamp: '2026-03-01T19:30:00.000Z', values: { 'navigation.speedOverGround': 4.0 } },
-        ],
-      },
-    });
-
-    expect(result.published).toBe(true);
-    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
-    // Two from history plus the live fix, oldest first.
-    expect(positions.positions.map((entry: any) => entry.timestamp)).toEqual([
-      '2026-03-01T19:00:00.000Z',
-      '2026-03-01T19:30:00.000Z',
-      '2026-03-01T20:00:00.000Z',
-    ]);
-    const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
-    expect(log.entries.map((entry: any) => entry.values['navigation.speedOverGround'])).toEqual([
-      3.9, 4.0, 4.2,
-    ]);
-    // The GPX drawn for the day follows the history, not the publish cadence.
-    expect(fake.files.get('data/telemetry/tracks/2026-03-01.gpx')).toContain(
-      'lat="37.900000"',
-    );
-  });
-
-  it('lets the live reading win the bucket it shares with the provider', async () => {
-    // The newest bucket in a database is up to one resolution behind; the
-    // sparkline has to end at what the boat is doing now.
-    const publisher = makePublisher();
-    await publisher.runCycle(tree(), {
-      history: {
-        providerId: 'default',
-        requestedPaths: [],
-        positions: [],
-        instrument: [
-          { timestamp: '2026-03-01T20:00:30.000Z', values: { 'navigation.speedOverGround': 9.9 } },
-        ],
-      },
-    });
-    const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
-    expect(log.entries).toHaveLength(1);
-    expect(log.entries[0].values['navigation.speedOverGround']).toBe(4.2);
-  });
-
-  it('keeps locally accumulated history the provider does not have', async () => {
-    // A database installed this week holds nothing from last week's passage,
-    // and switching to it must not shorten a track already published.
-    const publisher = makePublisher();
-    await publisher.runCycle(tree({ timestamp: '2026-03-01T19:00:00Z', lat: 37.9, lon: -122.5 }));
-    const result = await publisher.runCycle(tree(), {
-      history: {
-        providerId: 'default',
-        requestedPaths: [],
-        positions: [
-          {
-            timestamp: '2026-03-01T19:45:00.000Z',
-            values: [
-              { path: 'navigation.position', value: { latitude: 37.91, longitude: -122.51 } },
-            ],
-          },
-        ],
-        instrument: [],
-      },
-    });
-
-    expect(result.published).toBe(true);
-    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
-    expect(positions.positions.map((entry: any) => entry.timestamp)).toEqual([
-      '2026-03-01T19:00:00.000Z',
-      '2026-03-01T19:45:00.000Z',
-      '2026-03-01T20:00:00.000Z',
-    ]);
-  });
-
-  it('redacts a history position that falls inside a privacy zone', async () => {
-    const publisher = makePublisher();
-    await publisher.runCycle(tree(), {
-      history: {
-        providerId: 'default',
-        requestedPaths: [],
-        positions: [
-          {
-            // Already redacted upstream by positionEntriesFromHistory; what is
-            // checked here is that the publisher does not re-expand it.
-            timestamp: '2026-03-01T19:30:00.000Z',
-            values: [
-              { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
-            ],
-          },
-        ],
-        instrument: [],
-      },
-    });
-    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
-    expect(positions.positions[0].values).toEqual([
-      { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
-    ]);
   });
 
   it('freezes yesterday once the local day rolls over', async () => {
@@ -565,26 +505,22 @@ describe('cycle accounting', () => {
   let fake: FakeGitHub;
   let logs: string[];
 
-  const run = async (config: Record<string, any> = {}, seededEntries = 0) => {
+  /** A history answer of `entries` buckets, each carrying `paths` values. */
+  const historyOf = (entries: number, paths: number) => {
+    const values: Record<string, number> = {};
+    for (let i = 0; i < paths; i += 1) values[`electrical.batteries.bank${i}.voltage`] = 12.6;
+    return fromHistory(
+      Array.from({ length: entries }, (_unused, index) => ({
+        timestamp: `2026-03-01T${String(index % 24).padStart(2, '0')}:00:00.000Z`,
+        values,
+      })),
+    );
+  };
+
+  const run = async (config: Record<string, any> = {}, logEntries = 2) => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skgp-stats-'));
     fake = new FakeGitHub({ repo: 'owner/site', branch: 'main' });
     logs = [];
-    if (seededEntries > 0) {
-      // A log that has been running for days, which is when the size starts
-      // to matter.
-      const values: Record<string, number> = {};
-      for (let i = 0; i < 120; i += 1) values[`electrical.batteries.bank${i}.voltage`] = 12.6;
-      await new StateStore(dataDir).writeText(
-        'instrument_log.json',
-        JSON.stringify({
-          schema_version: 1,
-          entries: Array.from({ length: seededEntries }, (_unused, index) => ({
-            timestamp: `2026-03-01T${String(index % 24).padStart(2, '0')}:00:00.000Z`,
-            values,
-          })),
-        }),
-      );
-    }
     const publisher = new Publisher({
       client: new GitHubClient({
         repo: 'owner/site',
@@ -600,7 +536,9 @@ describe('cycle accounting', () => {
       log: (message) => logs.push(message),
       now: () => new Date('2026-03-01T20:00:00Z'),
     });
-    const result = await publisher.runCycle(tree());
+    const result = await publisher.runCycle(tree(), {
+      history: historyOf(logEntries, logEntries > 2 ? 120 : 1),
+    });
     await fs.rm(dataDir, { recursive: true, force: true });
     return { result, logs };
   };
@@ -633,6 +571,8 @@ describe('cycle accounting', () => {
   });
 
   it('warns, with the hourly cost and the fix, once the log dominates a cycle', async () => {
+    // A log the size one gets from asking for every bank at a fine
+    // resolution, which is when the upload starts to matter.
     const { result, logs } = await run(
       { instrumentLog: { paths: 'electrical.batteries.*.voltage', entries: 200 } },
       200,

@@ -1,36 +1,27 @@
 /**
- * The Signal K History API as the source of the published history.
+ * The instrument log, read back from a Signal K history provider.
  *
- * Without a history provider this plugin *is* the historian: it appends one
- * position and one instrument reading per publish cycle to files in its data
- * directory, so the map track and the sparklines are sampled at the publish
- * cadence — a point every two minutes underway, an hour-wide gap at anchor,
- * and nothing at all from before the plugin was installed or while it was
- * stopped.
+ * The plugin used to be its own historian for this file: one reading per
+ * publish cycle, appended to a file in the plugin data directory, so the
+ * sparklines were sampled at the publish cadence and a restart, a reinstall
+ * or a stopped plugin left a hole nothing could fill. A server with a history
+ * provider registered (signalk-to-influxdb2 and friends) already holds all of
+ * it at full rate, so the log is now a projection of the database rather than
+ * something this plugin accumulates.
  *
- * A server that has a history provider registered (signalk-to-influxdb2 and
- * friends) already holds that history at full rate. Reading it back per cycle
- * gives the site a track at whatever resolution is asked for, survives a
- * restart, a reinstall and a moved data directory, and makes the plugin's own
- * rolling files a cache rather than the record.
+ * Positions are deliberately *not* read from here. The track is still built
+ * from what the plugin sees on the tree, which keeps the GPX archive working
+ * on a server with no provider at all, keeps the whole 24-hour window from
+ * being re-uploaded on every cycle, and leaves exactly one code path where a
+ * position can reach the repository — the one the privacy zones already
+ * guard. Asking a database for raw positions would add a second.
  *
- * Two things this module is careful about:
- *
- * - **The provider returns raw positions.** Privacy zones are applied here,
- *   to every point, exactly as they are to a live fix. A zone added after a
- *   passage redacts that passage on the next cycle, because the history is
- *   re-read every time rather than accumulated.
- * - **In-process is not instant.** `getValues` reaches a database that is
- *   usually a container on the same Pi and sometimes a server ashore, so
- *   every call is raced against a timeout. A wedged query skips the history
- *   for one cycle and falls back to local accumulation; it never holds up the
- *   publish.
+ * Every call is raced against a timeout: `getValues` reaches a database that
+ * is usually a container on the same Pi and sometimes a server ashore. A
+ * wedged query costs one cycle's sparklines, never the publish.
  */
 import { Temporal } from '@js-temporal/polyfill';
-import type { PrivacyZone } from './config';
 import { pathMatches, type InstrumentLogEntry } from './instrumentLog';
-import { buildPositionEntry, pruneAndSort, type PositionEntry } from './positions';
-import type { PositionFix } from './snapshot';
 import { parseTimestamp } from './time';
 
 /** One row: the bucket timestamp, then one value per entry in `values`. */
@@ -75,90 +66,54 @@ export interface HistoryConfig {
   timeoutMs: number;
 }
 
-/** What one cycle got out of the provider, ready to publish. */
-export interface HistorySnapshot {
-  positions: PositionEntry[];
-  instrument: InstrumentLogEntry[];
-  /** Instrument paths actually asked for, after wildcard expansion. */
-  requestedPaths: string[];
-  /** Provider the values came from, for the log line. */
-  providerId: string;
-}
-
-const POSITION_PATH = 'navigation.position';
-
-/** A position bucket, however the provider chose to shape it. */
-export function parseHistoryPosition(
-  value: unknown,
-): { latitude: number; longitude: number } | null {
-  // The InfluxDB provider returns [lon, lat]; the API's own examples allow an
-  // object, so accept both rather than betting on one provider.
-  if (Array.isArray(value)) {
-    const [lon, lat] = value;
-    if (typeof lat === 'number' && typeof lon === 'number' && isFinite(lat) && isFinite(lon)) {
-      return { latitude: lat, longitude: lon };
+/**
+ * What one cycle got out of the provider.
+ *
+ * The three states are different publishes, which is why this is a union and
+ * not a nullable snapshot:
+ *
+ * - `ok`: write the log from these entries.
+ * - `unavailable`: a provider is configured but did not answer this cycle.
+ *   Publish nothing for the log and leave the copy already in the repository,
+ *   so a database restart costs freshness, not the graphs.
+ * - `none`: no provider, or the setting is off. The log is published empty,
+ *   once, so the panels omit sparklines instead of drawing a frozen one.
+ */
+export type HistoryResult =
+  | {
+      status: 'ok';
+      entries: InstrumentLogEntry[];
+      /** Paths actually asked for, after wildcard expansion. */
+      requestedPaths: string[];
+      /** Provider the values came from, for the log line. */
+      providerId: string;
     }
-    return null;
-  }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    const lat = record.latitude ?? record.lat;
-    const lon = record.longitude ?? record.lon ?? record.lng;
-    if (typeof lat === 'number' && typeof lon === 'number' && isFinite(lat) && isFinite(lon)) {
-      return { latitude: lat, longitude: lon };
-    }
-  }
-  return null;
+  | { status: 'unavailable'; reason: string }
+  | { status: 'none' };
+
+/**
+ * Never ask a provider for a position.
+ *
+ * `navigation.position` and anything under it is the one path whose history
+ * this plugin does not want: the track comes from the tree, through the
+ * privacy zones. A wildcard in the captured-path list could otherwise match
+ * it and put raw positions into a published file that nothing redacts.
+ */
+export function isPositionPath(path: string): boolean {
+  return path === 'navigation.position' || path.startsWith('navigation.position.');
 }
 
 /** Index a row by path, taking the first non-null value for a repeated path. */
-function rowByPath(
-  values: HistoryValueDescriptor[],
-  row: HistoryRow,
-): Map<string, unknown> {
+function rowByPath(values: HistoryValueDescriptor[], row: HistoryRow): Map<string, unknown> {
   const byPath = new Map<string, unknown>();
   values.forEach((descriptor, index) => {
     const value = row[index + 1];
     if (value === null || value === undefined) return;
     // `sourcePolicy=all` repeats a path once per source. The first source that
-    // has a value for this bucket wins; the site shows one line per path.
+    // has a value for this bucket wins; the site draws one line per path.
     if (!byPath.has(descriptor.path)) byPath.set(descriptor.path, value);
   });
   return byPath;
-}
-
-/**
- * Turn a position history response into `positions_index.json` entries.
- *
- * Speed and course ride along when the same query asked for them, so a track
- * drawn from history carries the same values a live fix does — including
- * being dropped inside a privacy zone, where a speed alone would say the boat
- * is manoeuvring in the harbour.
- */
-export function positionEntriesFromHistory(
-  response: HistoryValuesResponse,
-  options: { zones: PrivacyZone[]; retentionHours: number; now: Date },
-): PositionEntry[] {
-  const entries: PositionEntry[] = [];
-  for (const row of response.data ?? []) {
-    const timestamp = parseTimestamp(row[0]);
-    if (!timestamp) continue;
-    const byPath = rowByPath(response.values ?? [], row);
-    const position = parseHistoryPosition(byPath.get(POSITION_PATH));
-    if (!position) continue;
-
-    const speed = byPath.get('navigation.speedOverGround');
-    const course = byPath.get('navigation.courseOverGroundTrue');
-    const fix: PositionFix = {
-      latitude: position.latitude,
-      longitude: position.longitude,
-      timestamp: timestamp.toISOString(),
-      speedOverGround: typeof speed === 'number' && isFinite(speed) ? speed : null,
-      courseOverGroundTrue: typeof course === 'number' && isFinite(course) ? course : null,
-    };
-    entries.push(buildPositionEntry(fix, options.zones, timestamp));
-  }
-  return pruneAndSort(entries, options.now, options.retentionHours);
 }
 
 /** Turn an instrument history response into `instrument_log.json` entries. */
@@ -173,12 +128,13 @@ export function instrumentEntriesFromHistory(
     const values: Record<string, number> = {};
     const byPath = rowByPath(response.values ?? [], row);
     for (const [path, value] of byPath) {
+      if (isPositionPath(path)) continue;
       if (typeof value === 'number' && isFinite(value)) {
         values[path] = value;
         continue;
       }
-      // Composite values (attitude, position) contribute one path per numeric
-      // member, the same flattening `collectNumericValues` does on the tree.
+      // A composite value (attitude) contributes one path per numeric member,
+      // which is the shape the frontend's sparklines already read.
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
           if (typeof member === 'number' && isFinite(member)) values[`${path}.${key}`] = member;
@@ -200,48 +156,20 @@ export function instrumentEntriesFromHistory(
  * the History API takes literal paths. Patterns without a `*` are passed
  * through untouched — a path the provider has never seen costs one column of
  * nulls, which is cheaper than failing to ask for a sensor that came online
- * five minutes ago.
+ * five minutes ago. Positions are dropped from both halves.
  */
 export function expandPathPatterns(patterns: string[], available: string[]): string[] {
   const resolved = new Set<string>();
   for (const pattern of patterns) {
     if (!pattern.includes('*')) {
-      resolved.add(pattern);
+      if (!isPositionPath(pattern)) resolved.add(pattern);
       continue;
     }
     for (const path of available) {
-      if (pathMatches(pattern, path)) resolved.add(path);
+      if (!isPositionPath(path) && pathMatches(pattern, path)) resolved.add(path);
     }
   }
   return [...resolved];
-}
-
-/** A timestamp rounded down to a bucket, so two sources agree on one sample. */
-export function bucketKey(timestamp: string, resolutionSeconds: number): string {
-  const parsed = parseTimestamp(timestamp);
-  if (!parsed) return timestamp;
-  const width = Math.max(1, resolutionSeconds) * 1000;
-  return String(Math.floor(parsed.getTime() / width));
-}
-
-/**
- * Combine time series from least to most authoritative, one entry per bucket.
- *
- * The locally accumulated files are not thrown away when a provider appears:
- * a database installed last week has nothing from the passage before it, and
- * dropping to its window would shorten a track that is already published.
- * Where both have a bucket the provider wins, and the live reading wins over
- * both — it is the freshest, and on a boat that is the one that matters.
- */
-export function mergeByBucket<T extends { timestamp: string }>(
-  series: T[][],
-  resolutionSeconds: number,
-): T[] {
-  const byBucket = new Map<string, T>();
-  for (const list of series) {
-    for (const entry of list) byBucket.set(bucketKey(entry.timestamp, resolutionSeconds), entry);
-  }
-  return [...byBucket.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
 /** Reject rather than hang: a provider query is a database call. */
@@ -263,9 +191,9 @@ async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promi
 export interface HistoryReaderDeps {
   app: HistoryHost;
   history: HistoryConfig;
-  zones: PrivacyZone[];
-  positionRetentionHours: number;
+  /** The captured-path patterns from the config page. */
   instrumentPaths: string[];
+  /** Rolling length of the log, which is also the query window in buckets. */
   instrumentEntries: number;
   log: (message: string) => void;
 }
@@ -286,35 +214,29 @@ export class HistoryReader {
     return this.deps.history.enabled && typeof this.deps.app.getHistoryApi === 'function';
   }
 
-  /**
-   * The history behind one publish cycle, or null to fall back to local
-   * accumulation.
-   *
-   * Null is a normal answer: no provider registered, none configured, the
-   * database still starting, a query that timed out. The caller publishes
-   * what it has rather than blanking the site.
-   */
-  async snapshot(now: Date): Promise<HistorySnapshot | null> {
-    if (!this.configured) return null;
+  /** The instrument history behind one publish cycle. */
+  async read(now: Date): Promise<HistoryResult> {
+    if (!this.configured) return { status: 'none' };
     const { history, log } = this.deps;
     try {
       const api = await this.resolveApi();
-      const positions = await this.readPositions(api, now);
       const { entries, requestedPaths } = await this.readInstruments(api, now);
       this.announce(true);
       return {
-        positions,
-        instrument: entries,
+        status: 'ok',
+        entries,
         requestedPaths,
         providerId: history.providerId || 'default',
       };
     } catch (error: any) {
       // A provider that is down, still starting, or slow is not a failed
-      // cycle: drop to local accumulation and try again next time.
+      // cycle. Drop the resolved API so the next cycle asks the server again
+      // — a restarted plugin hands out a new instance.
       this.api = null;
-      this.announce(false, error?.message ?? String(error));
-      log(`History provider unavailable this cycle: ${error?.message ?? error}`);
-      return null;
+      const reason = error?.message ?? String(error);
+      this.announce(false, reason);
+      log(`History provider did not answer this cycle: ${reason}`);
+      return { status: 'unavailable', reason };
     }
   }
 
@@ -324,9 +246,9 @@ export class HistoryReader {
     this.deps.log(
       available
         ? `History provider ${this.deps.history.providerId || '(server default)'} is answering; ` +
-            'publishing history read back from it rather than accumulated locally.'
+            'the instrument log is being read back from it.'
         : `History provider stopped answering (${detail ?? 'no detail'}); ` +
-            'publishing locally accumulated history until it returns.',
+            'leaving the published instrument log as it is until it returns.',
     );
   }
 
@@ -351,29 +273,6 @@ export class HistoryReader {
     return { from: to.subtract({ seconds: Math.max(1, Math.round(windowSeconds)) }), to };
   }
 
-  private async readPositions(api: HistoryApiLike, now: Date): Promise<PositionEntry[]> {
-    const { history, zones, positionRetentionHours } = this.deps;
-    const response = await withTimeout(
-      api.getValues({
-        ...this.range(now, positionRetentionHours * 3600),
-        context: 'vessels.self',
-        resolution: history.resolutionSeconds,
-        pathSpecs: [
-          { path: POSITION_PATH, aggregate: 'first', parameter: [] },
-          { path: 'navigation.speedOverGround', aggregate: 'average', parameter: [] },
-          { path: 'navigation.courseOverGroundTrue', aggregate: 'average', parameter: [] },
-        ],
-      }),
-      history.timeoutMs,
-      'history getValues (positions)',
-    );
-    return positionEntriesFromHistory(response, {
-      zones,
-      retentionHours: positionRetentionHours,
-      now,
-    });
-  }
-
   private async readInstruments(
     api: HistoryApiLike,
     now: Date,
@@ -384,7 +283,7 @@ export class HistoryReader {
     if (requestedPaths.length === 0) return { entries: [], requestedPaths };
 
     // The log holds `entries` readings at the configured bucket width, so the
-    // window is exactly as long as the file is — asking for more would throw
+    // window is exactly as long as the file is: asking for more would throw
     // away every bucket past the trim.
     const windowSeconds = history.resolutionSeconds * instrumentEntries;
     const response = await withTimeout(
@@ -399,7 +298,7 @@ export class HistoryReader {
         })),
       }),
       history.timeoutMs,
-      'history getValues (instruments)',
+      'history getValues',
     );
     return {
       entries: instrumentEntriesFromHistory(response, { entries: instrumentEntries }),

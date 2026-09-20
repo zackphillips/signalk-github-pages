@@ -8,8 +8,9 @@
  * repo is an *output* of this file, written for the frontend to read.
  *
  * Defaults are the values the tracker has run on since it was a Python daemon
- * on a Raspberry Pi: a two-minute cadence underway, hourly at the dock, a
- * 24-hour position window and a five-hour instrument log. They are a working
+ * on a Raspberry Pi: a two-minute cadence underway, hourly at the dock and a
+ * 24-hour position window, plus an hour of instrument history at one-minute
+ * buckets, which is exactly what the sparklines draw. They are a working
  * configuration for any boat, so a fresh install publishes without a setup
  * session.
  *
@@ -68,10 +69,10 @@ export interface PluginConfig {
   positionRetentionHours: number;
   staleMaxAgeMinutes: number;
   /**
-   * Where the published history comes from. With a history provider on the
-   * server, the track and the sparklines are read back from it every cycle;
-   * without one — or with this turned off — the plugin accumulates them a
-   * sample at a time in its own data directory.
+   * Where the instrument log comes from. With a history provider on the
+   * server the sparklines are read back from it every cycle; without one —
+   * or with this turned off — the site simply has none. The track is not
+   * part of this: it is always the plugin's own, from the tree.
    */
   history: {
     enabled: boolean;
@@ -151,8 +152,15 @@ export const DEFAULT_INSTRUMENT_LOG_PATHS = [
 export const DEFAULT_INTERVAL_UNDERWAY = 120;
 /** Cadence while moored, anchored, or state unknown, in seconds. */
 export const DEFAULT_INTERVAL_STATIONARY = 3600;
-/** Rolling length of the instrument log — about five hours at 120 s. */
-export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 120;
+/**
+ * Rolling length of the instrument log, in buckets.
+ *
+ * 60 is what the frontend's `SPARKLINE_POINTS` draws: it takes the last 60
+ * entries and ignores the rest, so a longer log is bytes uploaded on every
+ * publish that nothing has ever plotted. At the default 60 s resolution this
+ * is the last hour.
+ */
+export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
 /** How long raw positions stay in `positions_index.json`. */
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
@@ -160,9 +168,9 @@ export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
 /**
  * Bucket width asked of the history provider, in seconds.
  *
- * One minute is finer than any publish cadence, so the track gains detail
- * rather than just surviving restarts, and it is coarse enough that a day of
- * positions stays a file the site can download over a phone.
+ * One minute is finer than any publish cadence, so the sparklines gain detail
+ * rather than just surviving restarts, and it is the spacing of the published
+ * log: `resolutionSeconds x entries` is how far back the graphs go.
  */
 export const DEFAULT_HISTORY_RESOLUTION_SECONDS = 60;
 /** A history query is a database call; past this it is a skipped cycle. */
@@ -343,39 +351,43 @@ export const configSchema = {
           type: 'string',
           title: 'Captured paths',
           description:
-            'One Signal K path per line. "*" matches one path segment, so ' +
-            'electrical.batteries.*.voltage covers every bank. Lines starting ' +
-            'with # are comments. This list is the entire bandwidth cost of a ' +
-            'cycle: every path here is uploaded, for every entry, on every ' +
-            'publish. Trim it to what you actually look at.',
+            'One Signal K path per line — what is asked of the history ' +
+            'provider. "*" matches one path segment, so ' +
+            'electrical.batteries.*.voltage covers every bank the provider has ' +
+            'stored. Lines starting with # are comments. This list is the ' +
+            'entire bandwidth cost of a cycle: every path here is uploaded, ' +
+            'for every entry, on every publish. Trim it to what you actually ' +
+            'look at. navigation.position is never asked for — the track comes ' +
+            'from the boat, through the privacy zones.',
           default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
         },
         entries: {
           type: 'number',
           title: 'Entries retained',
           description:
-            'Rolling length of instrument_log.json — 120 entries is about five ' +
-            'hours at a two-minute cadence. The frontend is told this number, ' +
-            'so the sparklines and the publisher cannot drift apart.',
+            'Rolling length of instrument_log.json, and the query window: the ' +
+            'log covers entries x resolution, so 60 entries at 60 s is the ' +
+            'last hour. The bundled sparklines draw the last 60 points, so ' +
+            'more than that is uploaded on every publish and never plotted.',
           default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
         },
       },
     },
     history: {
       type: 'object',
-      title: 'History provider',
+      title: 'History provider (sparklines)',
       description:
-        'Where the map track and the sparklines come from. A server with a ' +
-        'history provider installed (signalk-to-influxdb2, for example) ' +
-        'already stores every value at full rate; reading it back gives the ' +
-        'site a track at the resolution below instead of one point per ' +
-        'publish, and a restart, a reinstall or a stopped plugin no longer ' +
-        'leaves a gap. With no provider registered the plugin accumulates the ' +
-        'history itself, one sample per cycle, exactly as before.',
+        'Where the instrument log comes from. A server with a history ' +
+        'provider installed (signalk-to-influxdb2, for example) already ' +
+        'stores every value at full rate, so the sparklines are read back ' +
+        'from it on every cycle and survive a restart, a reinstall or a ' +
+        'stopped plugin. With no provider registered the site has no ' +
+        'sparklines: the panels show current values and omit the graphs. The ' +
+        'map track does not come from here — it is always the plugin\'s own.',
       properties: {
         enabled: {
           type: 'boolean',
-          title: 'Read history from a history provider when one is available',
+          title: 'Read the instrument log from a history provider',
           default: true,
         },
         providerId: {
@@ -391,10 +403,10 @@ export const configSchema = {
           type: 'number',
           title: 'Resolution (seconds)',
           description:
-            'Bucket width asked of the provider. This is also the spacing of ' +
-            'the instrument log, so the log covers resolution x entries: 60 s ' +
-            'x 120 entries is two hours. Finer buckets mean a bigger ' +
-            'positions_index.json uploaded on every publish.',
+            'Bucket width asked of the provider, and the spacing of the ' +
+            'published log: it covers resolution x entries, so 60 s x 60 ' +
+            'entries is the last hour. Finer buckets mean a bigger file ' +
+            'uploaded on every publish.',
           default: DEFAULT_HISTORY_RESOLUTION_SECONDS,
         },
         timeoutMs: {
@@ -402,7 +414,8 @@ export const configSchema = {
           title: 'Query timeout (ms)',
           description:
             'A history query reaches a database. Past this the cycle gives up ' +
-            'on it and publishes locally accumulated history instead.',
+            'on it and publishes no instrument log at all, leaving the copy ' +
+            'already on the site in place until the provider answers again.',
           default: DEFAULT_HISTORY_TIMEOUT_MS,
         },
       },
@@ -781,14 +794,19 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const underway = num(interval.underway) ?? DEFAULT_INTERVAL_UNDERWAY;
   const resolutionSeconds =
     num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
-  if (history.enabled !== false && resolutionSeconds > underway) {
-    // Reading history back is meant to give the site a finer track than one
-    // point per publish. A bucket wider than the publish interval does the
-    // opposite, and it is not obvious from either field on its own.
+  const entries = Math.max(
+    1,
+    Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
+  );
+  if (history.enabled !== false && resolutionSeconds * entries < underway) {
+    // The log would not even span one publish interval, so every cycle would
+    // publish a graph with no overlap with the last one. Neither field looks
+    // wrong on its own, which is why this is worth saying.
     warnings.push(
-      `History resolution (${Math.round(resolutionSeconds)}s) is coarser than the ` +
-        `underway publish interval (${Math.round(underway)}s), so the published track ` +
-        'will have fewer points than publishing alone would produce.',
+      `The instrument log covers ${Math.round((resolutionSeconds * entries) / 60)} min ` +
+        `(${Math.round(resolutionSeconds)}s x ${entries} entries), less than the ` +
+        `${Math.round(underway)}s underway publish interval, so the sparklines will ` +
+        'jump rather than scroll.',
     );
   }
 
@@ -811,10 +829,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       timezone: str(input.timezone),
       instrumentLog: {
         paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
-        entries: Math.max(
-          1,
-          Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
-        ),
+        entries,
       },
       polars: typeof input.polars === 'string' ? input.polars : '',
       positionRetentionHours:

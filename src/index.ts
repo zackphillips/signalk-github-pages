@@ -95,22 +95,25 @@ function formatClock(date: Date): string {
 }
 
 /**
- * Where this start expects its history to come from.
+ * Where this start expects the instrument log to come from.
  *
  * Worth a line in the log because the two answers produce visibly different
- * sites — a track at the configured resolution that survives restarts, or one
- * point per publish — and because "no History API on this server" is the
- * answer on every server without a history provider installed, which is most
- * of them.
+ * sites — sparklines at the configured resolution, or no sparklines at all —
+ * and because "no History API on this server" is the answer on every server
+ * without a history provider installed, which is most of them. The track is
+ * not part of this: it is always the plugin's own.
  */
 function historySetting(app: SignalKApp, config: PluginConfig): string {
-  if (!config.history.enabled) return 'history accumulated locally (provider turned off)';
+  if (!config.history.enabled) return 'no instrument log (history provider turned off)';
   if (typeof app.getHistoryApi !== 'function') {
-    return 'history accumulated locally (this server has no History API)';
+    return 'no instrument log (this server has no History API)';
   }
+  const minutes = Math.round(
+    (config.history.resolutionSeconds * config.instrumentLog.entries) / 60,
+  );
   return (
-    `history from ${config.history.providerId || 'the default'} provider at ` +
-    `${config.history.resolutionSeconds}s resolution`
+    `instrument log from ${config.history.providerId || 'the default'} history provider ` +
+    `at ${config.history.resolutionSeconds}s x ${config.instrumentLog.entries} entries (${minutes} min)`
   );
 }
 
@@ -216,8 +219,6 @@ module.exports = function (app: SignalKApp): Plugin {
       const history = new HistoryReader({
         app,
         history: config.history,
-        zones: config.privacyZones,
-        positionRetentionHours: config.positionRetentionHours,
         instrumentPaths: config.instrumentLog.paths,
         instrumentEntries: config.instrumentLog.entries,
         log: (message) => app.debug(message),
@@ -291,7 +292,7 @@ module.exports = function (app: SignalKApp): Plugin {
           // hangs is one skipped history read rather than a failed publish.
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
-            history: await history.snapshot(new Date()),
+            history: await history.read(new Date()),
           });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`

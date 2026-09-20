@@ -8,12 +8,8 @@
  * what it did, which is what makes the whole cycle testable without a server
  * or a network.
  */
-import {
-  appendInstrumentEntry,
-  type InstrumentLog,
-  type InstrumentLogEntry,
-} from './instrumentLog';
-import { bucketKey, mergeByBucket, type HistorySnapshot } from './history';
+import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
+import type { HistoryResult } from './history';
 import {
   buildDocsIndex,
   DOCS_INDEX_PATH,
@@ -44,7 +40,6 @@ import {
   isUnderway,
   navigationState,
   redactPosition,
-  type PositionFix,
   type Tree,
 } from './snapshot';
 import type { PluginConfig } from './config';
@@ -70,21 +65,21 @@ export const SNAPSHOT_SCHEMA_VERSION = 1;
 /**
  * What a cycle needs that is not in the tree.
  *
- * The polar table and the history: both come in as arguments rather than being
- * read here, because reading either means an async call into the server (the
- * Resources API, the History API), and this module stays a pure function of
- * what it is handed.
+ * The polar table and the instrument history: both come in as arguments
+ * rather than being read here, because reading either means an async call
+ * into the server (the Resources API, the History API), and this module stays
+ * a pure function of what it is handed.
  */
 export interface CycleInput {
   /** The rendered polar CSV, or empty to publish none and claim none. */
   polars?: string;
   /**
-   * What the history provider returned for this cycle, or null when there is
-   * none: see `mergePositions` / `mergeInstrumentLog` for how the two sources
-   * combine. Fetched in `index.ts` for the same reason the polars are, so this
-   * module never calls the server.
+   * What the history provider returned for this cycle. Fetched in `index.ts`
+   * for the same reason the polars are, so this module never calls the
+   * server. Left out, a cycle publishes no instrument log at all, which is
+   * what `unavailable` does too.
    */
-  history?: HistorySnapshot | null;
+  history?: HistoryResult;
 }
 
 export interface CycleResult {
@@ -160,8 +155,9 @@ export class Publisher {
     if (state.seeded) return;
 
     for (const [repoPath, local] of [
+      // The instrument log is not here: it is rebuilt from the provider every
+      // cycle, so a copy of the published one would never be read.
       [POSITIONS_PATH, 'positions_index.json'],
-      [INSTRUMENT_LOG_PATH, 'instrument_log.json'],
       [TRACKS_INDEX_PATH, 'tracks_index.json'],
       // Not state, but the same reasoning: a reinstall should not re-upload a
       // polar table that is already published and unchanged.
@@ -193,7 +189,7 @@ export class Publisher {
   async runCycle(rawTree: Tree, input: CycleInput = {}): Promise<CycleResult> {
     const { config, store, log, client, version, siteDir } = this.deps;
     const polars = input.polars ?? '';
-    const history = input.history ?? null;
+    const history: HistoryResult = input.history ?? { status: 'unavailable', reason: 'not read' };
     const startedAt = Date.now();
     const now = this.now();
     const state = await store.readState();
@@ -221,12 +217,20 @@ export class Publisher {
       content: `${JSON.stringify({ schema_version: SNAPSHOT_SCHEMA_VERSION, ...tree }, null, 2)}\n`,
     });
 
-    const positions = await this.mergePositions(fix, history, now);
+    // The track is the one series the plugin still keeps itself: it is what
+    // the GPX archive is built from, it works on a server with no history
+    // provider at all, and it is the only path a position takes to the
+    // repository, which is the path the privacy zones guard.
+    const positions = pruneAndSort(
+      [
+        ...parsePositionIndex(await store.readText('positions_index.json')),
+        ...(fix ? [buildPositionEntry(fix, config.privacyZones, now)] : []),
+      ],
+      now,
+      config.positionRetentionHours,
+    );
     if (positions.length) {
       const rendered = renderPositionIndex(positions);
-      // Still written locally even when it came from the provider: the store
-      // is what the next cycle falls back to if the database goes away
-      // mid-passage, so it stays warm rather than starting the track again.
       await store.writeText('positions_index.json', rendered);
       files.push({ path: POSITIONS_PATH, content: rendered });
       files.push(
@@ -234,27 +238,7 @@ export class Publisher {
       );
     }
 
-    const instrumentLog = await this.mergeInstrumentLog(tree, history, now);
-    // Written without indentation: this is the largest file in the publish and
-    // nobody reads it by hand.
-    const instrumentLogJson = `${JSON.stringify(instrumentLog)}\n`;
-    await store.writeText('instrument_log.json', instrumentLogJson);
-    files.push({ path: INSTRUMENT_LOG_PATH, content: instrumentLogJson });
-    const instrumentLogBytes = Buffer.byteLength(instrumentLogJson, 'utf-8');
-    log(
-      `Instrument log: ${instrumentLog.entries.length} entries, ` +
-        `${Object.keys(instrumentLog.entries[instrumentLog.entries.length - 1]?.values ?? {}).length} ` +
-        `paths this cycle, ${kb(instrumentLogBytes)}` +
-        (history ? `, from history provider ${history.providerId}.` : '.'),
-    );
-    if (instrumentLogBytes > INSTRUMENT_LOG_WARN_BYTES) {
-      log(
-        `Instrument log is ${kb(instrumentLogBytes)} and is uploaded in full on ` +
-          `every publish. At the underway cadence of ${config.interval.underway}s ` +
-          `that is about ${kb((instrumentLogBytes * 4) / 3 * (3600 / config.interval.underway))} ` +
-          'per hour. Shorten the captured-path list or the entries retained.',
-      );
-    }
+    files.push(...(await this.instrumentLogFile(history)));
 
     files.push(...(await this.vesselInfoFile(identity)));
     files.push(...(await this.polarsFile(polars)));
@@ -320,64 +304,57 @@ export class Publisher {
   }
 
   /**
-   * The position index this cycle publishes.
+   * `instrument_log.json`, from whatever the history provider gave this cycle.
    *
-   * Three sources, least authoritative first: what the plugin accumulated
-   * locally, what the history provider holds, and the fix the tree carries
-   * right now. Without a provider this collapses to the original behaviour —
-   * the stored index plus one new point.
+   * Three outcomes, and the difference between them is what the site shows
+   * when a database is down versus never installed:
+   *
+   * - answered: publish the entries, and keep a copy in the data directory
+   *   for the console's preview.
+   * - did not answer: publish nothing. The copy already in the repository is
+   *   the last good one, and a sparkline a few minutes stale beats a blank
+   *   panel every time InfluxDB restarts.
+   * - no provider at all: publish an empty log, once. The panels then omit
+   *   the sparklines instead of drawing whatever was last accumulated, which
+   *   on an upgraded install would otherwise be frozen for good. The
+   *   fingerprint is what stops that empty file being re-uploaded every
+   *   cycle.
    */
-  private async mergePositions(
-    fix: PositionFix | null,
-    history: HistorySnapshot | null,
-    now: Date,
-  ): Promise<PositionEntry[]> {
-    const { config, store } = this.deps;
-    const stored = parsePositionIndex(await store.readText('positions_index.json'));
-    const live = fix ? [buildPositionEntry(fix, config.privacyZones, now)] : [];
+  private async instrumentLogFile(history: HistoryResult): Promise<PublishFile[]> {
+    const { store, config, log } = this.deps;
 
-    if (!history) {
-      return pruneAndSort([...stored, ...live], now, config.positionRetentionHours);
+    if (history.status === 'unavailable') return [];
+
+    const entries: InstrumentLogEntry[] =
+      history.status === 'ok' ? history.entries : [];
+    const contents = renderInstrumentLog(entries);
+    const bytes = Buffer.byteLength(contents, 'utf-8');
+
+    if (history.status === 'none') {
+      if ((await store.readText('instrument_log.json')) === contents) return [];
+      await store.writeText('instrument_log.json', contents);
+      log(
+        'No history provider: publishing an empty instrument log, so the site ' +
+          'omits the sparklines rather than drawing a frozen one.',
+      );
+      return [{ path: INSTRUMENT_LOG_PATH, content: contents }];
     }
-    const merged = mergeByBucket(
-      [stored, history.positions, live],
-      config.history.resolutionSeconds,
-    );
-    return pruneAndSort(merged, now, config.positionRetentionHours);
-  }
 
-  /**
-   * The instrument log this cycle publishes, on the same three sources.
-   *
-   * The live reading is taken from the tree rather than the provider even
-   * when a provider answered: the newest bucket in a database is up to one
-   * resolution behind, and the sparkline should end at what the boat is doing
-   * now.
-   */
-  private async mergeInstrumentLog(
-    tree: Tree,
-    history: HistorySnapshot | null,
-    now: Date,
-  ): Promise<InstrumentLog> {
-    const { config, store } = this.deps;
-    const existing = await store.readJson<{ entries?: InstrumentLogEntry[] }>(
-      'instrument_log.json',
-      {},
+    await store.writeText('instrument_log.json', contents);
+    log(
+      `Instrument log: ${entries.length} entries from history provider ` +
+        `${history.providerId}, ${history.requestedPaths.length} path(s) asked for, ` +
+        `${kb(bytes)}.`,
     );
-    const stored = Array.isArray(existing.entries) ? existing.entries : [];
-    if (!history) return appendInstrumentEntry(stored, now, tree, config.instrumentLog);
-
-    // Bucket-merge the two histories, then let `appendInstrumentEntry` add the
-    // live reading and trim, so both paths produce the same file shape.
-    const merged = mergeByBucket(
-      [stored, history.instrument],
-      config.history.resolutionSeconds,
-    ).filter(
-      (entry) =>
-        bucketKey(entry.timestamp, config.history.resolutionSeconds) !==
-        bucketKey(now.toISOString(), config.history.resolutionSeconds),
-    );
-    return appendInstrumentEntry(merged, now, tree, config.instrumentLog);
+    if (bytes > INSTRUMENT_LOG_WARN_BYTES) {
+      log(
+        `Instrument log is ${kb(bytes)} and is uploaded in full on ` +
+          `every publish. At the underway cadence of ${config.interval.underway}s ` +
+          `that is about ${kb((bytes * 4) / 3 * (3600 / config.interval.underway))} ` +
+          'per hour. Shorten the captured-path list or the entries retained.',
+      );
+    }
+    return [{ path: INSTRUMENT_LOG_PATH, content: contents }];
   }
 
   /** Every published voyage, newest first, for the webapp's list. */

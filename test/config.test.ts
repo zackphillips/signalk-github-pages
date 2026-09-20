@@ -345,7 +345,7 @@ describe('parsePathList', () => {
 });
 
 describe('the history provider settings', () => {
-  it('defaults to reading history from whichever provider the server has', () => {
+  it('defaults to reading the instrument log from whichever provider the server has', () => {
     const config = makeConfig();
     expect(config.history).toEqual({
       enabled: true,
@@ -377,26 +377,29 @@ describe('the history provider settings', () => {
     expect(makeConfig({ history: { timeoutMs: 5 } }).history.timeoutMs).toBe(1000);
   });
 
-  it('warns when the buckets are wider than the publish interval', () => {
-    // Reading history back is meant to make the track finer, not coarser.
+  it('warns when the log is shorter than one publish interval', () => {
+    // Two windows with no overlap: every publish would replace the graph
+    // rather than extend it.
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
-      interval: { underway: 60, stationary: 3600 },
-      history: { resolutionSeconds: 300 },
+      interval: { underway: 600, stationary: 3600 },
+      instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
+      history: { resolutionSeconds: 60 },
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.warnings.join(' ')).toMatch(
-      /History resolution \(300s\) is coarser than the underway publish interval \(60s\)/,
+      /instrument log covers 5 min \(60s x 5 entries\), less than the 600s underway/,
     );
   });
 
-  it('says nothing when the history is finer than the cadence, or turned off', () => {
+  it('says nothing when the log outlasts the cadence, or the provider is off', () => {
     expect(resolveConfig({ ...COMPLETE_FORM }).warnings).toEqual([]);
     expect(
       resolveConfig({
         ...COMPLETE_FORM,
-        interval: { underway: 60, stationary: 3600 },
-        history: { enabled: false, resolutionSeconds: 300 },
+        interval: { underway: 600, stationary: 3600 },
+        instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
+        history: { enabled: false, resolutionSeconds: 60 },
       }).warnings,
     ).toEqual([]);
   });

@@ -1,99 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bucketKey,
   expandPathPatterns,
   HistoryReader,
   instrumentEntriesFromHistory,
-  mergeByBucket,
-  parseHistoryPosition,
-  positionEntriesFromHistory,
+  isPositionPath,
   type HistoryApiLike,
   type HistoryValuesResponse,
 } from '../src/history';
 
-const HOME = { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 };
 const NOW = new Date('2026-03-01T20:00:00Z');
-
-const positionResponse = (
-  rows: Array<[string, unknown, number?, number?]>,
-): HistoryValuesResponse => ({
-  context: 'vessels.self',
-  values: [
-    { path: 'navigation.position', method: 'first' },
-    { path: 'navigation.speedOverGround', method: 'average' },
-    { path: 'navigation.courseOverGroundTrue', method: 'average' },
-  ],
-  data: rows.map((row) => [row[0], row[1], row[2] ?? null, row[3] ?? null]),
-});
-
-describe('parseHistoryPosition', () => {
-  it('reads the [lon, lat] pair the InfluxDB provider returns', () => {
-    expect(parseHistoryPosition([-122.52, 37.92])).toEqual({
-      latitude: 37.92,
-      longitude: -122.52,
-    });
-  });
-
-  it('reads an object form too', () => {
-    expect(parseHistoryPosition({ latitude: 37.92, longitude: -122.52 })).toEqual({
-      latitude: 37.92,
-      longitude: -122.52,
-    });
-  });
-
-  it('rejects a bucket with no fix', () => {
-    expect(parseHistoryPosition(null)).toBeNull();
-    expect(parseHistoryPosition([null, null])).toBeNull();
-    expect(parseHistoryPosition({ latitude: 37.92 })).toBeNull();
-  });
-});
-
-describe('positionEntriesFromHistory', () => {
-  it('builds index entries carrying speed and course', () => {
-    const entries = positionEntriesFromHistory(
-      positionResponse([['2026-03-01T19:58:00.000Z', [-122.52, 37.92], 4.2, 1.1]]),
-      { zones: [], retentionHours: 24, now: NOW },
-    );
-    expect(entries).toEqual([
-      {
-        timestamp: '2026-03-01T19:58:00.000Z',
-        values: [
-          { path: 'navigation.position', value: { latitude: 37.92, longitude: -122.52 } },
-          { path: 'navigation.speedOverGround', value: 4.2 },
-          { path: 'navigation.courseOverGroundTrue', value: 1.1 },
-        ],
-      },
-    ]);
-  });
-
-  it('redacts every historical position inside a privacy zone', () => {
-    // The provider stores raw positions, so a zone added after the fact only
-    // works if it is applied on the way out — to history as much as to a fix.
-    const entries = positionEntriesFromHistory(
-      positionResponse([
-        ['2026-03-01T19:50:00.000Z', [HOME.lon + 0.0005, HOME.lat + 0.0005], 0.3, 2.2],
-        ['2026-03-01T19:55:00.000Z', [-122.52, 37.92], 4.2, 1.1],
-      ]),
-      { zones: [HOME], retentionHours: 24, now: NOW },
-    );
-    expect(entries[0]!.values).toEqual([
-      { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
-    ]);
-    expect(entries[1]!.values).toHaveLength(3);
-  });
-
-  it('drops buckets with no fix and anything past the retention window', () => {
-    const entries = positionEntriesFromHistory(
-      positionResponse([
-        ['2026-02-28T19:00:00.000Z', [-122.4, 37.8]],
-        ['2026-03-01T19:00:00.000Z', null, 4.2],
-        ['2026-03-01T19:30:00.000Z', [-122.52, 37.92]],
-      ]),
-      { zones: [], retentionHours: 24, now: NOW },
-    );
-    expect(entries.map((entry) => entry.timestamp)).toEqual(['2026-03-01T19:30:00.000Z']);
-  });
-});
 
 describe('instrumentEntriesFromHistory', () => {
   const response: HistoryValuesResponse = {
@@ -110,8 +25,7 @@ describe('instrumentEntriesFromHistory', () => {
   };
 
   it('keeps one entry per bucket and flattens composite values', () => {
-    const entries = instrumentEntriesFromHistory(response, { entries: 10 });
-    expect(entries).toEqual([
+    expect(instrumentEntriesFromHistory(response, { entries: 10 })).toEqual([
       {
         timestamp: '2026-03-01T19:58:00.000Z',
         values: {
@@ -151,6 +65,36 @@ describe('instrumentEntriesFromHistory', () => {
       4.4, 4.2,
     ]);
   });
+
+  it('drops a position a provider returns anyway', () => {
+    // The track has one source and one redaction path. A position that came
+    // back from a database is not it, whatever asked for it.
+    const entries = instrumentEntriesFromHistory(
+      {
+        values: [
+          { path: 'navigation.position', method: 'first' },
+          { path: 'navigation.speedOverGround', method: 'average' },
+        ],
+        data: [['2026-03-01T19:58:00.000Z', [-122.52, 37.92], 4.2]],
+      },
+      { entries: 10 },
+    );
+    expect(entries).toEqual([
+      {
+        timestamp: '2026-03-01T19:58:00.000Z',
+        values: { 'navigation.speedOverGround': 4.2 },
+      },
+    ]);
+  });
+});
+
+describe('isPositionPath', () => {
+  it('covers the path and its members', () => {
+    expect(isPositionPath('navigation.position')).toBe(true);
+    expect(isPositionPath('navigation.position.latitude')).toBe(true);
+    expect(isPositionPath('navigation.positionAccuracy')).toBe(false);
+    expect(isPositionPath('navigation.speedOverGround')).toBe(false);
+  });
 });
 
 describe('expandPathPatterns', () => {
@@ -178,37 +122,14 @@ describe('expandPathPatterns', () => {
       'tanks.fuel.0.currentLevel',
     ]);
   });
-});
 
-describe('mergeByBucket', () => {
-  const at = (timestamp: string, tag: string) => ({ timestamp, tag });
-
-  it('lets the later series win a shared bucket', () => {
-    const merged = mergeByBucket(
-      [
-        [at('2026-03-01T19:58:03.000Z', 'local'), at('2026-03-01T19:30:00.000Z', 'local')],
-        [at('2026-03-01T19:58:00.000Z', 'history')],
-      ],
-      60,
-    );
-    expect(merged.map((entry) => entry.tag)).toEqual(['local', 'history']);
-  });
-
-  it('keeps buckets only one source has', () => {
-    const merged = mergeByBucket(
-      [[at('2026-02-28T10:00:00.000Z', 'local')], [at('2026-03-01T19:58:00.000Z', 'history')]],
-      60,
-    );
-    expect(merged).toHaveLength(2);
-  });
-
-  it('buckets by resolution, not by exact timestamp', () => {
-    expect(bucketKey('2026-03-01T19:58:03.000Z', 60)).toBe(
-      bucketKey('2026-03-01T19:58:59.000Z', 60),
-    );
-    expect(bucketKey('2026-03-01T19:58:03.000Z', 1)).not.toBe(
-      bucketKey('2026-03-01T19:58:04.000Z', 1),
-    );
+  it('never asks for a position, by name or through a wildcard', () => {
+    expect(
+      expandPathPatterns(
+        ['navigation.position', 'navigation.*'],
+        ['navigation.position', 'navigation.speedOverGround'],
+      ),
+    ).toEqual(['navigation.speedOverGround']);
   });
 });
 
@@ -226,12 +147,8 @@ describe('HistoryReader', () => {
   ) => {
     const logs: string[] = [];
     const reader = new HistoryReader({
-      app: api
-        ? { getHistoryApi: async () => api as HistoryApiLike }
-        : {},
+      app: api ? { getHistoryApi: async () => api as HistoryApiLike } : {},
       history: config,
-      zones: [],
-      positionRetentionHours: 24,
       instrumentPaths: ['navigation.speedOverGround'],
       instrumentEntries: 10,
       log: (message: string) => logs.push(message),
@@ -240,22 +157,22 @@ describe('HistoryReader', () => {
     return { reader, logs };
   };
 
-  it('returns null on a server with no History API', async () => {
+  it('reports no provider on a server with no History API', async () => {
     const { reader } = makeReader(null);
     expect(reader.configured).toBe(false);
-    expect(await reader.snapshot(NOW)).toBeNull();
+    expect(await reader.read(NOW)).toEqual({ status: 'none' });
   });
 
-  it('returns null when the config turns it off', async () => {
+  it('reports no provider when the config turns it off', async () => {
     const { reader } = makeReader(
       { getValues: async () => ({ values: [], data: [] }), getPaths: async () => [] },
       { history: { ...config, enabled: false } },
     );
     expect(reader.configured).toBe(false);
-    expect(await reader.snapshot(NOW)).toBeNull();
+    expect(await reader.read(NOW)).toEqual({ status: 'none' });
   });
 
-  it('asks for the retention window of positions and the log window of instruments', async () => {
+  it('asks for exactly the window the log holds, and never for a position', async () => {
     const queries: any[] = [];
     const { reader } = makeReader({
       getValues: async (query: any) => {
@@ -264,20 +181,18 @@ describe('HistoryReader', () => {
       },
       getPaths: async () => [],
     });
-    await reader.snapshot(NOW);
+    const result = await reader.read(NOW);
 
-    expect(queries).toHaveLength(2);
+    expect(result.status).toBe('ok');
+    expect(queries).toHaveLength(1);
     expect(queries[0].context).toBe('vessels.self');
     expect(queries[0].resolution).toBe(60);
     expect(queries[0].pathSpecs.map((spec: any) => spec.path)).toEqual([
-      'navigation.position',
       'navigation.speedOverGround',
-      'navigation.courseOverGroundTrue',
     ]);
-    // 24 h of positions; 10 entries x 60 s of instruments.
+    // 10 entries x 60 s, ending now.
     expect(queries[0].to.toString()).toBe('2026-03-01T20:00:00Z');
-    expect(queries[0].from.toString()).toBe('2026-02-28T20:00:00Z');
-    expect(queries[1].from.toString()).toBe('2026-03-01T19:50:00Z');
+    expect(queries[0].from.toString()).toBe('2026-03-01T19:50:00Z');
   });
 
   it('expands wildcards through getPaths and caches the listing', async () => {
@@ -297,8 +212,8 @@ describe('HistoryReader', () => {
       { instrumentPaths: ['electrical.batteries.*.voltage'] },
     );
 
-    await reader.snapshot(NOW);
-    await reader.snapshot(new Date(NOW.getTime() + 120_000));
+    await reader.read(NOW);
+    await reader.read(new Date(NOW.getTime() + 120_000));
     expect(pathCalls).toBe(1);
     expect(asked[1]).toEqual([
       'electrical.batteries.house.voltage',
@@ -306,32 +221,37 @@ describe('HistoryReader', () => {
     ]);
   });
 
-  it('falls back to local accumulation when a query hangs', async () => {
+  it('reports unavailable when a query hangs', async () => {
     const { reader, logs } = makeReader({
       getValues: () => new Promise(() => {}),
       getPaths: async () => [],
     });
-    expect(await reader.snapshot(NOW)).toBeNull();
+    const result = await reader.read(NOW);
+    expect(result.status).toBe('unavailable');
     expect(logs.join(' ')).toMatch(/timed out/);
   });
 
-  it('falls back when the provider throws, and recovers afterwards', async () => {
+  it('reports unavailable when the provider throws, and recovers afterwards', async () => {
     let fail = true;
     const { reader } = makeReader({
       getValues: async () => {
         if (fail) throw new Error('influxdb is starting');
         return {
-          values: [{ path: 'navigation.position', method: 'first' }],
-          data: [['2026-03-01T19:58:00.000Z', [-122.52, 37.92]]],
+          values: [{ path: 'navigation.speedOverGround', method: 'average' }],
+          data: [['2026-03-01T19:58:00.000Z', 4.2]],
         };
       },
       getPaths: async () => [],
     });
 
-    expect(await reader.snapshot(NOW)).toBeNull();
+    expect((await reader.read(NOW)).status).toBe('unavailable');
     fail = false;
-    const snapshot = await reader.snapshot(NOW);
-    expect(snapshot?.positions).toHaveLength(1);
-    expect(snapshot?.providerId).toBe('default');
+    const result = await reader.read(NOW);
+    expect(result).toMatchObject({
+      status: 'ok',
+      providerId: 'default',
+      requestedPaths: ['navigation.speedOverGround'],
+    });
+    expect(result.status === 'ok' && result.entries).toHaveLength(1);
   });
 });
