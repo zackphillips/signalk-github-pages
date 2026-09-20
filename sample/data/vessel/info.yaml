@@ -6,3 +6,6 @@ name: "Sample Vessel"
 mmsi: "000000000"
 timezone: "America/Los_Angeles"
 privacy_zones: []
+custom_links:
+  - label: "Ship's Log"
+    url: "https://example.com/logs"

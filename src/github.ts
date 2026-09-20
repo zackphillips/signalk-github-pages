@@ -199,6 +199,9 @@ export class GitHubClient {
       `/repos/${this.repo}/git/trees`,
       {
         base_tree: baseTree,
+        // A null sha deletes the path. `mode` and `type` go with it: the API
+        // wants a complete entry either way, and the null is the only thing
+        // that distinguishes a deletion from a write.
         tree: entries.map((entry) => ({
           path: entry.path,
           mode: entry.mode ?? '100644',
@@ -253,20 +256,28 @@ export class GitHubClient {
    */
   async listTree(
     etag?: string,
-  ): Promise<{ changed: boolean; etag?: string; paths: Array<{ path: string; sha: string; type: string }> }> {
+  ): Promise<{
+    changed: boolean;
+    etag?: string;
+    paths: Array<{ path: string; sha: string; type: string }>;
+    /** GitHub caps a listing at 100k entries; past that, absence proves nothing. */
+    truncated: boolean;
+  }> {
     const { status, data, headers } = await this.request<{
       tree?: Array<{ path: string; sha: string; type: string }>;
+      truncated?: boolean;
     }>(
       'GET',
       `/repos/${this.repo}/git/trees/${encodeURIComponent(this.branch)}?recursive=1`,
       undefined,
       etag ? { 'If-None-Match': etag } : {},
     );
-    if (status === 304) return { changed: false, etag, paths: [] };
+    if (status === 304) return { changed: false, etag, paths: [], truncated: false };
     return {
       changed: true,
       etag: headers.get('etag') ?? undefined,
       paths: data?.tree ?? [],
+      truncated: data?.truncated === true,
     };
   }
 
@@ -307,6 +318,11 @@ export interface PublishResult {
   retried: boolean;
 }
 
+export interface PublishOptions {
+  /** Paths to remove in the same commit. */
+  deletions?: string[];
+}
+
 /**
  * Publish a set of files as one commit, retrying once on a lost ref race.
  *
@@ -317,8 +333,10 @@ export async function publishFiles(
   client: GitHubClient,
   files: PublishFile[],
   message: string,
+  options: PublishOptions = {},
 ): Promise<PublishResult | null> {
-  if (!files.length) return null;
+  const deletions = options.deletions ?? [];
+  if (!files.length && !deletions.length) return null;
 
   const attempt = async (): Promise<PublishResult> => {
     const headSha = await client.getRef();
@@ -331,10 +349,11 @@ export async function publishFiles(
         entries.push({ path: file.path, content: file.content });
       }
     }
+    for (const path of deletions) entries.push({ path, sha: null });
     const treeSha = await client.createTree(baseTree, entries);
     const commitSha = await client.createCommit(message, treeSha, headSha);
     await client.updateRef(commitSha);
-    return { commitSha, files: files.length, retried: false };
+    return { commitSha, files: files.length + deletions.length, retried: false };
   };
 
   try {

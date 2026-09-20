@@ -270,7 +270,12 @@ export function renderVesselInfo(
   if (identity.homePort) document.home_port = identity.homePort;
   if (config.site.marinetrafficShipId)
     document.marinetraffic_ship_id = config.site.marinetrafficShipId;
-  if (config.site.postgsailLogsUrl) document.postgsail_logs_url = config.site.postgsailLogsUrl;
+  if (config.site.customLinks.length) {
+    document.custom_links = config.site.customLinks.map((link) => ({
+      label: link.label,
+      url: link.url,
+    }));
+  }
   if (config.site.defaultLocation) {
     const { lat, lon, label } = config.site.defaultLocation;
     document.default_location = label ? { lat, lon, label } : { lat, lon };

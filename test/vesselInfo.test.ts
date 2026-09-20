@@ -71,6 +71,30 @@ describe('renderVesselInfo', () => {
   });
 });
 
+describe('custom buttons', () => {
+  it('writes them in order, as label and url pairs', () => {
+    const config = makeConfig({
+      site: {
+        customLinks: [
+          { label: "Ship's Log", url: 'https://example.com/log' },
+          { label: 'Starlink', url: 'http://192.168.100.1/' },
+        ],
+      },
+    });
+    const parsed = yaml.load(renderVesselInfo(config, IDENTITY)) as any;
+    expect(parsed.custom_links).toEqual([
+      { label: "Ship's Log", url: 'https://example.com/log' },
+      { label: 'Starlink', url: 'http://192.168.100.1/' },
+    ]);
+    // The key it replaced is gone: the frontend reads custom_links now.
+    expect(parsed.postgsail_logs_url).toBeUndefined();
+  });
+
+  it('leaves the key out entirely when there are none', () => {
+    expect((yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any).custom_links).toBeUndefined();
+  });
+});
+
 describe('home waters', () => {
   it('writes default_location, which is where the site looks before a fix', () => {
     const config = makeConfig({

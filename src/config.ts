@@ -30,6 +30,12 @@
 
 import { availableTimezones, serverTimezone } from './timezones';
 
+/** One extra button in the site's link row. */
+export interface CustomLink {
+  label: string;
+  url: string;
+}
+
 export interface PrivacyZone {
   name: string;
   lat: number;
@@ -61,12 +67,18 @@ export interface PluginConfig {
   };
   positionRetentionHours: number;
   staleMaxAgeMinutes: number;
+  /**
+   * The fallback polar table, exactly as it was typed on the config page.
+   * Used only when the server has no polar to give; see `polars.ts`.
+   */
+  polars: string;
   buildDocsIndex: boolean;
   publishFrontend: boolean;
   site: {
     theme: string;
     marinetrafficShipId: string;
-    postgsailLogsUrl: string;
+    /** Extra buttons in the site's link row, in the order they appear. */
+    customLinks: CustomLink[];
     uscgNumber: string;
     hullNumber: string;
     /**
@@ -157,6 +169,61 @@ export const PAT_GUIDANCE =
   'token is readable by anyone with a shell on the server: scope it to the one ' +
   'repository and nothing else.';
 
+/**
+ * The polar field's help text when the plugin has not yet looked.
+ *
+ * `buildConfigSchema` replaces it with what the last cycle actually found, so
+ * the page tells you whether this box is in use rather than leaving you to
+ * guess which of two plugins the chart is coming from.
+ */
+export const POLARS_FIELD_DESCRIPTION =
+  'Used only when the server has no polar of its own. Manage polars in the ' +
+  'Polar Management plugin where you can: it imports from ORC by boat name or ' +
+  'sail number, and this plugin publishes whichever one you make active. ' +
+  'Paste a table here for a boat whose polar is on paper: first line the true ' +
+  'wind speeds in knots, then one line per true wind angle in degrees ' +
+  'followed by the target boat speeds. Semicolons, commas, tabs or spaces all ' +
+  'work, and # starts a comment.';
+
+/** What the last cycle found, for the note under the polar field. */
+export interface PolarStatus {
+  source: 'resource' | 'config' | 'none';
+  /** Human summary, e.g. `"mermug-orc" from Polar Management, 18 angle(s)...`. */
+  summary: string;
+  problems: string[];
+}
+
+/**
+ * The config schema, with the polar field's description rewritten to say what
+ * the plugin is actually publishing.
+ *
+ * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
+ * not at install: open the page after changing the active polar and the note
+ * is current.
+ */
+export function buildConfigSchema(polar?: PolarStatus | null): typeof configSchema {
+  if (!polar) return configSchema;
+  const note =
+    polar.source === 'resource'
+      ? `In use: ${polar.summary}. This box is ignored while that holds — clear ` +
+        'the active polar in Polar Management to fall back to it.'
+      : polar.source === 'config'
+        ? `In use: ${polar.summary}. No polar is active on the server, so this ` +
+          'box is what the chart draws.'
+        : `Nothing is being published: ${polar.summary}.`;
+  const problems = polar.problems.length ? ` Last cycle reported: ${polar.problems.join(' ')}` : '';
+  return {
+    ...configSchema,
+    properties: {
+      ...configSchema.properties,
+      polars: {
+        ...configSchema.properties.polars,
+        description: `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`,
+      },
+    },
+  };
+}
+
 export const configSchema = {
   type: 'object',
   required: ['github'],
@@ -191,14 +258,6 @@ export const configSchema = {
           type: 'string',
           title: 'Personal access token',
           description: PAT_GUIDANCE,
-        },
-        repo: {
-          type: 'string',
-          title: 'Repository (owner/name) — replaced by the two fields above',
-          description:
-            'Left over from an earlier version. It is still honoured when the ' +
-            'owner and name above are blank; fill those in and this can be ' +
-            'cleared.',
         },
       },
     },
@@ -295,6 +354,12 @@ export const configSchema = {
         'site shows them as unavailable rather than as current.',
       default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
+    polars: {
+      type: 'string',
+      title: 'Polar table (fallback)',
+      description: POLARS_FIELD_DESCRIPTION,
+      default: '',
+    },
     buildDocsIndex: {
       type: 'boolean',
       title: "Maintain docs/index.json",
@@ -332,10 +397,23 @@ export const configSchema = {
           title: 'MarineTraffic ship ID',
           default: '',
         },
-        postgsailLogsUrl: {
-          type: 'string',
-          title: 'PostgSail logs URL',
-          default: '',
+        customLinks: {
+          type: 'array',
+          title: 'Custom buttons',
+          description:
+            'Buttons added to the link row at the top of the site, in this ' +
+            'order — a PostgSail log, a Starlink status page, a crew ' +
+            'handbook, anything with a URL. Only http:// and https:// links ' +
+            'are published.',
+          items: {
+            type: 'object',
+            required: ['label', 'url'],
+            properties: {
+              label: { type: 'string', title: 'Button label' },
+              url: { type: 'string', title: 'URL' },
+            },
+          },
+          default: [],
         },
         uscgNumber: {
           type: 'string',
@@ -372,17 +450,10 @@ export const configSchema = {
   },
 };
 
-/**
- * Admin-UI hints. The legacy `github.repo` field stays in the schema so an
- * upgraded installation keeps publishing before anyone opens this page, but it
- * is hidden: a form showing three repository boxes invites filling in the
- * wrong one. A server that ignores uiSchema shows it, labelled for what it is.
- */
+/** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
-  github: {
-    repo: { 'ui:widget': 'hidden' },
-    token: { 'ui:widget': 'password' },
-  },
+  github: { token: { 'ui:widget': 'password' } },
+  polars: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
 };
 
@@ -445,28 +516,19 @@ export interface OwnerAndName {
 }
 
 /**
- * Resolve the two repository fields, and the one they replaced.
+ * Resolve the two repository fields.
  *
- * Splitting the old `owner/name` box into two is mostly a usability change,
- * but it also removes the most common setup mistake: a value with no slash, or
- * with a whole GitHub URL in it, that failed only on the first publish. Here a
- * pasted URL or an `owner/name` in the owner box is split rather than
- * rejected, and the legacy single field still resolves an installation that
- * has not been through this page since the upgrade.
+ * Two boxes rather than one `owner/name` box is mostly a usability change, but
+ * it also removes the most common setup mistake: a value with no slash, or
+ * with a whole GitHub URL in it, that failed only on the first publish. A
+ * pasted URL or an `owner/name` in the owner box is split here rather than
+ * rejected.
  */
-export function resolveOwnerAndName(
-  rawOwner: unknown,
-  rawName: unknown,
-  legacyRepo: unknown,
-): OwnerAndName {
+export function resolveOwnerAndName(rawOwner: unknown, rawName: unknown): OwnerAndName {
   const problems: string[] = [];
   let owner = stripRepoUrl(str(rawOwner));
   let name = stripRepoUrl(str(rawName));
 
-  if (!owner && !name) {
-    const legacy = stripRepoUrl(str(legacyRepo));
-    if (legacy) [owner = '', name = ''] = legacy.split('/');
-  }
   // "owner/name" pasted into either box.
   if (owner.includes('/')) {
     const [first, ...rest] = owner.split('/');
@@ -532,6 +594,43 @@ export interface UnresolvedConfig {
  * boat's wifi.
  */
 /**
+ * Keep the custom buttons that are actually buttons.
+ *
+ * The scheme check is not tidiness: the label and URL are published into
+ * `info.yaml` and the frontend assigns the URL straight to `href`, so a
+ * `javascript:` entry here would be a script running on every visitor's
+ * browser. http and https only, and the frontend checks again on the way in.
+ */
+export function resolveCustomLinks(value: unknown): {
+  links: CustomLink[];
+  warnings: string[];
+} {
+  const links: CustomLink[] = [];
+  const warnings: string[] = [];
+  if (!Array.isArray(value)) return { links, warnings };
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const label = str((entry as any).label);
+    const url = str((entry as any).url);
+    if (!label && !url) continue;
+    if (!label || !url) {
+      warnings.push(
+        `Custom button "${label || url}" needs both a label and a URL; it was skipped.`,
+      );
+      continue;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      warnings.push(
+        `Custom button "${label}" has a URL that is not http:// or https://; it was skipped.`,
+      );
+      continue;
+    }
+    links.push({ label, url });
+  }
+  return { links, warnings };
+}
+
+/**
  * The home-waters coordinates, or null.
  *
  * Both halves or neither: a latitude with no longitude is not a place, and
@@ -563,7 +662,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const { owner, name, problems: repoProblems } = resolveOwnerAndName(
     github.owner,
     github.name,
-    github.repo,
   );
   problems.push(...repoProblems);
 
@@ -573,6 +671,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     const warning = tokenWarning(token);
     if (warning) warnings.push(warning);
   }
+
+  const customLinkResult = resolveCustomLinks(site.customLinks);
+  const customLinks = customLinkResult.links;
+  warnings.push(...customLinkResult.warnings);
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
@@ -629,6 +731,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
         ),
       },
+      polars: typeof input.polars === 'string' ? input.polars : '',
       positionRetentionHours:
         num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
@@ -637,7 +740,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       site: {
         theme: SITE_THEMES.includes(str(site.theme)) ? str(site.theme) : DEFAULT_THEME,
         marinetrafficShipId: str(site.marinetrafficShipId),
-        postgsailLogsUrl: str(site.postgsailLogsUrl),
+        customLinks,
         uscgNumber: str(site.uscgNumber),
         hullNumber: str(site.hullNumber),
         defaultLocation: resolveDefaultLocation(site.defaultLocation),

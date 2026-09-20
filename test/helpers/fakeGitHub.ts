@@ -110,7 +110,9 @@ export class FakeGitHub {
         if (!base) return json(422, { message: 'base_tree not found' });
         const next = new Map(base);
         for (const entry of body.tree) {
-          if (entry.sha) next.set(entry.path, `base64:${this.blobs.get(entry.sha) ?? ''}`);
+          // A null sha is a deletion, which is how voyages are pruned.
+          if (entry.sha === null) next.delete(entry.path);
+          else if (entry.sha) next.set(entry.path, `base64:${this.blobs.get(entry.sha) ?? ''}`);
           else next.set(entry.path, entry.content);
         }
         const treeSha = sha(JSON.stringify([...next.entries()]));

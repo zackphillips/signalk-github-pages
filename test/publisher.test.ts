@@ -9,7 +9,7 @@ import { StateStore } from '../src/state';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
 
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SITE_DIR = path.join(__dirname, '..', 'site');
 const HOME = { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 };
 
 const tree = (over: { lat?: number; lon?: number; state?: string; timestamp?: string } = {}) => ({
@@ -55,7 +55,7 @@ describe('Publisher', () => {
       store,
       config,
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
-      publicDir: PUBLIC_DIR,
+      siteDir: SITE_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date(now),
@@ -208,7 +208,7 @@ describe('Publisher', () => {
       store,
       config: makeConfig(),
       identity: { name: 'Vessel', mmsi: '' },
-      publicDir: PUBLIC_DIR,
+      siteDir: SITE_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date('2026-03-01T20:00:00Z'),
@@ -265,6 +265,110 @@ describe('Publisher', () => {
     expect(JSON.parse(fake.files.get('.tracker-manifest.json')!).owned).not.toContain(
       'data/vessel/polars.csv',
     );
+  });
+
+  describe('pruning voyages', () => {
+    const INDEX = {
+      schema_version: 1,
+      tracks: ['2026-01-02', '2026-02-14', '2026-02-28', '2026-03-01'].map((date) => ({
+        date,
+        file: `tracks/${date}.gpx`,
+        start: `${date}T15:00:00Z`,
+        end: `${date}T23:00:00Z`,
+        duration_hours: 8,
+        points: 240,
+        max_speed_kts: 7.2,
+        distance_nm: 34.1,
+      })),
+    };
+
+    /** A repository that already carries four days, and state to match. */
+    const seeded = async () => {
+      for (const track of INDEX.tracks) {
+        fake.commitFile(`data/telemetry/${track.file}`, `<gpx>${track.date}</gpx>`);
+      }
+      fake.commitFile('data/telemetry/tracks_index.json', JSON.stringify(INDEX));
+      await store.writeText('tracks_index.json', JSON.stringify(INDEX));
+      await store.mergeState({ publishedDays: INDEX.tracks.map((t) => t.date) });
+      return makePublisher({ timezone: 'America/Los_Angeles' });
+    };
+
+    it('lists what is published, newest first', async () => {
+      const publisher = await seeded();
+      expect((await publisher.listTracks()).map((t) => t.date)).toEqual([
+        '2026-03-01',
+        '2026-02-28',
+        '2026-02-14',
+        '2026-01-02',
+      ]);
+    });
+
+    it('removes the GPX files and rewrites the index in one commit', async () => {
+      const publisher = await seeded();
+      const before = fake.commits.length;
+      const { plan, commitSha } = await publisher.pruneTracks({ olderThanDays: 7 });
+
+      expect(plan.remove.map((t) => t.date)).toEqual(['2026-01-02', '2026-02-14']);
+      expect(commitSha).toBeTruthy();
+      expect(fake.commits.length).toBe(before + 1);
+      expect(fake.commits[fake.commits.length - 1]!.message).toBe(
+        'Remove 2 voyages (2026-01-02 to 2026-02-14)',
+      );
+      expect(fake.files.has('data/telemetry/tracks/2026-01-02.gpx')).toBe(false);
+      expect(fake.files.has('data/telemetry/tracks/2026-02-14.gpx')).toBe(false);
+      // What is kept is untouched, including today's.
+      expect(fake.files.get('data/telemetry/tracks/2026-03-01.gpx')).toBe('<gpx>2026-03-01</gpx>');
+      const index = JSON.parse(fake.files.get('data/telemetry/tracks_index.json')!);
+      expect(index.tracks.map((t: any) => t.date)).toEqual(['2026-02-28', '2026-03-01']);
+    });
+
+    it('lets a pruned day come back, by dropping it from publishedDays', async () => {
+      // publishedDays exists to stop a past day being rebuilt from a position
+      // index that no longer covers it. Leaving a pruned day in it would be a
+      // day that could never return even with its points still in the window.
+      const publisher = await seeded();
+      await publisher.pruneTracks({ olderThanDays: 7 });
+      expect((await store.readState()).publishedDays).toEqual(['2026-02-28', '2026-03-01']);
+    });
+
+    it('commits nothing when there is nothing old enough', async () => {
+      const publisher = await seeded();
+      const before = fake.commits.length;
+      const { plan, commitSha } = await publisher.pruneTracks({ olderThanDays: 365 });
+      expect(plan.remove).toEqual([]);
+      expect(commitSha).toBeUndefined();
+      expect(fake.commits.length).toBe(before);
+    });
+
+    it('keeps today when asked to remove everything', async () => {
+      const publisher = await seeded();
+      const { plan } = await publisher.pruneTracks({ olderThanDays: null });
+      expect(plan.remove.map((t) => t.date)).toEqual(['2026-01-02', '2026-02-14', '2026-02-28']);
+      expect(fake.files.get('data/telemetry/tracks/2026-03-01.gpx')).toBeTruthy();
+    });
+
+    it('skips a voyage file that is already gone rather than failing the prune', async () => {
+      // The Git Data API rejects the whole tree with a 422 if one entry names
+      // a path the base tree does not have. A day deleted by hand on GitHub
+      // would otherwise take the rest of the prune down with it.
+      const publisher = await seeded();
+      fake.files.delete('data/telemetry/tracks/2026-01-02.gpx');
+      const { plan, commitSha } = await publisher.pruneTracks({ olderThanDays: 7 });
+      expect(commitSha).toBeTruthy();
+      expect(plan.remove.map((t) => t.date)).toEqual(['2026-01-02', '2026-02-14']);
+      expect(fake.files.has('data/telemetry/tracks/2026-02-14.gpx')).toBe(false);
+      // Both days leave the index, whether or not their file was still there.
+      const index = JSON.parse(fake.files.get('data/telemetry/tracks_index.json')!);
+      expect(index.tracks.map((t: any) => t.date)).toEqual(['2026-02-28', '2026-03-01']);
+      expect(logs.join(' ')).toContain('already gone');
+    });
+
+    it('does not disturb anything else in the repository', async () => {
+      const publisher = await seeded();
+      fake.commitFile('docs/passage-notes.md', '# Notes');
+      await publisher.pruneTracks({ olderThanDays: null });
+      expect(fake.files.get('docs/passage-notes.md')).toBe('# Notes');
+    });
   });
 
   it('builds the docs index from the published Markdown, skipping drafts', async () => {
@@ -372,7 +476,7 @@ describe('cycle accounting', () => {
       store: new StateStore(dataDir),
       config: makeConfig({ publishFrontend: false, buildDocsIndex: false, ...config }),
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
-      publicDir: PUBLIC_DIR,
+      siteDir: SITE_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date('2026-03-01T20:00:00Z'),

@@ -1229,9 +1229,6 @@ function updateVesselLinks() {
   if (vesselData.marinetraffic_ship_id) {
     vesselData.links.marinetraffic = `https://www.marinetraffic.com/en/ais/details/ships/shipid:${vesselData.marinetraffic_ship_id}`;
   }
-  if (vesselData.postgsail_logs_url) {
-    vesselData.links.postgsail = vesselData.postgsail_logs_url;
-  }
 
   // Update the link cluster in the tab bar
   const marinetrafficLink = document.getElementById('marinetraffic-link');
@@ -1239,10 +1236,33 @@ function updateVesselLinks() {
     marinetrafficLink.href = vesselData.links.marinetraffic;
   }
 
-  const postgsailLink = document.getElementById('postgsail-link');
-  if (postgsailLink && vesselData.links?.postgsail) {
-    postgsailLink.href = vesselData.links.postgsail;
-    postgsailLink.style.display = '';
+  renderCustomLinks(vesselData.custom_links);
+}
+
+// Buttons the owner configured: a ship's log, a Starlink status page, anything
+// with a URL. Built here rather than written into index.html so the set can
+// change without republishing the frontend.
+//
+// Rebuilt from scratch on each call so a second load does not double them up,
+// and the scheme is checked again on this side: info.yaml is a file in a
+// public repository, and `href = "javascript:..."` would run in every
+// visitor's browser. The plugin filters the same way on the way out.
+function renderCustomLinks(links) {
+  const host = document.getElementById('custom-links');
+  if (!host) return;
+  host.textContent = '';
+  if (!Array.isArray(links)) return;
+  for (const link of links) {
+    const label = typeof link?.label === 'string' ? link.label.trim() : '';
+    const url = typeof link?.url === 'string' ? link.url.trim() : '';
+    if (!label || !/^https?:\/\//i.test(url)) continue;
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.className = 'tab-link';
+    anchor.textContent = label;
+    host.appendChild(anchor);
   }
 }
 let themeChangeTimeout = null; // Timeout for theme change debouncing

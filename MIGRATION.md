@@ -54,23 +54,23 @@ Copy the values out of `data/vessel/info.yaml` into the plugin config page:
 | `timezone` | `timezone` — pick the same zone from the dropdown |
 | `theme` | `site.theme` |
 | `marinetraffic_ship_id` | `site.marinetrafficShipId` |
-| `postgsail_logs_url` | `site.postgsailLogsUrl` |
+| `postgsail_logs_url` | `site.customLinks[]` — a button with a label and that URL |
 | `default_location` | `site.defaultLocation` — latitude, longitude and a label |
 | `uscg_number`, `hull_number` | nothing, if the server carries them as registrations; `site.uscgNumber` / `site.hullNumber` if it does not |
 | `name`, `mmsi`, `callsign` | nothing — read from the server |
 | `passage` | nothing — stays in the file, preserved on rewrite |
 | `signalk.host`, `signalk.port` | nothing — read from the server |
 
-The repository field is two boxes, `github.owner` and `github.name`. A config
-written against the old single `owner/name` field keeps working until the next
-save, and the two boxes are filled from it — but fill them in yourself while
-you are on the page.
+The repository is two boxes, `github.owner` and `github.name`. The single
+`owner/name` field an early version had is gone, not hidden: fill in both
+boxes or the plugin will not start, and it will say which one is missing.
 
 `data/vessel/polars.csv` can move onto the server: install
 [Polar Management](https://www.npmjs.com/package/signalk-polar-management),
 import the boat's polar there (ORC lookup, or paste the existing CSV), mark it
-active, and this plugin publishes it from then on. Do nothing and the file
-stays yours, managed by hand.
+active, and this plugin publishes it from then on. Without that plugin, paste
+the existing CSV into the `polars` field instead — the config page says which
+of the two is in use. Do neither and the file stays yours, managed by hand.
 
 The daemon's constants are the plugin's defaults, so there is nothing to copy
 unless you want to change them:
@@ -108,6 +108,10 @@ before the cutover.
    shows up as the plugin's own status in the admin UI.
 4. Confirm a publish lands: the plugin status line shows the time of the last
    commit, and the repository gets one commit per cycle.
+5. Open the console at `http://<your-pi>:3000/signalk-github-pages/` and
+   compare the preview against the live site. It renders from the plugin's own
+   data, so a difference between the two is a difference between what the
+   plugin has and what the daemon last published.
 
 ## 5. Delete what the plugin replaces
 
@@ -133,8 +137,13 @@ plugin repository from that point on. Anything you want to keep local goes in
 `assets/custom.css`, which the plugin never writes and both pages load last.
 
 `docs/*.md` and `data/vessel/logo.png` are yours and are never written.
-`data/vessel/polars.csv` is too, unless Polar Management has an active polar —
-then the plugin owns it and says so in the manifest.
+`data/vessel/polars.csv` is too, unless the plugin has a polar to publish —
+then it owns the file and says so in the manifest.
+
+Years of `data/telemetry/tracks/*.gpx` come across untouched. If the point of
+the cutover is also to get the repository back under control, the console's
+prune removes old voyages once the plugin is running; nothing is removed on a
+schedule, and what is removed stays in the repository's git history.
 
 ## 6. Update the repository's own docs
 

@@ -140,9 +140,35 @@ describe('readActivePolar', () => {
     expect(result.problems).toEqual([]);
   });
 
-  it('publishes nothing when no polar is selected, and calls that no problem', async () => {
+  it('publishes nothing when no polar is selected and no table is pasted', async () => {
     const result = await readActivePolar(app(RESOURCE), {});
-    expect(result).toEqual({ id: null, csv: '', problems: [] });
+    expect(result.csv).toBe('');
+    expect(result.source).toBe('none');
+    expect(result.problems).toEqual([]);
+  });
+
+  it('falls back to the config table when nothing is active on the server', async () => {
+    const result = await readActivePolar(app(RESOURCE), {}, 'twa/tws;6;10\n52;4.1;5.8\n');
+    expect(result.source).toBe('config');
+    expect(result.csv).toBe('twa/tws;6;10\n52;4.1;5.8\n');
+    expect(result.summary).toContain('config page');
+  });
+
+  it('prefers the server over the config table, and stays quiet about it', async () => {
+    const result = await readActivePolar(app(RESOURCE), selected, 'twa/tws;6\n52;9.9\n');
+    expect(result.source).toBe('resource');
+    expect(result.csv).not.toContain('9.9');
+  });
+
+  it('falls back when the active polar will not convert, and says both things', async () => {
+    const result = await readActivePolar(
+      app({ ...RESOURCE, units: { tws: 'furlongs', twa: 'rad', boatSpeed: 'm/s' } }),
+      selected,
+      'twa/tws;6\n52;4.1\n',
+    );
+    expect(result.source).toBe('config');
+    expect(result.csv).toBe('twa/tws;6\n52;4.1\n');
+    expect(result.problems.join(' ')).toContain('units this plugin does not know');
   });
 
   it('reports a polar that has gone missing rather than throwing into the cycle', async () => {
