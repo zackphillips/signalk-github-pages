@@ -1430,13 +1430,12 @@ async function loadTideStations() {
     tideStations = await response.json();
     console.log('Tide stations data loaded:', tideStations);
   } catch (error) {
+    // No stand-in list. A single hardcoded San Francisco station used to sit
+    // here, which meant a boat anywhere else picked it as its "nearest" one
+    // and showed Golden Gate tides under its own heading. An empty list makes
+    // resolveTidePosition find nothing and the panel say so.
     console.error('Error loading tide stations data:', error);
-    // Set default values if loading fails
-    tideStations = {
-      stations: [
-        { id: "9414290", name: "San Francisco", lat: 37.806, lon: -122.465 }
-      ]
-    };
+    tideStations = { stations: [] };
   }
 }
 
@@ -1623,10 +1622,12 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
     return `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?${params.toString()}`;
   };
 
-  let targetStation = nearest;
-  let url = buildUrl(targetStation.id);
-  const fallbackStation = { id: '9414290', name: 'San Francisco', lat: 37.806, lon: -122.465 };
-  let attemptedFallback = false;
+  // There is no fallback station. A failed fetch for the nearest station used
+  // to be retried against San Francisco "because it is known to work", which
+  // answered a question nobody asked: the panel then showed real tides for
+  // water 3000 miles away, labelled with this boat's heading.
+  const targetStation = nearest;
+  const url = buildUrl(targetStation.id);
   const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
   try {
@@ -1640,11 +1641,11 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
       lat: targetStation.lat, lon: targetStation.lon,
       url, begin_date: begin, end_date: end
     });
-    if (!json) try {
+    if (!json) {
       res = await fetch(url);
       if (res.ok) {
         json = await res.json();
-        // Check for NOAA API error in response (they sometimes return 200 with error object)
+        // NOAA sometimes returns 200 with an error object in the body.
         if (json.error) {
           throw new Error(json.error.message || JSON.stringify(json.error));
         }
@@ -1665,52 +1666,6 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
           // Ignore errors parsing error response
         }
         throw new Error(`HTTP ${res.status}: ${errorDetails}`);
-      }
-    } catch (error) {
-      // If primary station fails, try fallback (San Francisco is known to work)
-      if (!attemptedFallback && targetStation.id !== fallbackStation.id) {
-        console.warn('Primary station failed, retrying with fallback 9414290 (San Francisco)', error);
-        attemptedFallback = true;
-        targetStation = fallbackStation;
-        url = buildUrl(fallbackStation.id);
-        console.debug('Tide fetch: attempting fallback station', {
-          id: targetStation.id,
-          name: targetStation.name,
-          url
-        });
-
-        try {
-          res = await fetch(url);
-          if (res.ok) {
-            json = await res.json();
-            // Check for NOAA API error in response
-            if (json.error) {
-              throw new Error(json.error.message || JSON.stringify(json.error));
-            }
-          } else {
-            // Try to get error details from response body
-            let errorDetails = res.statusText;
-            try {
-              const errorBody = await res.text();
-              if (errorBody) {
-                try {
-                  const errorJson = JSON.parse(errorBody);
-                  errorDetails = errorJson.error?.message || errorJson.message || errorBody;
-                } catch {
-                  errorDetails = errorBody;
-                }
-              }
-            } catch {
-              // Ignore errors parsing error response
-            }
-            throw new Error(`NOAA API ${res.status}: ${errorDetails}`);
-          }
-        } catch (retryError) {
-          throw new Error(`Failed to fetch tide data: ${retryError.message || 'Network error'}`);
-        }
-      } else {
-        // Already tried fallback or it was the fallback, re-throw
-        throw error;
       }
     }
     const rawData = Array.isArray(json?.predictions) ? json.predictions : [];
@@ -2458,41 +2413,15 @@ async function loadData() {
         throw new Error(`Local file not available: ${res.status} ${res.statusText}`);
       }
     } catch (fileError) {
-      console.log('Local file fetch error:', fileError);
-      console.log('Local file unavailable, creating dummy data...');
-
-      // Create dummy data as fallback
-      console.log('Creating dummy data as fallback...');
-      data = {
-        navigation: {
-          position: { value: { latitude: 37.806, longitude: -122.465 } },
-          courseOverGroundTrue: { value: 0 },
-          speedOverGround: { value: 0 },
-          speedThroughWater: { value: 0 }
-        },
-        environment: {
-          wind: {
-            speedTrue: { value: 10 },
-            angleTrue: { value: 0 }
-          },
-          water: { temperature: { value: 288.15 } }
-        },
-        electrical: {
-          batteries: {
-            house: {
-              voltage: { value: 12.5 },
-              current: { value: 0 },
-              power: { value: 0 },
-              capacity: {
-                stateOfCharge: { value: 0.8 },
-                timeRemaining: { value: 36000 }
-              }
-            }
-          }
-        }
-      };
-      dataSource = 'dummy';
-      console.log('Dummy data created successfully');
+      // Nothing stands in for the snapshot. This used to build one: a
+      // position in San Francisco Bay, 10 knots of true wind, a house bank
+      // at 12.5V and 80%. A boat whose publish had failed showed a plausible
+      // afternoon's sailing to whoever was following it, which is the worst
+      // thing this page can do. Every panel already renders a missing value
+      // as missing, so hand them nothing and let them say so.
+      console.log('signalk_latest.json unavailable:', fileError);
+      data = {};
+      dataSource = 'unavailable';
     }
 
     console.log('Fetch response status:', res?.status);
@@ -2548,9 +2477,9 @@ async function loadData() {
     let timestampStr = data.navigation?.position?.timestamp;
     let modifiedDate = timestampStr ? new Date(timestampStr) : findLatestTimestamp(data);
 
-    if (dataSource === 'dummy') {
+    if (dataSource === 'unavailable') {
       bannerState = 'error';
-      if (ageEl) ageEl.textContent = 'Demo data';
+      if (ageEl) ageEl.textContent = 'Telemetry unavailable';
       if (statusHero) statusHero.classList.add('stale');
     } else if (modifiedDate && !isNaN(modifiedDate.getTime())) {
       const diffMs    = Date.now() - modifiedDate;

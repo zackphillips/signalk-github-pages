@@ -63,14 +63,24 @@ Run `npm test` and `npm run typecheck` before committing.
   a typed field and a line in `renderVesselInfo`, not a blob. `grep
   vesselData\. site/assets/app.js` lists every key the frontend reads; each
   one needs a source before a field is removed.
-- **Unknown renders as unknown.** The frontend carried three invented
-  fallbacks: a San Francisco Bay tide location, a privacy zone at one
-  particular dock, and a whole vessel identity — name, MMSI, documentation
-  number — used when `info.yaml` failed to load. Each one turned a missing
-  value into a confident wrong one on somebody else's boat. `resolveTidePosition`
+- **Unknown renders as unknown.** The frontend carried five invented
+  fallbacks, each of which turned a missing value into a confident wrong one
+  on somebody else's boat: a San Francisco Bay tide location; a privacy zone
+  at one particular dock; a whole vessel identity (name, MMSI, documentation
+  number) used when the vessel config failed to load; a one-station tide list
+  — San Francisco again — used when `tide_stations.json` failed to load, so
+  that every boat's "nearest station" was the Golden Gate; a retry of any
+  failed NOAA fetch against San Francisco "because it is known to work",
+  which drew real tides for water 3000 miles away under this boat's heading;
+  and a fabricated snapshot (a position in the Bay, 10 knots of true wind, a
+  house bank at 12.5 V and 80%) shown whenever `signalk_latest.json` would
+  not load, so a boat whose publishing had failed showed someone ashore a
+  plausible afternoon's sailing. All of them are gone. `resolveTidePosition`
   returns null and the panels say what is missing; `getPrivacyZones` returns
   an empty list, which is safe because the plugin already redacts before it
-  publishes; `vesselData` is `{}`. Do not add a fourth.
+  publishes; a failed station list is empty; a failed NOAA fetch throws; a
+  failed snapshot is `{}` and the banner reads "Telemetry unavailable". Do
+  not add another. If a value is not known, the page says so.
 - **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
