@@ -32,6 +32,7 @@ src/
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
+  track.ts          navigation.position deltas, decimated by shape
   signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
@@ -139,11 +140,40 @@ Run `npm test` and `npm run typecheck` before committing.
   read defensively. Provider *responses* stay loosely typed on purpose: a
   history provider is another package's output, and parsing it tolerantly is
   the difference between a missing sparkline and a failed cycle.
+- **A `navigation.state` transition publishes immediately.** Leaving the dock
+  was otherwise invisible for up to an hour: the stationary timer was set
+  while the boat was still moored and nothing shortened it. Only the
+  transition fires, never the repeats — `navigation.state` arrives as a
+  delta on every update from signalk-autostate, and publishing on each would
+  ignore the cadence entirely — and the pending timer is rescheduled, since
+  it was set for the cadence that applied before the boat moved.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
+- **The track is recorded from deltas and thinned by shape.** A fix is kept
+  when dropping it would move the drawn track by more than
+  `track.detailMetres`, and at least once per publish cycle. Measured on a
+  synthetic hour of 60-second tacks: 60 points and the track exactly right,
+  against 30 points and 128 m of error for one-fix-per-cycle sampling; a mark
+  rounding is 9 points and 9 m against 5 points and 174 m. A straight leg
+  costs the same as before, because the time floor is what fires. Two things
+  that are easy to get wrong here: the time floor follows the *publish
+  cadence* rather than being a constant, so a night at anchor is one fix an
+  hour as it always was and not 720 points of a boat sitting still; and the
+  window cap commits the newest fix and clears, because committing the oldest
+  and dropping one leaves the window at the cap so every later fix commits
+  too — that bug turned a night at anchor into 42601 points of 43200.
+- **The tree fix is the fallback, not an addition.** With a recorder running,
+  `runCycle` uses its fixes; without one — an older server, or streams it
+  could not subscribe to — it uses the one on the tree, which is exactly what
+  this plugin did before. Appending both would put a near-duplicate a metre
+  away beside every recorded point.
+- **`track.ts` never redacts, and must not start.** Its output is a list of
+  candidates. `buildPositionEntry` is the single place a position becomes a
+  published value and the single place the privacy zones are applied;
+  recording more fixes must not become a second route to the repository.
 - **The track is ours, the instrument log is the provider's.** Positions are
-  accumulated here, one fix per cycle, straight from the tree: that is what
+  accumulated here, straight from the tree or its deltas: that is what
   the GPX archive is built from, it works on a server with no history provider
   at all, and it keeps exactly one path — and one redaction — between a
   position and a public repository. The instrument log is the opposite: a

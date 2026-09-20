@@ -47,12 +47,12 @@ live `HEAD`.
 | | |
 |---|---|
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
-| **Per-day GPX tracks** | Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
+| **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
-| **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
+| **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` — and a publish the moment that changes, so a departure is not invisible for an hour |
 | **Sparklines from your database** | With a Signal K history provider installed, the instrument log is read back from it — full resolution, no gap across a restart, nothing accumulated on the Pi |
 | **Ownership manifest** | The plugin writes only the paths it declares; the rest of the repo is yours |
 | **On-boat console** | A Signal K webapp that renders the site from live data and prunes old voyages |
@@ -133,6 +133,7 @@ only. Give Pages a minute, then open the URL.
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
 | `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and the longest window the site's history dropdown will offer |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `track.detailMetres` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
 | `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
 | `history.providerId` | *empty* | Blank uses the server's default provider |
 | `history.resolutionSeconds` | `60` | Bucket width asked of the provider, and the log's spacing |
@@ -164,6 +165,28 @@ Signal K rather than from this page.
 > `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
 > shell on the server. Scope it to the one repository, and rotate it if the Pi
 > ever leaves your hands.
+
+## The track
+
+The track is recorded from `navigation.position` deltas, which arrive several
+a second, and thinned by *shape*: a fix is kept when dropping it would move
+the drawn line by more than `track.detailMetres`, and at least once per
+publish cycle whatever the shape says.
+
+That is not the same as sampling more often. The Git Data API uploads whole
+files and the day's GPX is rewritten every cycle, so a point on a straight
+line is paid for again every two minutes until midnight. Thinning by shape
+spends points where the track bends and nothing where it does not:
+
+| An hour of… | Delta + shape | One fix per cycle |
+|---|---|---|
+| 60-second tacks | 60 points, track exactly right | 30 points, up to 128 m wrong |
+| A mark rounding | 9 points, 9 m | 5 points, 174 m |
+| Straight motoring | same as before | same |
+
+Lower `detailMetres` follows a tack more closely and uploads more; higher is
+cheaper on a hotspot. On a server that does not offer position deltas the
+plugin falls back to one fix per cycle, as before, and says so in the log.
 
 ## History provider
 

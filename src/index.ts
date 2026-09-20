@@ -25,8 +25,9 @@ import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { activePolarId, readActivePolar } from './polars';
-import { extractPositionFix, readSelfTree } from './snapshot';
+import { extractPositionFix, isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
+import { PositionRecorder } from './track';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
 import { readVesselDetails, type VesselIdentity } from './siteConfig';
@@ -129,6 +130,11 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Set on start, cleared on stop: the console's routes are registered once,
   // when the server loads the plugin, and answer 503 while it is not running.
   let webapp: WebappDeps | null = null;
+  // Subscribed on start, unsubscribed on stop. Null while the plugin is not
+  // running, and left null on a server that cannot provide the streams.
+  let recorder: PositionRecorder | null = null;
+  // Unsubscribe for the navigation.state watch, or undefined when not watching.
+  let stateUnsubscribe: (() => void) | undefined;
 
   /**
    * What to tell the config page about the polar table.
@@ -303,6 +309,18 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         instrumentEntries: config.instrumentLog.entries,
         log: (message) => app.debug(message),
       });
+      // The track comes from navigation.position deltas rather than from one
+      // sample per cycle, so a tack is a tack rather than a corner. A server
+      // that will not hand over the streams falls back to the tree fix, which
+      // is what this plugin did before.
+      recorder = new PositionRecorder({
+        app,
+        detailMetres: config.track.detailMetres,
+        maxIntervalSeconds: config.interval.stationary,
+        log: (message) => app.debug(message),
+      });
+      if (!recorder.start()) recorder = null;
+
       const identity = readIdentity(app);
       const publisher = new Publisher({
         client,
@@ -374,6 +392,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           polars: await polarsCsv(tree),
           history: await history.read(new Date()),
           passage,
+          fixes: recorder?.drain(),
         });
         return {
           published: result.published,
@@ -381,6 +400,51 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           bytes: result.bytes,
           commitSha: result.commitSha,
         };
+      };
+
+      /**
+       * Publish as soon as the boat starts or stops moving.
+       *
+       * Without this, leaving the dock is invisible for up to an hour: the
+       * stationary timer was set when the boat was still moored, and nothing
+       * shortens it. The cadence already keys off `navigation.state`, so the
+       * transition is exactly the moment worth publishing — someone ashore
+       * watching for a departure sees it within a cycle rather than within
+       * the interval that was appropriate before it happened.
+       *
+       * Only the transition fires, never the repeats: `navigation.state`
+       * arrives as a delta on every update from signalk-autostate, and
+       * publishing on each of those would ignore the cadence entirely.
+       */
+      let lastUnderway: boolean | null = null;
+      const watchState = () => {
+        const stream = app.streambundle?.getSelfStream?.('navigation.state' as never);
+        if (!stream || typeof stream.onValue !== 'function') return;
+        try {
+          const off = stream.onValue((value: unknown) => {
+            if (stopped) return;
+            const underway = isUnderway(typeof value === 'string' ? value.toLowerCase() : null);
+            if (lastUnderway === null) {
+              lastUnderway = underway;
+              return;
+            }
+            if (underway === lastUnderway) return;
+            lastUnderway = underway;
+            app.debug(
+              `navigation.state changed to ${underway ? 'underway' : 'not underway'}; ` +
+                'publishing now rather than waiting for the next tick.',
+            );
+            // Reschedule too: the pending timer was set for the cadence that
+            // applied before the transition, which is the wrong one now.
+            if (timer) clearTimeout(timer);
+            void publishNow(`navigation.state went ${underway ? 'underway' : 'stationary'}`)
+              .catch((error: any) => app.error(`Publish on state change failed: ${error?.message ?? error}`))
+              .finally(() => schedule(underway ? config.interval.underway : config.interval.stationary));
+          });
+          if (typeof off === 'function') stateUnsubscribe = off;
+        } catch (error: any) {
+          app.debug(`Not watching navigation.state (${error?.message ?? error}).`);
+        }
       };
 
       const tick = async () => {
@@ -397,6 +461,10 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             return;
           }
           seconds = publisher.intervalSeconds(tree);
+          // The recorder's time floor is the publish cadence, so the track is
+          // never sparser than one fix per cycle and never denser than that
+          // when the boat is not moving.
+          recorder?.setPublishInterval(seconds);
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
@@ -405,6 +473,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             polars: await polarsCsv(tree),
             history: await history.read(new Date()),
             passage,
+            fixes: recorder?.drain(),
           });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
@@ -493,6 +562,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           app.error(`Could not seed state from the repository: ${error?.message ?? error}`);
         }
         await tick();
+        watchState();
       })();
     },
 
@@ -502,6 +572,14 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       timer = undefined;
       webapp = null;
       passage = null;
+      recorder?.stop();
+      recorder = null;
+      try {
+        stateUnsubscribe?.();
+      } catch {
+        // Unsubscribing a stream that is already gone is not a problem.
+      }
+      stateUnsubscribe = undefined;
       app.setPluginStatus('Stopped');
     },
 

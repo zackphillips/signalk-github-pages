@@ -82,6 +82,8 @@ export interface PluginConfig {
     override: boolean;
     table: string;
   };
+  /** How much detail the recorded track keeps. See `track.ts`. */
+  track: { detailMetres: number };
   buildDocsIndex: boolean;
   /**
    * Publish `data/telemetry/notifications.json`: the active notifications and
@@ -165,6 +167,16 @@ export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES *
  * adopter's.
  */
 export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
+/**
+ * Default track detail, in metres.
+ *
+ * A fix is dropped when the line through its neighbours already passes
+ * within this of it. 15 m is finer than a GPS fix is repeatable, so the
+ * track follows every tack and gybe, while a straight leg costs almost
+ * nothing — the whole day's GPX is re-uploaded on every cycle, so points on
+ * a straight line are paid for again every two minutes until midnight.
+ */
+export const DEFAULT_TRACK_DETAIL_METRES = 15;
 /** How long raw positions stay in `positions_index.json`. */
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
@@ -489,6 +501,23 @@ export const configSchema = {
           title: 'Polar table',
           description: POLARS_FIELD_DESCRIPTION,
           default: '',
+        },
+      },
+    },
+    track: {
+      type: 'object',
+      title: 'Track detail',
+      properties: {
+        detailMetres: {
+          type: 'number',
+          title: 'Track detail (metres)',
+          description:
+            'The track is recorded from position deltas and thinned by shape: a fix is ' +
+            'kept when dropping it would move the drawn track by more than this, and at ' +
+            'least once per publish cycle. Smaller follows a tack more closely and uploads ' +
+            'more; larger is cheaper on a hotspot. Ignored on a server that does not offer ' +
+            'position deltas, where the track is one fix per cycle as before.',
+          default: DEFAULT_TRACK_DETAIL_METRES,
         },
       },
     },
@@ -936,6 +965,12 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         timeoutMs: Math.max(
           1000,
           Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
+        ),
+      },
+      track: {
+        detailMetres: Math.max(
+          1,
+          num((input.track ?? {}).detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES,
         ),
       },
       buildDocsIndex: input.buildDocsIndex !== false,

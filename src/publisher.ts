@@ -49,6 +49,7 @@ import {
   isUnderway,
   navigationState,
   redactPosition,
+  type PositionFix,
   type Tree,
 } from './snapshot';
 import type { PluginConfig } from './config';
@@ -97,6 +98,13 @@ export interface CycleInput {
    * navigating to anything.
    */
   passage?: Passage | null;
+  /**
+   * Fixes recorded from `navigation.position` deltas since the last cycle,
+   * already decimated (see `track.ts`). The current tree fix is appended to
+   * these, so a cycle records at least as much as the one-fix-per-cycle
+   * sampling this replaced, and more wherever the track actually bends.
+   */
+  fixes?: PositionFix[];
 }
 
 export interface CycleResult {
@@ -238,14 +246,30 @@ export class Publisher {
     // the GPX archive is built from, it works on a server with no history
     // provider at all, and it is the only path a position takes to the
     // repository, which is the path the privacy zones guard.
+    // Every fix — recorded or current — goes through `buildPositionEntry`,
+    // which is the single place a position becomes a published value and the
+    // single place the privacy zones are applied. Recording more of them must
+    // not become a second route to the repository.
+    //
+    // The tree fix is the fallback, not an addition: the recorder already
+    // keeps one fix per publish interval, so appending the tree's as well
+    // would put a near-duplicate a metre away beside every recorded point.
+    // With no recorder — an older server, or one whose streams this plugin
+    // could not subscribe to — the tree fix is the whole track, exactly as
+    // it was before deltas.
+    const recorded = input.fixes ?? [];
+    const newFixes = recorded.length ? recorded : fix ? [fix] : [];
     const positions = pruneAndSort(
       [
         ...parsePositionIndex(await store.readText('positions_index.json')),
-        ...(fix ? [buildPositionEntry(fix, config.privacyZones, now)] : []),
+        ...newFixes.map((entry) => buildPositionEntry(entry, config.privacyZones, now)),
       ],
       now,
       config.positionRetentionHours,
     );
+    if (recorded.length > 1) {
+      log(`Track: ${recorded.length} fixes recorded from deltas since the last cycle.`);
+    }
     if (positions.length) {
       const rendered = renderPositionIndex(positions);
       await store.writeText('positions_index.json', rendered);
