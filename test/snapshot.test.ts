@@ -5,7 +5,7 @@ import {
   isUnderway,
   navigationState,
   readSelfTree,
-  redactPosition,
+  redactPositions,
 } from '../src/snapshot';
 
 const NOW = new Date('2026-03-01T12:00:00Z');
@@ -80,27 +80,99 @@ describe('extractPositionFix', () => {
   });
 });
 
-describe('redactPosition', () => {
+describe('redactPositions', () => {
   const zones = [{ name: 'Home', lat: 37.7802069, lon: -122.385804, radius_m: 200 }];
+  const centre = { latitude: 37.7802069, longitude: -122.385804 };
 
-  it('replaces the position with the zone centre', () => {
+  it('replaces the vessel position with the zone centre', () => {
     const blob = {
       navigation: { position: { value: { latitude: 37.78025, longitude: -122.38585 } } },
     };
-    const zone = redactPosition(blob, zones);
-    expect(zone?.name).toBe('Home');
-    expect(blob.navigation.position.value).toEqual({
-      latitude: 37.7802069,
-      longitude: -122.385804,
-    });
+    const { vesselZone } = redactPositions(blob, zones);
+    expect(vesselZone?.name).toBe('Home');
+    expect(blob.navigation.position.value).toEqual(centre);
+  });
+
+  it('replaces the anchor position too, which used to be published in full', () => {
+    // The bug: the site showed the zone centre for the boat while publishing
+    // the true anchor drop coordinates a few keys away in the same file, and
+    // the frontend reads navigation.anchor.position to draw the marker.
+    const blob = {
+      navigation: {
+        position: { value: { latitude: 37.78025, longitude: -122.38585 } },
+        anchor: {
+          position: { value: { latitude: 37.780123, longitude: -122.385999 } },
+          maxRadius: { value: 40 },
+        },
+      },
+    };
+    const { redacted } = redactPositions(blob, zones);
+    expect(blob.navigation.anchor.position.value).toEqual(centre);
+    expect(redacted).toContain('navigation.anchor.position.value');
+  });
+
+  it('redacts a position wherever it sits, including one a plugin invented', () => {
+    // An allowlist of known paths needs extending every time the spec or a
+    // plugin grows another one. This walks the tree instead.
+    const blob = {
+      navigation: { position: { value: { latitude: 37.78025, longitude: -122.38585 } } },
+      somePlugin: { lastSeen: { value: { latitude: 37.78021, longitude: -122.38581 } } },
+      notifications: {
+        mob: { value: { state: 'emergency', position: { latitude: 37.7802, longitude: -122.3858 } } },
+      },
+    };
+    redactPositions(blob, zones);
+    expect(blob.somePlugin.lastSeen.value).toEqual(centre);
+    expect(blob.notifications.mob.value.position).toEqual(centre);
   });
 
   it('leaves a position outside every zone untouched', () => {
     const blob = {
       navigation: { position: { value: { latitude: 36.9, longitude: -122.0 } } },
     };
-    expect(redactPosition(blob, zones)).toBeNull();
+    const { vesselZone, redacted } = redactPositions(blob, zones);
+    expect(vesselZone).toBeNull();
+    expect(redacted).toEqual([]);
     expect(blob.navigation.position.value.latitude).toBe(36.9);
+  });
+
+  it('does not touch a destination just because the boat is home', () => {
+    // Where the boat is going is not where the boat is. Snapping the
+    // destination to the home dock would corrupt the data and protect
+    // nothing.
+    const blob = {
+      navigation: {
+        position: { value: { latitude: 37.78025, longitude: -122.38585 } },
+        course: { nextPoint: { position: { value: { latitude: 36.96, longitude: -122.02 } } } },
+      },
+    };
+    redactPositions(blob, zones);
+    expect(blob.navigation.course.nextPoint.position.value).toEqual({
+      latitude: 36.96,
+      longitude: -122.02,
+    });
+  });
+
+  it('redacts an anchor position left over from a zone the boat has since left', () => {
+    // The rule is per-position, not per-vessel: the boat is out sailing but
+    // navigation.anchor.position still names the slip it left this morning.
+    const blob = {
+      navigation: {
+        position: { value: { latitude: 36.9, longitude: -122.0 } },
+        anchor: { position: { value: { latitude: 37.78021, longitude: -122.38581 } } },
+      },
+    };
+    const { vesselZone } = redactPositions(blob, zones);
+    expect(vesselZone).toBeNull();
+    expect(blob.navigation.anchor.position.value).toEqual(centre);
+  });
+
+  it('does nothing at all when no zones are configured', () => {
+    const blob = {
+      navigation: { position: { value: { latitude: 37.78025, longitude: -122.38585 } } },
+    };
+    expect(redactPositions(blob, [])).toEqual({ vesselZone: null, redacted: [] });
+    expect(blob.navigation.position.value.latitude).toBe(37.78025);
   });
 });
 

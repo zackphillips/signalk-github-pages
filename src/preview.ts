@@ -28,7 +28,7 @@ import {
 } from './notifications';
 import { parsePositionIndex } from './positions';
 import { TRACKS_DIR } from './prune';
-import { filterStaleData, redactPosition, type Tree } from './snapshot';
+import { filterStaleData, redactPositions, type Tree } from './snapshot';
 import type { StateStore } from './state';
 import { localDay } from './time';
 import { mergeVesselIdentity, readVesselDetails, renderSiteConfig, type VesselIdentity } from './siteConfig';
@@ -77,7 +77,7 @@ export async function renderPreviewData(
     referenceTime: now,
   });
   const merged = mergeVesselIdentity(identity, readVesselDetails(tree));
-  redactPosition(tree, config.privacyZones);
+  redactPositions(tree, config.privacyZones);
 
   files.set(
     `${TELEMETRY_DIR}/signalk_latest.json`,

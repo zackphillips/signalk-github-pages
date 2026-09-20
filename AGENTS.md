@@ -253,6 +253,28 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
+- **Redact every position in the tree, not just `navigation.position`.** The
+  same bug one level up, and it survived longer: the rule was "if the vessel
+  is inside a zone, rewrite `navigation.position`", which guarded one path
+  out of a tree that has several. Anchor inside a privacy zone and the site
+  showed the zone centre for the boat while publishing the true anchor drop
+  coordinates a few keys away in the same file — and the frontend reads
+  `navigation.anchor.position` to draw the marker. `redactPositions` walks
+  the tree and moves *any* position that falls inside a zone to that zone's
+  centre, so a path the spec or a plugin grows later is covered without
+  anyone remembering to add it to a list.
+  The rule is per-position, not per-vessel, and that matters twice: an
+  anchor position left over from the slip the boat left this morning is
+  still redacted while it is out sailing, and a destination in
+  `navigation.course.nextPoint` is *not* redacted merely because the boat is
+  home — where it is going is not where it is, and snapping that to the home
+  dock would corrupt the data while protecting nothing.
+  What this does not cover, deliberately: the snapshot still publishes
+  speed, course and anchor radius inside a zone. Those reveal that the boat
+  is moving, not where it is. The track is stricter — `buildPositionEntry`
+  drops a point inside a zone rather than snapping it, and withholds speed
+  and course — because a night at the dock would otherwise be a pile of
+  identical points saying exactly where you sleep.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.

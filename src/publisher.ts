@@ -48,7 +48,7 @@ import {
   filterStaleData,
   isUnderway,
   navigationState,
-  redactPosition,
+  redactPositions,
   type PositionFix,
   type Tree,
 } from './snapshot';
@@ -229,11 +229,16 @@ export class Publisher {
     // running before the first product-information frame arrives, and an
     // identity read once would publish "Vessel" until the next restart.
     const identity = mergeVesselIdentity(this.deps.identity, readVesselDetails(tree));
+    // The fix for the track is taken *before* redaction, because
+    // `buildPositionEntry` applies the zones itself — and differently: inside
+    // a zone a track point is dropped entirely rather than snapped, so a
+    // night at the dock is not a pile of identical points.
     const fix = extractPositionFix(tree);
-    const zone = redactPosition(tree, config.privacyZones);
-    if (zone) {
+    const { vesselZone: zone, redacted } = redactPositions(tree, config.privacyZones);
+    if (redacted.length) {
       log(
-        `Privacy: position replaced with the centre of ${zone.name || 'a privacy zone'}.`,
+        `Privacy: ${redacted.length} position(s) moved to a zone centre ` +
+          `(${redacted.join(', ')}).`,
       );
     }
 

@@ -338,11 +338,23 @@ line becomes a warning with the hourly cost at your configured cadence.
 A position inside a zone is published as the zone's **centre**, and that point
 is left out of the GPX track **entirely** rather than snapped to the middle —
 a night at the dock would otherwise be a pile of identical points saying
-exactly where you sleep. Speed and course are withheld too, so the site cannot
-show you manoeuvring in the harbour.
+exactly where you sleep. Speed and course are withheld from the track too, so
+it cannot show you manoeuvring in the harbour.
 
-Every check walks the whole list. Zones start empty: nothing is hidden until
-you say what to hide.
+**Every** position in the published snapshot is checked, not just
+`navigation.position`. That matters most for `navigation.anchor.position`:
+anchoring inside a zone used to show the zone centre for the boat while
+publishing the true anchor drop coordinates a few keys away in the same file.
+Anything position-shaped anywhere in the tree is covered, including paths a
+plugin added that this one has never heard of.
+
+The check is per position rather than per boat. An anchor position left over
+from the slip you left this morning is still redacted while you are out
+sailing. A destination in `navigation.course.nextPoint` is *not* redacted
+because you happen to be at home — where you are going is not where you are.
+
+Every check walks the whole zone list. Zones start empty: nothing is hidden
+until you say what to hide.
 
 > [!NOTE]
 > A zone missing its radius is a hard configuration error, not a warning. A
