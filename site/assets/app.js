@@ -351,6 +351,34 @@ function getPrivacyZoneCenter(lat, lon) {
   ) ?? null;
 }
 
+// Draw the configured zones on the map, so the ring a viewer sees is the one
+// the plugin is actually redacting against.
+//
+// This used to be a single circle at one particular dock in San Francisco,
+// hardcoded from the Python daemon's PRIVACY_EXCLUSION_ZONES and drawn on
+// every adopter's map while their own zones were never drawn at all: a
+// redaction claim that was false in both directions. No zones configured
+// means no rings, which is the same answer getPrivacyZones gives everything
+// else.
+function drawPrivacyZones(map) {
+  for (const zone of getPrivacyZones()) {
+    if (!(zone.radius_m > 0)) continue;
+    const label = zone.name
+      ? `\u{1F4CD} ${zone.name} \u2014 position not recorded inside this area`
+      : '\u{1F4CD} Privacy zone \u2014 position not recorded inside this area';
+    L.circle([zone.lat, zone.lon], {
+      radius: zone.radius_m,
+      color: '#e74c3c',
+      fillColor: '#e74c3c',
+      fillOpacity: 0.05,
+      opacity: 0.5,
+      weight: 1.5,
+      dashArray: '5 5',
+      interactive: false,
+    }).bindTooltip(label, { sticky: true, opacity: 0.85 }).addTo(map);
+  }
+}
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -1149,12 +1177,11 @@ async function loadTideStations() {
     console.log('Tide stations data loaded:', tideStations);
   } catch (error) {
     console.error('Error loading tide stations data:', error);
-    // Set default values if loading fails
-    tideStations = {
-      stations: [
-        { id: "9414290", name: "San Francisco", lat: 37.806, lon: -122.465 }
-      ]
-    };
+    // No table, no stations. This used to fall back to a single San Francisco
+    // entry, so a boat anywhere else whose station list failed to load was
+    // shown Golden Gate tides under a heading naming its own distance from
+    // them. The panel says tides are unavailable instead.
+    tideStations = { stations: [] };
   }
 }
 
@@ -1251,31 +1278,35 @@ function renderCustomLinks(links) {
 let themeChangeTimeout = null; // Timeout for theme change debouncing
 let isThemeChanging = false; // Flag to prevent multiple theme changes
 
-// Find nearest NOAA tide station from lat/lon
-// Uses local lookup table (fast and reliable)
-// Prioritizes known-working stations for certain areas
+// NOAA tide stations from the local lookup table, nearest first.
+//
+// There used to be a special case above this: a box around San Francisco Bay
+// that forced station 9414290 whatever the boat's position said, which was one
+// boat's home waters written into everybody's station picker. Distance decides
+// now, everywhere.
+function stationsByDistance(lat, lon) {
+  return getAllStations()
+    .filter(s => Number.isFinite(s?.lat) && Number.isFinite(s?.lon))
+    .map(s => ({ station: s, km: haversine(lat, lon, s.lat, s.lon) }))
+    .sort((a, b) => a.km - b.km)
+    .map(entry => entry.station);
+}
+
+// The next station out from (lat, lon), skipping one that has already failed.
+// Used as the retry target: NOAA stations do go down, and some do not support
+// predictions at all, but the answer to that is the next station along this
+// coast, not a fixed one on somebody else's.
+function nextNearestStation(lat, lon, excludeId) {
+  return stationsByDistance(lat, lon).find(s => s.id !== excludeId) ?? null;
+}
+
+// Find nearest NOAA tide station from lat/lon.
+// Uses the local lookup table (fast and reliable).
 async function findNearestNOAAStation(lat, lon) {
-  const stations = getAllStations();
-  if (!stations || stations.length === 0) {
+  const nearest = stationsByDistance(lat, lon)[0];
+  if (!nearest) {
     throw new Error('No tide stations available in lookup table');
   }
-
-  // For San Francisco Bay area, prefer San Francisco station (9414290) which reliably supports predictions
-  // South Beach Harbor and most SF locations should use SF station
-  const isSFBayArea = lat >= 37.7 && lat <= 37.9 && lon >= -122.5 && lon <= -122.3;
-  if (isSFBayArea) {
-    const sfStation = stations.find(s => s.id === '9414290');
-    if (sfStation) {
-      console.debug('SF Bay area detected, preferring San Francisco station');
-      return sfStation;
-    }
-  }
-
-  // For other areas, find nearest station using haversine distance
-  const nearest = stations.reduce((a, b) =>
-    haversine(lat, lon, a.lat, a.lon) < haversine(lat, lon, b.lat, b.lon) ? a : b
-  );
-
   return nearest;
 }
 
@@ -1343,7 +1374,7 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
 
   let targetStation = nearest;
   let url = buildUrl(targetStation.id);
-  const fallbackStation = { id: '9414290', name: 'San Francisco', lat: 37.806, lon: -122.465 };
+  const fallbackStation = nextNearestStation(lat, lon, targetStation.id);
   let attemptedFallback = false;
   const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
@@ -1385,9 +1416,13 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
         throw new Error(`HTTP ${res.status}: ${errorDetails}`);
       }
     } catch (error) {
-      // If primary station fails, try fallback (San Francisco is known to work)
-      if (!attemptedFallback && targetStation.id !== fallbackStation.id) {
-        console.warn('Primary station failed, retrying with fallback 9414290 (San Francisco)', error);
+      // If the primary station fails, try the next one out along the coast.
+      if (!attemptedFallback && fallbackStation && targetStation.id !== fallbackStation.id) {
+        console.warn(
+          `Station ${targetStation.id} failed, retrying with the next nearest ` +
+            `(${fallbackStation.id} ${fallbackStation.name})`,
+          error,
+        );
         attemptedFallback = true;
         targetStation = fallbackStation;
         url = buildUrl(fallbackStation.id);
@@ -1427,7 +1462,7 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
           throw new Error(`Failed to fetch tide data: ${retryError.message || 'Network error'}`);
         }
       } else {
-        // Already tried fallback or it was the fallback, re-throw
+        // Already retried, or there is no second station to retry against.
         throw error;
       }
     }
@@ -2018,11 +2053,12 @@ async function loadData() {
       console.log('Local file fetch error:', fileError);
       console.log('Local file unavailable, creating dummy data...');
 
-      // Create dummy data as fallback
+      // Create dummy data as fallback. No position: this stood in one boat's
+      // home waters, so a site whose telemetry had not published yet drew its
+      // map over the Golden Gate. The map simply waits for a fix instead.
       console.log('Creating dummy data as fallback...');
       data = {
         navigation: {
-          position: { value: { latitude: 37.806, longitude: -122.465 } },
           courseOverGroundTrue: { value: 0 },
           speedOverGround: { value: 0 },
           speedThroughWater: { value: 0 }
@@ -2138,20 +2174,7 @@ async function loadData() {
         tileLayerForTheme().addTo(map);
         marker = L.marker([lat, lon]).addTo(map);
 
-        // Privacy exclusion zone indicator — mirrors PRIVACY_EXCLUSION_ZONES in Python.
-        // Positions inside this ring are redacted from all stored data.
-        L.circle([37.7802069, -122.3858040], {
-          radius: 200,
-          color: '#e74c3c',
-          fillColor: '#e74c3c',
-          fillOpacity: 0.05,
-          opacity: 0.5,
-          weight: 1.5,
-          dashArray: '5 5',
-          interactive: false,
-        }).bindTooltip('📍 Privacy zone — position not recorded inside this area', {
-          sticky: true, opacity: 0.85,
-        }).addTo(map);
+        drawPrivacyZones(map);
       } else {
         map.setView([lat, lon]);
         marker.setLatLng([lat, lon]);
