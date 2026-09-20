@@ -20,6 +20,7 @@ import {
 } from './docsIndex';
 import { loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
+import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
   MANIFEST_PATH,
   partitionOwned,
@@ -60,6 +61,18 @@ const TRACKS_INDEX_PATH = `${TELEMETRY_DIR}/tracks_index.json`;
 const INFO_PATH = 'data/vessel/info.yaml';
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
+
+/**
+ * What a cycle needs that is not in the tree.
+ *
+ * Only the polar table so far. It comes in as an argument rather than being
+ * read here because reading it means an async call into the server's Resources
+ * API, and this module stays a pure function of the tree.
+ */
+export interface CycleInput {
+  /** The rendered polar CSV, or empty to publish none and claim none. */
+  polars?: string;
+}
 
 export interface CycleResult {
   published: boolean;
@@ -106,8 +119,8 @@ export interface PublisherDeps {
    * Everything the tree carries is laid over this on every cycle.
    */
   identity: VesselIdentity;
-  /** Directory holding the bundled frontend (`public/`). */
-  publicDir: string;
+  /** Directory holding the bundled frontend (`site/`). */
+  siteDir: string;
   /** Plugin version, used to decide when the frontend needs republishing. */
   version: string;
   log: (message: string) => void;
@@ -164,8 +177,9 @@ export class Publisher {
       : config.interval.stationary;
   }
 
-  async runCycle(rawTree: Tree): Promise<CycleResult> {
-    const { config, store, log, client, version, publicDir } = this.deps;
+  async runCycle(rawTree: Tree, input: CycleInput = {}): Promise<CycleResult> {
+    const { config, store, log, client, version, siteDir } = this.deps;
+    const polars = input.polars ?? '';
     const startedAt = Date.now();
     const now = this.now();
     const state = await store.readState();
@@ -240,12 +254,12 @@ export class Publisher {
     }
 
     files.push(...(await this.vesselInfoFile(identity)));
-    files.push(...(await this.polarsFile()));
-    files.push(...(await this.manifestFile()));
-    files.push(...(await this.frontendFiles(publicDir, version, state.frontendVersion)));
+    files.push(...(await this.polarsFile(polars)));
+    files.push(...(await this.manifestFile(polars)));
+    files.push(...(await this.frontendFiles(siteDir, version, state.frontendVersion)));
     files.push(...(await this.docsIndexFiles()));
 
-    const { owned, rejected } = partitionOwned(files, this.manifestOptions());
+    const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
     for (const file of rejected) {
       // Should be unreachable: a path here means a generator started writing
       // outside the manifest, which is exactly what the manifest is for.
@@ -300,6 +314,81 @@ export class Publisher {
       requests,
       durationMs,
     };
+  }
+
+  /** Every published voyage, newest first, for the webapp's list. */
+  async listTracks(): Promise<TrackMeta[]> {
+    const tracks = parseTracksIndex(await this.deps.store.readText('tracks_index.json'));
+    return [...tracks].sort((a, b) => b.date.localeCompare(a.date));
+  }
+
+  /**
+   * What a prune would remove, read straight from the published index.
+   *
+   * The webapp asks for this before it asks for the prune, so the confirmation
+   * names the days rather than a number.
+   */
+  async planTrackPrune(request: PruneRequest): Promise<PrunePlan> {
+    const { store, config } = this.deps;
+    return planPrune(parseTracksIndex(await store.readText('tracks_index.json')), {
+      request,
+      now: this.now(),
+      timezone: config.timezone,
+    });
+  }
+
+  /**
+   * Remove old voyages from the published site, in one commit.
+   *
+   * The GPX files go and the index is rewritten to match. `publishedDays` is
+   * cleared of the removed days too: it exists to stop a past day being
+   * rebuilt from a position index that no longer covers it, and leaving a
+   * pruned day in it would be a day that can never come back even if its
+   * points are still in the window.
+   */
+  async pruneTracks(request: PruneRequest): Promise<{ plan: PrunePlan; commitSha?: string }> {
+    const { store, client, log } = this.deps;
+    const plan = await this.planTrackPrune(request);
+    if (!plan.remove.length) return { plan };
+
+    const index = renderTracksIndex(plan.keep);
+    const files: PublishFile[] = [{ path: TRACKS_INDEX_PATH, content: index }];
+    // Deletions go through the same ownership check as writes: the manifest is
+    // what stops a bug here reaching a path that belongs to the user, and a
+    // deletion is the one that could not be undone by the next cycle.
+    const { owned, rejected } = partitionOwned(
+      plan.paths.map((path) => ({ path })),
+      this.manifestOptions(''),
+    );
+    for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
+
+    // Only delete what is actually there. The Git Data API rejects the whole
+    // tree with a 422 if one entry names a path the base tree does not have,
+    // and a day whose GPX was removed by hand on GitHub — or never published,
+    // because the index is seeded from a repository that may have moved on —
+    // would take the rest of the prune down with it. A file already gone is
+    // the outcome we wanted anyway.
+    let deletions = owned.map((file) => file.path);
+    const listing = await client.listTree().catch(() => null);
+    if (listing && !listing.truncated) {
+      const present = new Set(listing.paths.map((entry) => entry.path));
+      const missing = deletions.filter((path) => !present.has(path));
+      if (missing.length) {
+        log(`${missing.length} voyage file(s) were already gone from the repository.`);
+        deletions = deletions.filter((path) => present.has(path));
+      }
+    }
+
+    const description = describePrune(plan);
+    const result = await publishFiles(client, files, `Remove ${description}`, { deletions });
+    await store.writeText('tracks_index.json', index);
+    const removed = new Set(plan.remove.map((track) => track.date));
+    const state = await store.readState();
+    await store.mergeState({
+      publishedDays: (state.publishedDays ?? []).filter((day) => !removed.has(day)),
+    });
+    log(`Pruned ${description}; ${plan.keep.length} left on the site.`);
+    return { plan, commitSha: result?.commitSha };
   }
 
   private commitMessage(navState: string | null, now: Date): string {
@@ -379,39 +468,39 @@ export class Publisher {
   }
 
   /**
-   * `data/vessel/polars.csv`, when the config page supplies a polar table.
+   * `data/vessel/polars.csv`, when the server has an active polar.
    *
-   * An empty setting writes nothing and claims nothing: the file is the
-   * user's until they paste a table here, and a table removed later leaves the
-   * last published file in the repository rather than deleting a boat's
-   * performance data because a text box was cleared.
+   * Nothing active writes nothing and claims nothing: the file is the user's
+   * until Polar Management has a polar selected, and deselecting one later
+   * leaves the last published file in the repository rather than deleting a
+   * boat's performance data because a dropdown was cleared.
    */
-  private async polarsFile(): Promise<PublishFile[]> {
-    const { config, store, log } = this.deps;
-    if (!config.polars) return [];
+  private async polarsFile(polars: string): Promise<PublishFile[]> {
+    const { store, log } = this.deps;
+    if (!polars) return [];
     const previous = await store.readText('polars.csv');
-    if (previous === config.polars) return [];
-    await store.writeText('polars.csv', config.polars);
+    if (previous === polars) return [];
+    await store.writeText('polars.csv', polars);
     log(
       `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
-        `(${config.polars.trim().split('\n').length - 1} wind angles).`,
+        `(${polars.trim().split('\n').length - 1} wind angles).`,
     );
-    return [{ path: POLARS_PATH, content: config.polars }];
+    return [{ path: POLARS_PATH, content: polars }];
   }
 
   /** What the plugin claims to own this cycle. */
-  private manifestOptions(): ManifestOptions {
+  private manifestOptions(polars: string): ManifestOptions {
     const { config } = this.deps;
     return {
       buildDocsIndex: config.buildDocsIndex,
       publishFrontend: config.publishFrontend,
-      publishPolars: config.polars !== '',
+      publishPolars: polars !== '',
     };
   }
 
-  private async manifestFile(): Promise<PublishFile[]> {
+  private async manifestFile(polars: string): Promise<PublishFile[]> {
     const { store, version } = this.deps;
-    const options = this.manifestOptions();
+    const options = this.manifestOptions(polars);
     const fingerprint = JSON.stringify({ ...options, version });
     if ((await store.readText('manifest-fingerprint.txt')) === fingerprint) return [];
     await store.writeText('manifest-fingerprint.txt', fingerprint);
@@ -429,7 +518,7 @@ export class Publisher {
 
   /** The frontend goes up on first run and after an upgrade, never per cycle. */
   private async frontendFiles(
-    publicDir: string,
+    siteDir: string,
     version: string,
     publishedVersion: string | undefined,
   ): Promise<PublishFile[]> {
@@ -438,7 +527,7 @@ export class Publisher {
     const fingerprint = `${version}:${config.github.repo}:${config.github.branch}:${config.instrumentLog.entries}`;
     if (publishedVersion === fingerprint) return [];
 
-    const files = await loadFrontend(publicDir, {
+    const files = await loadFrontend(siteDir, {
       repo: config.github.repo,
       branch: config.github.branch,
       instrumentLogEntries: config.instrumentLog.entries,

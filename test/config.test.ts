@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { isValidTimezone } from '../src/time';
 import {
+  buildConfigSchema,
   configSchema,
   configUiSchema,
+  POLARS_FIELD_DESCRIPTION,
   DEFAULT_INSTRUMENT_LOG_ENTRIES,
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
@@ -82,13 +84,13 @@ describe('resolveConfig', () => {
     ]);
   });
 
-  it('still resolves a config written against the single owner/name field', () => {
-    // An installation upgraded in place has not been through the config page
-    // yet; it must keep publishing to the repository it was already using.
+  it('does not read the deprecated single repo field any more', () => {
+    // It was hidden on the config page and honoured behind the scenes, which
+    // meant a config could publish to a repository neither box named.
     const resolved = resolveConfig({ ...COMPLETE_FORM, github: { repo: 'owner/site', token: 't' } });
-    expect(resolved.ok).toBe(true);
-    if (!resolved.ok) return;
-    expect(resolved.config.github).toMatchObject({ owner: 'owner', name: 'site', repo: 'owner/site' });
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems.join(' ')).toContain('owner is not set');
   });
 
   it('splits a repository pasted whole into the owner box', () => {
@@ -142,23 +144,73 @@ describe('resolveConfig', () => {
     expect(config.buildDocsIndex).toBe(true);
   });
 
-  it('publishes no polars until a table is pasted in', () => {
-    expect(makeConfig().polars).toBe('');
+  it('takes home waters only when both coordinates are there', () => {
+    expect(makeConfig().site.defaultLocation).toBeNull();
+    expect(
+      makeConfig({ site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'SF Bay' } } })
+        .site.defaultLocation,
+    ).toEqual({ lat: 37.806, lon: -122.465, label: 'SF Bay' });
+    // Half a fix would send the tide lookup somewhere in the ocean; the
+    // frontend's own default is the better answer.
+    expect(makeConfig({ site: { defaultLocation: { lat: 37.806 } } }).site.defaultLocation)
+      .toBeNull();
+    expect(makeConfig({ site: { defaultLocation: { lat: 137, lon: -122 } } }).site.defaultLocation)
+      .toBeNull();
   });
 
-  it('renders a pasted polar table into the format the frontend parses', () => {
+  it('keeps custom buttons that have both a label and a URL', () => {
     const config = makeConfig({
-      polars: 'twa/tws,6,10,16\n52,4.1,5.8,6.6\n90,5.0,6.7,7.4\n',
+      site: {
+        customLinks: [
+          { label: "Ship's Log", url: 'https://iot.openplotter.cloud/log/1' },
+          { label: 'Starlink', url: 'http://192.168.100.1/' },
+        ],
+      },
     });
-    expect(config.polars).toBe('twa/tws;6;10;16\n52;4.1;5.8;6.6\n90;5;6.7;7.4\n');
+    expect(config.site.customLinks).toEqual([
+      { label: "Ship's Log", url: 'https://iot.openplotter.cloud/log/1' },
+      { label: 'Starlink', url: 'http://192.168.100.1/' },
+    ]);
   });
 
-  it('warns about a polar table it could not read, and publishes none', () => {
-    const resolved = resolveConfig({ ...COMPLETE_FORM, polars: 'not a table at all' });
+  it('drops a half-filled button and says which', () => {
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      site: { customLinks: [{ label: 'Nowhere' }, { url: 'https://example.com' }] },
+    });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
-    expect(resolved.config.polars).toBe('');
-    expect(resolved.warnings.join(' ')).toContain('Polar table:');
+    expect(resolved.config.site.customLinks).toEqual([]);
+    expect(resolved.warnings.join(' ')).toContain('needs both a label and a URL');
+  });
+
+  it('refuses a button URL that is not http or https', () => {
+    // The label and URL are published into info.yaml and the frontend assigns
+    // the URL to href: a javascript: entry would run in every visitor's
+    // browser.
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      site: {
+        customLinks: [
+          { label: 'Bad', url: 'javascript:alert(1)' },
+          { label: 'Also bad', url: 'data:text/html,<script>alert(1)</script>' },
+          { label: 'Fine', url: 'https://example.com' },
+        ],
+      },
+    });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.config.site.customLinks).toEqual([
+      { label: 'Fine', url: 'https://example.com' },
+    ]);
+    expect(resolved.warnings.join(' ')).toContain('not http:// or https://');
+  });
+
+  it('keeps the pasted polar table for the fallback to use', () => {
+    // Unparsed here: polars.ts decides whether it is needed at all, because
+    // only it knows whether the server had something better.
+    expect(makeConfig().polars).toBe('');
+    expect(makeConfig({ polars: 'twa/tws;6\n52;4.1\n' }).polars).toBe('twa/tws;6\n52;4.1\n');
   });
 
   it('still fails on a privacy zone that would hide nothing', () => {
@@ -194,6 +246,52 @@ describe('the timezone dropdown', () => {
   });
 });
 
+describe('buildConfigSchema', () => {
+  const polarField = (schema: any) => schema.properties.polars.description;
+
+  it('describes the field generically before any cycle has run', () => {
+    expect(polarField(buildConfigSchema(null))).toBe(POLARS_FIELD_DESCRIPTION);
+    expect(polarField(buildConfigSchema())).toBe(POLARS_FIELD_DESCRIPTION);
+  });
+
+  it('says the box is ignored while the server has a polar', () => {
+    const description = polarField(
+      buildConfigSchema({
+        source: 'resource',
+        summary: '"mermug-orc" from Polar Management, 18 angle(s) x 7 wind speed(s)',
+        problems: [],
+      }),
+    );
+    expect(description).toContain('mermug-orc');
+    expect(description).toContain('This box is ignored');
+  });
+
+  it('says the box is what the chart draws when nothing is active', () => {
+    const description = polarField(
+      buildConfigSchema({ source: 'config', summary: 'the table on the config page', problems: [] }),
+    );
+    expect(description).toContain('No polar is active on the server');
+  });
+
+  it('carries the last cycle complaint onto the page', () => {
+    const description = polarField(
+      buildConfigSchema({
+        source: 'none',
+        summary: '"x" is active but could not be read',
+        problems: ['Polar not found: x'],
+      }),
+    );
+    expect(description).toContain('Nothing is being published');
+    expect(description).toContain('Polar not found: x');
+  });
+
+  it('leaves every other field exactly as it was', () => {
+    const built = buildConfigSchema({ source: 'config', summary: 's', problems: [] }) as any;
+    expect(built.properties.github).toBe((configSchema.properties as any).github);
+    expect(built.properties.privacyZones).toBe((configSchema.properties as any).privacyZones);
+  });
+});
+
 describe('the repository fields', () => {
   it('asks for the owner and the name separately', () => {
     const github = (configSchema.properties as any).github;
@@ -202,9 +300,10 @@ describe('the repository fields', () => {
     expect(github.required).toEqual(['owner', 'name', 'token']);
   });
 
-  it('keeps the old single field, hidden, so an upgrade does not lose it', () => {
-    expect((configSchema.properties as any).github.properties.repo).toBeDefined();
-    expect((configUiSchema as any).github.repo['ui:widget']).toBe('hidden');
+  it('offers two repository boxes and nothing left over from an old version', () => {
+    const github = (configSchema.properties as any).github.properties;
+    expect(Object.keys(github).sort()).toEqual(['branch', 'name', 'owner', 'token']);
+    expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
   it('says what to tick when making the token', () => {

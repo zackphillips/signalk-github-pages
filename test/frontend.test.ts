@@ -3,7 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadFrontend, renderConstants, renderServiceWorker } from '../src/frontend';
 
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SITE_DIR = path.join(__dirname, '..', 'site');
 
 describe('renderConstants', () => {
   const source = `var VESSEL_CONSTANTS = Object.freeze({
@@ -45,7 +45,7 @@ describe('renderConstants', () => {
 
 describe('loadFrontend', () => {
   it('maps the bundled files onto their published paths', async () => {
-    const files = await loadFrontend(PUBLIC_DIR, {
+    const files = await loadFrontend(SITE_DIR, {
       repo: 'owner/site',
       branch: 'main',
       instrumentLogEntries: 120,
@@ -58,7 +58,7 @@ describe('loadFrontend', () => {
   });
 
   it('reads icons as binary and pages as text', async () => {
-    const files = await loadFrontend(PUBLIC_DIR, {
+    const files = await loadFrontend(SITE_DIR, {
       repo: 'owner/site',
       branch: 'main',
       instrumentLogEntries: 120,
@@ -71,7 +71,7 @@ describe('loadFrontend', () => {
   });
 
   it("substitutes the adopter's repository into the shipped constants", async () => {
-    const files = await loadFrontend(PUBLIC_DIR, {
+    const files = await loadFrontend(SITE_DIR, {
       repo: 'owner/site',
       branch: 'main',
       instrumentLogEntries: 120,
@@ -82,7 +82,7 @@ describe('loadFrontend', () => {
   });
 
   it('never ships assets/custom.css, which belongs to the user', async () => {
-    await expect(fs.access(path.join(PUBLIC_DIR, 'assets', 'custom.css'))).rejects.toThrow();
+    await expect(fs.access(path.join(SITE_DIR, 'assets', 'custom.css'))).rejects.toThrow();
   });
 });
 
@@ -105,7 +105,7 @@ describe('renderServiceWorker', () => {
 });
 
 describe('the shipped service worker', () => {
-  const read = async () => fs.readFile(path.join(PUBLIC_DIR, 'sw.js'), 'utf-8');
+  const read = async () => fs.readFile(path.join(SITE_DIR, 'sw.js'), 'utf-8');
 
   it('carries a SITE_VERSION for the publisher to substitute', async () => {
     expect(await read()).toMatch(/SITE_VERSION\s*=\s*'[^']*'/);
@@ -120,7 +120,7 @@ describe('the shipped service worker', () => {
   });
 
   it('gets the version substituted on the way into the repository', async () => {
-    const files = await loadFrontend(PUBLIC_DIR, {
+    const files = await loadFrontend(SITE_DIR, {
       repo: 'owner/site',
       branch: 'main',
       instrumentLogEntries: 120,

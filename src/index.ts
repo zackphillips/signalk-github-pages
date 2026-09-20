@@ -14,18 +14,26 @@
  */
 import os from 'node:os';
 import path from 'node:path';
-import { configSchema, configUiSchema, resolveConfig, type PluginConfig } from './config';
+import {
+  buildConfigSchema,
+  configUiSchema,
+  resolveConfig,
+  type PluginConfig,
+  type PolarStatus,
+} from './config';
 import { GitHubClient, tokenHint } from './github';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
+import { activePolarId, readActivePolar, type PolarResourceSource } from './polars';
 import { readSelfTree, type SelfTreeSource } from './snapshot';
+import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
 import type { VesselIdentity } from './vesselInfo';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
 
-interface SignalKApp extends SelfTreeSource {
+interface SignalKApp extends SelfTreeSource, PolarResourceSource {
   debug: (message: string) => void;
   error: (message: string) => void;
   setPluginStatus: (message: string) => void;
@@ -42,6 +50,8 @@ interface Plugin {
   uiSchema: unknown;
   start: (options: unknown) => void;
   stop: () => void;
+  /** Signal K mounts this at /plugins/signalk-github-pages. */
+  registerWithRouter: (router: Router) => void;
 }
 
 /** First non-internal IPv4 address — the one a browser on the boat LAN uses. */
@@ -86,13 +96,50 @@ function formatClock(date: Date): string {
 module.exports = function (app: SignalKApp): Plugin {
   let timer: NodeJS.Timeout | undefined;
   let stopped = true;
+  // What the last cycle found for the polar table. Kept out here so it
+  // survives a stop/start and so the config page can report it.
+  let polarStatus: PolarStatus | null = null;
+  // The CSV the last cycle resolved, for the preview. Not read from the
+  // resource again on a preview request: a page open must not be able to make
+  // the boat do work it would not otherwise do.
+  let polarCsv = '';
+  // Set on start, cleared on stop: the console's routes are registered once,
+  // when the server loads the plugin, and answer 503 while it is not running.
+  let webapp: WebappDeps | null = null;
+
+  /**
+   * What to tell the config page about the polar table.
+   *
+   * After a cycle this is what actually happened. Before one — a fresh
+   * install, or the plugin disabled — the self tree still says whether Polar
+   * Management has something active, which is the half of the answer that
+   * decides whether the fallback box on that page is going to be used.
+   */
+  const polarNote = (): PolarStatus | null => {
+    if (polarStatus) return polarStatus;
+    try {
+      const id = activePolarId(readSelfTree(app));
+      if (id) {
+        return {
+          source: 'resource',
+          summary: `"${id}" is active in Polar Management (not read yet — no cycle has run)`,
+          problems: [],
+        };
+      }
+    } catch {
+      // A server that will not hand over a tree tells us nothing; say nothing.
+    }
+    return null;
+  };
 
   const plugin: Plugin = {
     id: 'signalk-github-pages',
     name: 'GitHub Pages vessel tracker',
     description:
       'Publishes position, tracks and instrument history to a GitHub Pages site.',
-    schema: configSchema,
+    // A function, not an object: Signal K calls it when the page is opened,
+    // so the polar field can report what the last cycle actually published.
+    schema: () => buildConfigSchema(polarNote()),
     uiSchema: configUiSchema,
 
     start(options: unknown) {
@@ -131,8 +178,7 @@ module.exports = function (app: SignalKApp): Plugin {
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +
-          `tracks grouped by ${config.timezone || 'UTC'}, ` +
-          `${config.polars ? 'polars from the config page' : 'no polars in the config'}.`,
+          `tracks grouped by ${config.timezone || 'UTC'}.`,
       );
       if (config.privacyZones.length === 0) {
         app.debug('No privacy zones set: every position is published exactly as received.');
@@ -145,15 +191,46 @@ module.exports = function (app: SignalKApp): Plugin {
         token: config.github.token,
         userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
       });
+      const identity = readIdentity(app);
       const publisher = new Publisher({
         client,
         store,
         config,
-        identity: readIdentity(app),
-        publicDir: path.join(__dirname, '..', 'public'),
+        identity,
+        siteDir: path.join(__dirname, '..', 'site'),
         version: PLUGIN_VERSION,
         log: (message) => app.debug(message),
       });
+
+      // The polar table belongs to the Polar Management plugin: it stores polars
+      // as Signal K `polars` resources and points at the selected one from
+      // `polars.activePolar`. Read it every cycle so a re-import or a switch to
+      // a different polar reaches the site without restarting anything. The
+      // table on our own config page is the fallback when that plugin has
+      // nothing to give.
+      //
+      // Problems are logged only when they change. A polar that will not
+      // convert would otherwise say so every two minutes for as long as it is
+      // selected, which buries everything else in the log.
+      let lastPolarReport = '';
+      const polarsCsv = async (tree: ReturnType<typeof readSelfTree>): Promise<string> => {
+        const { csv, source, problems, summary } = await readActivePolar(
+          app,
+          tree,
+          config.polars,
+        );
+        polarStatus = { source, summary, problems };
+        polarCsv = csv;
+        const report = `${source}|${summary}|${problems.join(' ')}`;
+        if (report !== lastPolarReport) {
+          lastPolarReport = report;
+          for (const problem of problems) app.error(`Polar table: ${problem}`);
+          app.debug(
+            source === 'none' ? `Publishing no polars: ${summary}.` : `Polars from ${summary}.`,
+          );
+        }
+        return csv;
+      };
 
       const schedule = (seconds: number) => {
         if (stopped) return;
@@ -178,7 +255,7 @@ module.exports = function (app: SignalKApp): Plugin {
             return;
           }
           seconds = publisher.intervalSeconds(tree);
-          const result = await publisher.runCycle(tree);
+          const result = await publisher.runCycle(tree, { polars: await polarsCsv(tree) });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
             : (result.state ?? 'state unknown');
@@ -205,6 +282,18 @@ module.exports = function (app: SignalKApp): Plugin {
         schedule(seconds);
       };
 
+      webapp = {
+        config,
+        store,
+        publisher,
+        identity,
+        siteDir: path.join(__dirname, '..', 'site'),
+        version: PLUGIN_VERSION,
+        readTree: () => readSelfTree(app),
+        polars: () => ({ csv: polarCsv, status: polarStatus }),
+        log: (message) => app.debug(message),
+      };
+
       void (async () => {
         try {
           await publisher.seed();
@@ -219,7 +308,13 @@ module.exports = function (app: SignalKApp): Plugin {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = undefined;
+      webapp = null;
       app.setPluginStatus('Stopped');
+    },
+
+    /** The console's backend. Signal K mounts it once, for the server's life. */
+    registerWithRouter(router: Router) {
+      registerRoutes(router, () => webapp);
     },
   };
 

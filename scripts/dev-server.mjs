@@ -3,7 +3,7 @@
  * Serve the bundled frontend against sample telemetry.
  *
  * `npm run dev` gives you the published site at http://localhost:8000 without
- * a boat, a Signal K server or a GitHub repository: `public/` is served as-is,
+ * a boat, a Signal K server or a GitHub repository: `site/` is served as-is,
  * and anything under `data/` falls back to `sample/` when the file is not
  * there. Use it to check a frontend change before it ships in a release.
  */
@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const roots = [path.join(root, 'public'), path.join(root, 'sample')];
+const roots = [path.join(root, 'site'), path.join(root, 'sample')];
 const port = Number(process.env.PORT ?? 8000);
 
 const TYPES = {

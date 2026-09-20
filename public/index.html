@@ -1,382 +1,319 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title id="page-title">Vessel Tracker</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GitHub Pages tracker</title>
+<!--
+  The plugin's console, served by Signal K at /signalk-github-pages/.
 
-  <!-- OpenGraph / social sharing -->
-  <meta property="og:type"        content="website" />
-  <meta property="og:title"       content="S.V. Mermug — Live Vessel Tracker" />
-  <meta property="og:description" content="Real-time position, weather, and systems for S.V. Mermug sailing on San Francisco Bay and beyond." />
-  <meta property="og:url"         content="https://mermug.com/" />
-  <meta property="og:image"       content="https://mermug.com/data/vessel/logo.png" />
-  <meta name="description"        content="Real-time position, weather, and systems for S.V. Mermug sailing on San Francisco Bay and beyond." />
+  Two jobs: show the site as it stands right now, from the boat's own data and
+  without a round trip to GitHub, and take away voyages that have outlived
+  their usefulness. Everything else about this plugin is configured on the
+  plugin config page; this is the page for looking and for the one destructive
+  thing it can do.
 
-  <!-- Twitter card -->
-  <meta name="twitter:card"        content="summary" />
-  <meta name="twitter:title"       content="S.V. Mermug — Live Vessel Tracker" />
-  <meta name="twitter:description" content="Real-time position, weather, and systems for S.V. Mermug." />
-  <meta name="twitter:image"       content="https://mermug.com/data/vessel/logo.png" />
-
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="icon" href="/assets/favicon.ico" />
-  <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#4f46e5" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Mermug" />
-  <link rel="apple-touch-icon" href="data/vessel/logo.png" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
-  <link rel="stylesheet" href="assets/styles.css" />
-
-  <!-- Service worker registration -->
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      });
+  Plain HTML, no build step and no framework: it is served off a Raspberry Pi
+  to a phone over the boat's wifi, and it has to keep working after the plugin
+  is upgraded without anyone running a bundler.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --ink: #10243b;
+    --muted: #5a6b7e;
+    --line: #d8e0e8;
+    --accent: #0b6ea8;
+    --danger: #a3311f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1620;
+      --panel: #16212e;
+      --ink: #e6edf4;
+      --muted: #9bacbd;
+      --line: #27364a;
+      --accent: #57b0e0;
+      --danger: #e2705c;
     }
-  </script>
-  <!-- User stylesheet. Optional, never written by the plugin: add assets/custom.css
-       to your repository to override anything above it. A 404 here is harmless. -->
-  <link rel="stylesheet" href="assets/custom.css" />
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .grid { display: grid; gap: 10px 20px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .stat .k { color: var(--muted); font-size: 13px; }
+  .stat .v { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+  button {
+    font: inherit;
+    padding: 7px 13px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.danger { border-color: var(--danger); color: var(--danger); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input[type=number] { font: inherit; width: 5.5em; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+  iframe { width: 100%; height: 70vh; min-height: 420px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  th { color: var(--muted); font-weight: 600; }
+  .scroll { max-height: 260px; overflow: auto; }
+  .note { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .bad { color: var(--danger); }
+  .empty { color: var(--muted); font-style: italic; }
+</style>
 </head>
 <body>
-  <!-- Floating Dark Mode Button -->
-  <button id="darkModeToggle" class="floating-dark-mode-btn">Dark Mode</button>
-  <div class="container">
+  <h1>GitHub Pages tracker</h1>
+  <p class="sub" id="subtitle">Loading…</p>
 
-    <!-- STATUS HERO (pinned above tabs on every screen) -->
-    <div id="status-hero">
-      <div class="status-hero__left">
-        <img src="data/vessel/logo.png" alt="Vessel Logo" class="status-hero__logo" />
-        <span id="status-vessel"></span>
-      </div>
-      <div class="status-hero__right">
-        <div id="status-sentence">Loading location...</div>
-        <div id="status-age"></div>
-      </div>
+  <section class="panel">
+    <h2>Status</h2>
+    <div class="grid" id="status"></div>
+    <p class="note" id="polar-note"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Voyages</h2>
+    <div class="row">
+      <button id="prune-days-btn" class="danger" disabled>Remove voyages older than</button>
+      <input type="number" id="prune-days" min="1" step="1" value="30" aria-label="Days to keep">
+      <span>days</span>
+      <button id="prune-all-btn" class="danger" disabled>Remove all</button>
+      <button id="refresh-btn">Refresh</button>
     </div>
-
-    <!-- PASSAGE BANNER (shown only when passage is set in info.yaml; pinned above tabs) -->
-    <div id="passage-banner" class="passage-banner" style="display:none;"></div>
-
-    <!-- ALERT SUMMARY (cross-cutting; pinned above tabs so it's visible regardless of active tab) -->
-    <div id="alert-summary" class="info-panel" style="display:none;"></div>
-
-    <!-- TAB STRIP: section tabs plus the external-link cluster. The links are a
-         sibling of <nav>, not a child, because the nav becomes a fixed bottom
-         bar on phones and the links must stay in normal flow. -->
-    <div class="tab-strip">
-      <nav class="tab-bar" id="tab-bar" aria-label="Sections">
-        <button class="tab-btn active" data-tab="map" aria-current="page">
-          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
-          <span class="tab-label">Map</span>
-        </button>
-        <button class="tab-btn" data-tab="voyages">
-          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
-          <span class="tab-label">Voyages</span>
-        </button>
-        <button class="tab-btn" data-tab="environment">
-          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-          <span class="tab-label">Environment</span>
-        </button>
-        <button class="tab-btn" data-tab="data">
-          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-          <span class="tab-label">Data</span>
-        </button>
-        <button class="tab-btn" data-tab="polars">
-          <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4.5"/><line x1="12" y1="12" x2="19" y2="7"/></svg>
-          <span class="tab-label">Polars</span>
-        </button>
-      </nav>
-      <div class="tab-links">
-        <a href="docs.html" class="tab-link">Ship's Docs</a>
-        <a href="#" id="postgsail-link" target="_blank" rel="noopener" class="tab-link" style="display:none;">Ship's Log</a>
-        <a href="#" id="marinetraffic-link" target="_blank" rel="noopener" class="tab-link">MarineTraffic</a>
-      </div>
+    <p class="note" id="prune-note">
+      Removing a voyage deletes its GPX file from the repository and its row in
+      the track index. It stays in the repository's git history; what goes is
+      the copy the site serves. Today's track is never removed — the position
+      index still holds its points and the next cycle would write it straight
+      back.
+    </p>
+    <p class="note bad" id="prune-result" hidden></p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Day</th><th>Distance</th><th>Hours</th><th>Max</th><th>Points</th></tr></thead>
+        <tbody id="tracks"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table>
     </div>
+  </section>
 
-    <!-- TAB PANELS -->
-    <div class="tab-panels">
+  <section class="panel">
+    <h2>Preview</h2>
+    <p class="note" style="margin-top:0">
+      The published site, rendered here from the plugin's own data — no round
+      trip to GitHub, so it works at anchor with the hotspot off. Past days
+      whose GPX lives only in the repository are not in it.
+    </p>
+    <div class="row" style="margin-bottom:10px">
+      <button id="reload-preview">Reload</button>
+      <a href="#" id="open-preview" target="_blank" rel="noopener">Open full page</a>
+    </div>
+    <iframe id="preview" title="Site preview" src="about:blank"></iframe>
+  </section>
 
-      <!-- MAP TAB -->
-      <section class="tab-panel active" data-tab-panel="map">
-        <div class="map-section">
-          <div id="map"></div>
-        </div>
-      </section>
+<script>
+// The plugin's router, not this page's own mount: Signal K serves the static
+// files at /signalk-github-pages/ and the API at /plugins/signalk-github-pages/.
+var API = '/plugins/signalk-github-pages';
+var PREVIEW = API + '/preview/';
 
-      <!-- VOYAGES TAB -->
-      <section class="tab-panel" data-tab-panel="voyages">
+function el(id) { return document.getElementById(id); }
 
-        <!-- VOYAGE STATS -->
-        <div class="info-panel" id="voyage-stats-panel" style="display:none;">
-          <div class="panel-title">Voyage Stats</div>
-          <div class="data-grid" id="voyage-stats-grid"></div>
-        </div>
+function stat(label, value, href) {
+  var wrap = document.createElement('div');
+  wrap.className = 'stat';
+  var k = document.createElement('div');
+  k.className = 'k';
+  k.textContent = label;
+  var v = document.createElement('div');
+  v.className = 'v';
+  if (href) {
+    var a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = value;
+    v.appendChild(a);
+  } else {
+    v.textContent = value;
+  }
+  wrap.appendChild(k);
+  wrap.appendChild(v);
+  return wrap;
+}
 
-        <!-- VOYAGE LOG (per-day list, click a row to view that day's track on the map) -->
-        <div class="info-panel" id="voyage-list-panel">
-          <div class="panel-title">Voyage Log</div>
-          <div class="voyage-list" id="voyage-list">
-            <div class="voyage-list-empty">Loading voyages…</div>
-          </div>
-        </div>
+function ago(iso) {
+  if (!iso) return 'never';
+  var seconds = (Date.now() - Date.parse(iso)) / 1000;
+  if (!isFinite(seconds)) return iso;
+  if (seconds < 90) return Math.round(seconds) + ' s ago';
+  if (seconds < 5400) return Math.round(seconds / 60) + ' min ago';
+  if (seconds < 172800) return Math.round(seconds / 3600) + ' h ago';
+  return Math.round(seconds / 86400) + ' days ago';
+}
 
-      </section>
+async function api(path, options) {
+  var response = await fetch(API + path, options);
+  var body = await response.json().catch(function () { return {}; });
+  if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+  return body;
+}
 
-      <!-- ENVIRONMENT TAB (internet-sourced, location-based data) -->
-      <section class="tab-panel" data-tab-panel="environment">
+function renderStatus(data) {
+  el('subtitle').textContent =
+    data.repo + ' on ' + data.branch + ' — plugin ' + data.version;
+  var host = el('status');
+  host.textContent = '';
+  host.appendChild(stat('Published site', data.siteUrl, data.siteUrl));
+  host.appendChild(stat('Repository', data.repo, data.repoUrl));
+  host.appendChild(stat('Last publish', ago(data.lastPublishedAt)));
+  host.appendChild(stat('Last commit', (data.lastCommit || '—').slice(0, 7)));
+  host.appendChild(stat('Track timezone', data.timezone));
+  host.appendChild(stat('Privacy zones', String(data.privacyZones)));
 
-        <!-- TIDE CHART -->
-        <div class="info-panel" id="tide-panel">
-          <div id="tideHeader" class="panel-title"></div>
-          <canvas id="tideChart"></canvas>
-        </div>
+  var note = el('polar-note');
+  if (!data.polars) {
+    note.textContent = 'Polars: no cycle has run yet.';
+  } else {
+    note.textContent = data.polars.source === 'none'
+      ? 'Polars: publishing none — ' + data.polars.summary + '.'
+      : 'Polars: ' + data.polars.summary + '.';
+    note.className = data.polars.problems.length ? 'note bad' : 'note';
+    if (data.polars.problems.length) {
+      note.textContent += ' ' + data.polars.problems.join(' ');
+    }
+  }
+}
 
-        <!-- CONDITIONS FORECAST (48-hr unified) -->
-        <div class="info-panel conditions-forecast-panel" id="conditions-forecast-panel">
-          <div class="conditions-header">
-            <span class="panel-title">Conditions Forecast</span>
-            <span class="conditions-date-range" id="conditions-date-range"></span>
-          </div>
-          <div class="conditions-loading" id="conditions-loading">Waiting for GPS position…</div>
-          <div class="conditions-chart-stack" id="conditions-chart-stack" style="display:none;">
-            <!-- Row: Wind -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Wind</span>
-                <span class="cr-value" id="cr-wind-val">--</span>
-                <span class="cr-unit">kts</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condWindChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Wind direction -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Wind Dir</span>
-                <span class="cr-value" id="cr-winddir-val">--</span>
-                <span class="cr-unit">compass</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condWindDirChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Swell height -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Swell Ht</span>
-                <span class="cr-value" id="cr-swell-val">--</span>
-                <span class="cr-unit">ft</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condSwellChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Swell period -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Swell Period</span>
-                <span class="cr-value" id="cr-period-val">--</span>
-                <span class="cr-unit">sec</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condPeriodChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Swell direction -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Swell Dir</span>
-                <span class="cr-value" id="cr-swelldir-val">--</span>
-                <span class="cr-unit">compass</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condSwellDirChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Tide -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Tide</span>
-                <span class="cr-value" id="cr-tide-val">--</span>
-                <span class="cr-unit">ft MLLW</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condTideChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Current -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Current</span>
-                <span class="cr-value" id="cr-current-val">--</span>
-                <span class="cr-unit">kts</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condCurrentChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Current direction -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Current Dir</span>
-                <span class="cr-value" id="cr-curdir-val">--</span>
-                <span class="cr-unit">compass</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condCurrentDirChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Temperature -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Temp</span>
-                <span class="cr-value" id="cr-temp-val">--</span>
-                <span class="cr-unit">°F</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condTempChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Precipitation probability -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Precip</span>
-                <span class="cr-value" id="cr-precip-val">--</span>
-                <span class="cr-unit">%</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condPrecipChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Cloud cover -->
-            <div class="conditions-row">
-              <div class="conditions-row-label">
-                <span class="cr-name">Cloud</span>
-                <span class="cr-value" id="cr-cloud-val">--</span>
-                <span class="cr-unit">%</span>
-              </div>
-              <div class="conditions-canvas-wrap">
-                <canvas id="condCloudChart"></canvas>
-              </div>
-            </div>
-            <!-- Row: Pressure (last — shows x-axis) -->
-            <div class="conditions-row conditions-row--last">
-              <div class="conditions-row-label">
-                <span class="cr-name">Pressure</span>
-                <span class="cr-value" id="cr-pressure-val">--</span>
-                <span class="cr-unit">hPa</span>
-              </div>
-              <div class="conditions-canvas-wrap conditions-canvas-wrap--last">
-                <canvas id="condPressureChart"></canvas>
-              </div>
-            </div>
-          </div>
-        </div>
+function renderTracks(tracks) {
+  var body = el('tracks');
+  body.textContent = '';
+  if (!tracks.length) {
+    var row = document.createElement('tr');
+    var cell = document.createElement('td');
+    cell.colSpan = 5;
+    cell.className = 'empty';
+    cell.textContent = 'No voyages published yet.';
+    row.appendChild(cell);
+    body.appendChild(row);
+    return;
+  }
+  tracks.forEach(function (track) {
+    var row = document.createElement('tr');
+    [
+      track.date,
+      (track.distance_nm != null ? track.distance_nm.toFixed(1) : '—') + ' nm',
+      track.duration_hours != null ? track.duration_hours.toFixed(1) : '—',
+      (track.max_speed_kts != null ? track.max_speed_kts.toFixed(1) : '—') + ' kn',
+      String(track.points != null ? track.points : '—'),
+    ].forEach(function (value) {
+      var cell = document.createElement('td');
+      cell.textContent = value;
+      row.appendChild(cell);
+    });
+    body.appendChild(row);
+  });
+}
 
-      </section>
+var busy = false;
 
-      <!-- DATA TAB (curated instrument panels, then raw JSON at the bottom) -->
-      <section class="tab-panel" data-tab-panel="data">
+function setBusy(value) {
+  busy = value;
+  el('prune-days-btn').disabled = value;
+  el('prune-all-btn').disabled = value;
+  el('refresh-btn').disabled = value;
+}
 
-        <!-- NAVIGATION -->
-        <div class="info-panel" id="navigation-panel">
-          <div class="panel-title">Navigation</div>
-          <div class="data-grid" id="navigation-grid"></div>
-        </div>
+async function refresh() {
+  setBusy(true);
+  try {
+    var data = await api('/status');
+    renderStatus(data);
+    renderTracks(data.tracks || []);
+  } catch (error) {
+    el('subtitle').textContent = 'Could not reach the plugin: ' + error.message;
+  } finally {
+    setBusy(false);
+  }
+}
 
-        <!-- WIND -->
-        <div class="info-panel" id="wind-panel">
-          <div class="panel-title">Wind</div>
-          <div class="data-grid" id="wind-grid"></div>
-        </div>
+// Two steps on purpose: ask what would go, name it, and only then commit. The
+// page never sends the prune the button implies without the days being read
+// back out of the server's own plan first.
+async function prune(spec) {
+  if (busy) return;
+  setBusy(true);
+  var result = el('prune-result');
+  result.hidden = true;
+  try {
+    var plan = await api('/prune/' + spec);
+    if (!plan.remove.length) {
+      result.textContent = 'Nothing to remove: ' + plan.summary + '.';
+      result.hidden = false;
+      return;
+    }
+    var range = plan.remove.length === 1
+      ? plan.remove[0]
+      : plan.remove[0] + ' to ' + plan.remove[plan.remove.length - 1];
+    var message =
+      'Remove ' + plan.remove.length + ' voyage(s) from the published site?\n\n' +
+      range + '\n\n' +
+      plan.keep.length + ' will remain. The GPX files are deleted from the ' +
+      'repository in one commit; they stay in its git history.';
+    if (!window.confirm(message)) return;
+    var done = await api('/prune/' + spec, { method: 'POST' });
+    result.textContent = 'Removed ' + done.summary + '. ' + done.remaining + ' left.';
+    result.hidden = false;
+    await refresh();
+  } catch (error) {
+    result.textContent = 'Prune failed: ' + error.message;
+    result.hidden = false;
+  } finally {
+    setBusy(false);
+  }
+}
 
-        <!-- SENSORS (onboard SignalK readings — water/inside temp, humidity, air quality, sun times) -->
-        <div class="info-panel" id="sensors-panel">
-          <div class="panel-title">Sensors</div>
-          <div class="data-grid" id="sensors-grid"></div>
-        </div>
+el('refresh-btn').addEventListener('click', refresh);
+el('prune-all-btn').addEventListener('click', function () { prune('all'); });
+el('prune-days-btn').addEventListener('click', function () {
+  var days = parseInt(el('prune-days').value, 10);
+  if (!(days >= 1)) {
+    el('prune-result').textContent = 'Enter a number of days to keep, 1 or more.';
+    el('prune-result').hidden = false;
+    return;
+  }
+  prune(String(days));
+});
+el('reload-preview').addEventListener('click', function () {
+  el('preview').src = PREVIEW + '?t=' + Date.now();
+});
 
-        <!-- TANKS -->
-        <div class="info-panel" id="tanks-panel">
-          <div class="panel-title">Tanks</div>
-          <div class="data-grid" id="tanks-grid"></div>
-        </div>
-
-        <!-- POWER -->
-        <div class="info-panel" id="power-panel">
-          <div class="panel-title">Power</div>
-          <div class="data-grid" id="power-grid"></div>
-        </div>
-
-        <!-- PROPULSION -->
-        <div class="info-panel" id="propulsion-panel">
-          <div class="panel-title">Propulsion</div>
-          <div class="data-grid" id="propulsion-grid"></div>
-        </div>
-
-        <!-- INTERNET -->
-        <div class="info-panel" id="internet-panel">
-          <div class="panel-title">Internet</div>
-          <div class="data-grid" id="internet-grid"></div>
-        </div>
-
-        <!-- SYSTEM HEALTH -->
-        <div class="info-panel" id="system-panel">
-          <div class="panel-title">System Health</div>
-          <div class="data-grid" id="system-grid"></div>
-        </div>
-
-        <!-- VESSEL INFORMATION -->
-        <div class="info-panel" id="vessel-panel">
-          <div class="panel-title">Vessel Information</div>
-          <div class="data-grid" id="vessel-grid"></div>
-        </div>
-
-        <!-- RAW DATA -->
-        <div class="info-panel raw-data-panel">
-          <div class="panel-title">Raw Data</div>
-          <details class="raw-data-block">
-            <summary>SignalK Latest Snapshot</summary>
-            <pre id="raw-signalk-latest">Loading…</pre>
-          </details>
-        </div>
-
-      </section>
-
-      <!-- POLARS TAB -->
-      <section class="tab-panel" data-tab-panel="polars">
-
-        <!-- POLAR PERFORMANCE -->
-        <div class="info-panel">
-          <div class="panel-title">Polar Performance</div>
-          <div class="polar-chart-container">
-            <div id="polar-engine-indicator" class="polar-engine-indicator" style="display:none;"></div>
-            <canvas id="polarChart"></canvas>
-          </div>
-        </div>
-
-      </section>
-
-    </div><!-- /.tab-panels -->
-  </div><!-- /.container -->
-
-  <div class="footer">
-    <img src="data/vessel/logo.png" alt="Mermug" class="footer-logo" />
-    <div>Created by <a href="https://zackphillips.com" target="_blank">Zack Phillips</a></div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
-  <script src="assets/utils.js"></script>
-  <script src="assets/constants.js"></script>
-  <script src="assets/tabs.js?v=2"></script>
-  <script src="assets/app.js?v=5"></script>
+el('open-preview').href = PREVIEW;
+el('preview').src = PREVIEW;
+refresh();
+</script>
 </body>
 </html>
