@@ -8,7 +8,7 @@
  * what it did, which is what makes the whole cycle testable without a server
  * or a network.
  */
-import type { Passage } from './course';
+import { createHash } from 'node:crypto';import type { Passage } from './course';
 import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
 import {
   parseNotificationLog,
@@ -27,7 +27,17 @@ import {
   renderDocsIndex,
   type DocSource,
 } from './docsIndex';
-import { loadFrontend } from './frontend';
+import {
+  assertDocsPath,
+  engineHours,
+  insertMaintenanceEntry,
+  loadDocsSeed,
+  MAINTENANCE_LOG_PATH,
+  renderMaintenanceLog,
+  type MaintenanceEntry,
+  type SeedContext,
+} from './docsSeed';
+import { frontendOptions, loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
@@ -163,10 +173,66 @@ export interface PublisherDeps {
   identity: VesselIdentity;
   /** Directory holding the bundled frontend (`site/`). */
   siteDir: string;
+  /** Directory holding the starter documents (`seed/`). */
+  seedDir: string;
   /** Plugin version, used to decide when the frontend needs republishing. */
   version: string;
   log: (message: string) => void;
   now?: () => Date;
+}
+
+/** What `docs/` holds, as the console asks before it offers to write anything. */
+export interface DocsStatus {
+  /** True once the repository has at least one published document. */
+  initialized: boolean;
+  documents: number;
+  documentPaths: string[];
+  /**
+   * Documents that are not part of the starter set.
+   *
+   * This is the count that decides whether initializing is still on offer. A
+   * maintenance log written from the console is a document, but it is not
+   * evidence that the boat has docs of its own — and counting it as such
+   * would lock the starter set out of any repository where somebody logged an
+   * oil change before pressing the button.
+   */
+  ownDocuments: number;
+  /** Starter files not in the repository. */
+  missing: string[];
+  /** There is something to write, and nothing of the owner's in the way. */
+  canInitialize: boolean;
+  maintenanceLog: { path: string; exists: boolean };
+  /** The listing hit GitHub's 100k cap, so absence proves nothing. */
+  truncated: boolean;
+}
+
+export interface DocsInitResult {
+  created: string[];
+  /** Starter files that were already there and were left alone. */
+  skipped: string[];
+  commitSha?: string;
+  status: DocsStatus;
+}
+
+export interface MaintenanceResult {
+  path: string;
+  created: boolean;
+  commitSha?: string;
+  entry: MaintenanceEntry;
+}
+
+/**
+ * The repository already has documents.
+ *
+ * Its own class because it is the answer to a question, not a failure: the
+ * console turns it into "already initialized" rather than into an error the
+ * user is meant to do something about.
+ */
+export class DocsExistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DocsExistError';
+  }
 }
 
 export class Publisher {
@@ -299,9 +365,14 @@ export class Publisher {
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
-    const frontend = await this.frontendFiles(siteDir, version, state.frontendVersion);
-    files.push(...frontend.files);
-    files.push(...(await this.docsIndexFiles()));
+    files.push(...(await this.logoFile()));
+    const frontend = await this.frontendFiles(
+      siteDir,
+      version,
+      state.frontendVersion,
+      identity,
+    );
+    files.push(...frontend.files);    files.push(...(await this.docsIndexFiles()));
 
     const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
     for (const file of rejected) {
@@ -554,6 +625,164 @@ export class Publisher {
     return { plan, commitSha: result?.commitSha };
   }
 
+  /**
+   * What the repository's `docs/` looks like right now.
+   *
+   * Read straight from the branch tree with no ETag: this answers a person
+   * pressing a button, and the one thing it must never do is say "no
+   * documents" from a cached listing and let the next click write over a
+   * repository that has forty.
+   */
+  async docsStatus(): Promise<DocsStatus> {
+    const { client, seedDir } = this.deps;
+    const listing = await client.listTree();
+    const blobs = listing.paths.filter((node) => node.type === 'blob');
+    const present = new Set(blobs.map((node) => node.path));
+    const documents = blobs.filter((node) => isPublishedDoc(node.path)).map((node) => node.path);
+    const seeds = await loadDocsSeed(seedDir, this.seedContext());
+    const seeded = new Set([...seeds.map((file) => file.path), MAINTENANCE_LOG_PATH]);
+    const missing = seeds.map((file) => file.path).filter((path) => !present.has(path));
+    const ownDocuments = documents.filter((path) => !seeded.has(path)).length;
+    return {
+      initialized: documents.length > 0,
+      documents: documents.length,
+      documentPaths: documents.sort(),
+      ownDocuments,
+      missing,
+      canInitialize: missing.length > 0 && ownDocuments === 0 && !listing.truncated,
+      maintenanceLog: {
+        path: MAINTENANCE_LOG_PATH,
+        exists: present.has(MAINTENANCE_LOG_PATH),
+      },
+      truncated: listing.truncated,
+    };
+  }
+
+  /**
+   * Write the starter documents, once, into a repository that has none.
+   *
+   * Two guards, and they answer two different questions. "Does the repository
+   * have a document of its own" decides whether initializing is the right
+   * thing to do — a boat with its own docs does not want this plugin's
+   * opinion about how to write them. "Does this exact path exist" decides
+   * what goes in the commit, so a half-finished starter set can be completed
+   * without the other half being rewritten.
+   *
+   * The starter files and the maintenance log are not documents "of its own":
+   * an entry logged from the console before anyone pressed this button would
+   * otherwise count as the boat's docs and lock the starter set out for
+   * good.
+   *
+   * A truncated tree listing refuses the whole thing. GitHub caps a listing
+   * at 100k entries, and past that cap absence proves nothing — which is the
+   * one condition under which "there are no documents" could be a lie.
+   */
+  async initializeDocs(): Promise<DocsInitResult> {
+    const { client, seedDir, log } = this.deps;
+    const status = await this.docsStatus();
+    if (status.truncated) {
+      throw new Error(
+        'The repository tree is too large to list in full, so the plugin cannot ' +
+          'tell whether documents already exist. Add the starter files by hand.',
+      );
+    }
+    if (status.ownDocuments > 0) {
+      throw new DocsExistError(
+        `${status.ownDocuments} document(s) are already in docs/; nothing was written.`,
+      );
+    }
+
+    const seeds = await loadDocsSeed(seedDir, this.seedContext());
+    const missing = new Set(status.missing);
+    const create = seeds.filter((file) => missing.has(file.path));
+    const skipped = seeds.filter((file) => !missing.has(file.path)).map((file) => file.path);
+    for (const file of create) assertDocsPath(file.path);
+
+    if (!create.length) {
+      log('Ship\'s docs: every starter file is already in the repository.');
+      return { created: [], skipped, status };
+    }
+
+    const result = await publishFiles(
+      client,
+      create,
+      'Add the ship\'s docs starter set',
+    );
+    log(
+      `Ship's docs initialized: ${create.map((file) => file.path).join(', ')}` +
+        (skipped.length ? ` (${skipped.length} already present)` : '') +
+        (result ? ` in ${result.commitSha.slice(0, 7)}.` : '.'),
+    );
+    return {
+      created: create.map((file) => file.path),
+      skipped,
+      commitSha: result?.commitSha,
+      status: await this.docsStatus(),
+    };
+  }
+
+  /**
+   * Add one entry to the top of the maintenance log.
+   *
+   * The published copy is read back first and the entry spliced into it: the
+   * file is edited from a phone between publishes, and the boat's copy of it
+   * is never authoritative. The log is not cached in the data directory at all —
+   * there is no local copy to go stale.
+   *
+   * A lost ref race retries inside `publishFiles` with the same content. That
+   * is correct for a telemetry file and slightly wrong here: an entry someone
+   * committed by hand in the same second would be re-read on the retry and
+   * this entry composed against the older text. The window is one HTTP
+   * round trip on a file two people almost never write at once, and the
+   * failure mode is a duplicate heading rather than lost prose.
+   */
+  async addMaintenanceEntry(entry: MaintenanceEntry): Promise<MaintenanceResult> {
+    const { client, log } = this.deps;
+    assertDocsPath(MAINTENANCE_LOG_PATH);
+    const existing = await client.getFile(MAINTENANCE_LOG_PATH);
+    const contents =
+      existing === null
+        ? renderMaintenanceLog(entry, this.seedContext())
+        : insertMaintenanceEntry(existing, entry);
+
+    const result = await publishFiles(
+      client,
+      [{ path: MAINTENANCE_LOG_PATH, content: contents }],
+      `Maintenance ${entry.date}: ${entry.title}`,
+    );
+    log(
+      `Maintenance log: ${existing === null ? 'created' : 'added to'} ` +
+        `${MAINTENANCE_LOG_PATH} — ${entry.date}: ${entry.title}` +
+        (result ? ` (${result.commitSha.slice(0, 7)}).` : '.'),
+    );
+    return {
+      path: MAINTENANCE_LOG_PATH,
+      created: existing === null,
+      commitSha: result?.commitSha,
+      entry,
+    };
+  }
+
+  /** Engine hours the console's form offers as a starting value. */
+  engineHours(tree: Tree): Array<{ engine: string; hours: number }> {
+    return engineHours(tree);
+  }
+
+  /** The adopter's values, substituted into the starter documents. */
+  private seedContext(): SeedContext {
+    const { config, identity } = this.deps;
+    const signalk = identity.signalk ?? {};
+    const host = signalk.host ?? 'your-signalk-server';
+    const port = signalk.port ?? 3000;
+    const protocol = signalk.protocol ?? 'http';
+    return {
+      vesselName: identity.name || '',
+      repo: config.github.repo,
+      branch: config.github.branch,
+      consoleUrl: `${protocol}://${host}:${port}/signalk-github-pages/`,
+    };
+  }
+
   private commitMessage(navState: string | null, now: Date): string {
     const stamp = now.toISOString().replace('T', ' ').slice(0, 19);
     return `Telemetry ${stamp}Z${navState ? ` (${navState})` : ''}`;
@@ -616,7 +845,6 @@ export class Publisher {
     const { client, log } = this.deps;
     const pending = RETIRED_PATHS.filter((path) => !alreadyRetired.includes(path));
     if (!pending.length) return [];
-
     const present: string[] = [];
     for (const path of pending) {
       const existing = await client.getFile(path).catch(() => null);
@@ -687,6 +915,7 @@ export class Publisher {
     return {
       buildDocsIndex: config.buildDocsIndex,
       publishPolars: polars !== '',
+      publishLogo: config.site.logo?.path,
     };
   }
 
@@ -708,28 +937,51 @@ export class Publisher {
     ];
   }
 
+  /**
+   * `data/vessel/logo.*`, when the config page has one.
+   *
+   * Same arrangement as the polar table: written when it changes, never
+   * deleted. Clearing the field stops republishing the logo and stops claiming
+   * the path, which leaves whatever is on the site in place rather than
+   * removing a boat's own artwork because a form was emptied.
+   */
+  private async logoFile(): Promise<PublishFile[]> {
+    const { config, store, log } = this.deps;
+    const logo = config.site.logo;
+    if (!logo) return [];
+
+    // The fingerprint is over the bytes, not the path: re-uploading a 40 kB
+    // PNG on every cycle is the kind of thing that only shows up on a metered
+    // hotspot at the end of the month.
+    const fingerprint = `${logo.path}:${createHash('sha256').update(logo.content).digest('hex')}`;
+    if ((await store.readText('logo-fingerprint.txt')) === fingerprint) return [];
+    await store.writeText('logo-fingerprint.txt', fingerprint);
+    log(`Publishing ${logo.path} (${kb(logo.content.length)}).`);
+    return [{ path: logo.path, content: logo.content }];
+  }
+
   /** The frontend goes up on first run and after an upgrade, never per cycle. */
   private async frontendFiles(
     siteDir: string,
     version: string,
     publishedVersion: string | undefined,
+    identity: VesselIdentity,
   ): Promise<{ files: PublishFile[]; fingerprint: string | null }> {
     const { config, log } = this.deps;
-    const fingerprint = `${version}:${config.github.repo}:${config.github.branch}:${config.instrumentLog.entries}`;
+    const options = frontendOptions(config, identity.name, version);
+    // Everything substituted into the published pages is in here, so a rename
+    // or a new logo republishes the ones that carry it. The name comes off the
+    // tree, which is why it is part of the fingerprint rather than read once
+    // at start.
+    const fingerprint = JSON.stringify({ ...options, version });
     if (publishedVersion === fingerprint) return { files: [], fingerprint: null };
 
-    const files = await loadFrontend(siteDir, {
-      repo: config.github.repo,
-      branch: config.github.branch,
-      instrumentLogEntries: config.instrumentLog.entries,
-      version,
-    });
+    const files = await loadFrontend(siteDir, options);
     // The fingerprint is returned rather than stored here: recording it
     // before the commit lands means a publish that fails — a 502, a wedged
     // hotspot — leaves the plugin believing it has already shipped this
     // frontend, and the site keeps serving the previous release's JavaScript
-    // until the next version bump. `runCycle` stores it once the commit is in.
-    log(`Publishing frontend (${files.length} files, version ${version}).`);
+    // until the next version bump. `runCycle` stores it once the commit is in.    log(`Publishing frontend (${files.length} files, version ${version}).`);
     return { files, fingerprint };
   }
 

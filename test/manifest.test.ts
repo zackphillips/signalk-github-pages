@@ -74,6 +74,19 @@ describe('ownership', () => {
     expect(isOwnedPath('data/vessel/polars.csv', { ...FULL, publishPolars: true })).toBe(true);
   });
 
+  it('leaves a hand-committed logo alone until one is set on the config page', () => {
+    // Same reasoning as the polars: the path is the user's until the plugin
+    // has something of its own to put there.
+    expect(isOwnedPath('data/vessel/logo.png', FULL)).toBe(false);
+    expect(
+      isOwnedPath('data/vessel/logo.png', { ...FULL, publishLogo: 'data/vessel/logo.png' }),
+    ).toBe(true);
+    // And only the path it is actually publishing.
+    expect(
+      isOwnedPath('data/vessel/logo.png', { ...FULL, publishLogo: 'data/vessel/logo.svg' }),
+    ).toBe(false);
+  });
+
   it('drops the docs index when the Action maintains it instead', () => {
     const minimal = { buildDocsIndex: false };
     expect(isOwnedPath('docs/index.json', minimal)).toBe(false);
@@ -113,5 +126,23 @@ describe('renderManifest', () => {
     ).toContain('data/vessel/polars.csv');
     expect(manifest.user_owned_exceptions).toEqual(['assets/custom.css']);
     expect(manifest.version).toBe('0.1.0');
+  });
+
+  it('publishes the seeded paths, and never claims to own one', () => {
+    // Seeded is not owned: the console writes these once, on request, and
+    // they belong to the boat's owner from that moment. A manifest that
+    // listed them under "owned" would be telling the reader the plugin will
+    // overwrite their maintenance log.
+    const manifest = JSON.parse(
+      renderManifest({ ...FULL, version: '0.1.0', generated: '2026-03-01T12:00:00Z' }),
+    );
+    expect(manifest.seeded).toEqual([
+      'docs/AGENTS.md',
+      'docs/ships-docs.md',
+      'docs/maintenance/log.md',
+    ]);
+    for (const seeded of manifest.seeded) {
+      expect(isOwnedPath(seeded, FULL), seeded).toBe(false);
+    }
   });
 });

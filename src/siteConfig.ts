@@ -247,6 +247,8 @@ export interface SiteConfigDocument {
   signalk?: { host: string; port: string; protocol: string };
   uscg_number?: string;
   hull_number?: string;
+  /** Where the configured vessel logo was published, when one is set. */
+  logo?: string;
   custom_links?: Array<{ label: string; url: string }>;
   default_location?: { lat: number; lon: number; label?: string };
   timezone?: string;
@@ -288,8 +290,7 @@ export function renderSiteConfig(
       host: identity.signalk.host,
       port: String(identity.signalk.port ?? 3000),
       protocol: identity.signalk.protocol ?? 'http',
-    };
-  }
+    };  }
 
   const uscgNumber = pick(
     'USCG documentation number',
@@ -307,6 +308,13 @@ export function renderSiteConfig(
     onProblem,
   );
   if (hullNumber) document.hull_number = hullNumber;
+
+  // Where the logo was published, for the <img> tags the page fills in after
+  // it loads. The site's address is deliberately not here: the published HTML
+  // carries it already, substituted in at publish time because a link preview
+  // is rendered by a crawler that never runs the page, and a second copy
+  // nothing reads is a second copy to keep right.
+  if (config.site.logo) document.logo = config.site.logo.path;
 
   if (config.site.customLinks.length) {
     document.custom_links = config.site.customLinks.map((link) => ({

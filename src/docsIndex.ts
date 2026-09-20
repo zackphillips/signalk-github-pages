@@ -178,10 +178,19 @@ export function buildEntry(doc: DocSource): DocEntry {
   return entry;
 }
 
+/**
+ * Instruction files for whoever — or whatever — edits the docs, not ship's
+ * documents. `docs/AGENTS.md` is seeded into the repository so an agent
+ * pointed at it reads the conventions and the ownership boundary first; it
+ * has no business in the sidebar as a document called "Agents".
+ */
+const NOT_DOCUMENTS = new Set(['agents.md', 'claude.md']);
+
 /** Is this path a published document? `_`-prefixed files are drafts. */
 export function isPublishedDoc(path: string): boolean {
   if (!path.startsWith(`${DOCS_DIR}/`) || !path.toLowerCase().endsWith('.md')) return false;
-  return !path.split('/').pop()!.startsWith('_');
+  const name = path.split('/').pop()!;
+  return !name.startsWith('_') && !NOT_DOCUMENTS.has(name.toLowerCase());
 }
 
 export function buildDocsIndex(docs: DocSource[], generated: string): DocsIndex {

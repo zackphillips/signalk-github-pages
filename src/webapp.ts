@@ -3,11 +3,16 @@
  *
  * Signal K mounts `public/` — the console page — at `/signalk-github-pages/`,
  * and hands plugins an Express router at `/plugins/signalk-github-pages/`.
- * This is that router. It does three jobs:
+ * This is that router. It does four jobs:
  *
  *   GET  /status            what the last cycle did, and what is on the site
  *   GET  /preview/*         the published site, rendered from live plugin data
  *   POST /prune             remove old voyages from the repository
+ *   POST /publish           publish now, rather than waiting for the next tick
+ *   POST /publish/site      rewrite every frontend file, then publish
+ *   GET  /docs              what docs/ holds, and what a maintenance form needs
+ *   POST /docs/init         write the starter documents, if there are none
+ *   POST /docs/maintenance  add one entry to the top of the maintenance log
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -21,13 +26,15 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Passage } from './course';
+import { MaintenanceInputError, parseMaintenanceEntry } from './docsSeed';
 import { renderPreviewData } from './preview';
-import { renderConstants } from './frontend';
+import { frontendOptions, template } from './frontend';
 import { describePrune, type PruneRequest } from './prune';
-import type { Publisher } from './publisher';
+import { DocsExistError, type Publisher } from './publisher';
+import { localDay } from './time';
 import type { PluginConfig } from './config';
 import type { Tree } from './snapshot';
-import type { VesselIdentity } from './siteConfig';
+import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
 
@@ -119,13 +126,6 @@ export function resolveSitePath(siteDir: string, requested: string): string | nu
   return resolved;
 }
 
-/** The site URL the repository is published at, for the console's links. */
-export function pagesUrl(owner: string, name: string): string {
-  return /\.github\.io$/i.test(name)
-    ? `https://${name.toLowerCase()}/`
-    : `https://${owner.toLowerCase()}.github.io/${name}/`;
-}
-
 /**
  * Mount the console's routes.
  *
@@ -166,7 +166,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         version,
         repo: config.github.repo,
         branch: config.github.branch,
-        siteUrl: pagesUrl(config.github.owner, config.github.name),
+        siteUrl: config.site.url,
         repoUrl: `https://github.com/${config.github.repo}`,
         lastCommit: state.lastCommit ?? null,
         lastPublishedAt: state.lastPublishedAt ?? null,
@@ -238,6 +238,31 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
   });
 
   /**
+   * What `docs/` holds, and everything the maintenance form needs to open
+   * with sensible values: the boat's local day and the engine hours Signal K
+   * is reporting right now.
+   */
+  router.get('/docs', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      const status = await current.publisher.docsStatus();
+      response.json({
+        ...status,
+        today: localDay(new Date(), current.config.timezone),
+        engineHours: current.publisher.engineHours(current.readTree()),
+        repoUrl: `https://github.com/${current.config.github.repo}`,
+        // config.site.url rather than deriving it here: it is the same value
+        // unless a custom domain is set, and if one is, that is the address
+        // the docs actually live at.
+        docsUrl: `${current.config.site.url}docs.html`,
+      });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
    * Rewrite every frontend file on the next publish, then publish.
    *
    * An upgrade already republishes the frontend by itself — the fingerprint
@@ -253,6 +278,36 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       response.json(await current.publishNow('a full site rewrite from the console'));
     } catch (error) {
       fail(response, error);
+    }
+  });
+
+  /**
+   * Write the starter documents into a repository that has none.
+   *
+   * 409, not 500, when documents already exist: the button was pressed on a
+   * boat whose docs are already written, which is a state to report rather
+   * than a failure to investigate.
+   */
+  router.post('/docs/init', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.publisher.initializeDocs());
+    } catch (error) {
+      fail(response, error, error instanceof DocsExistError ? 409 : 500);
+    }
+  });
+
+  router.post('/docs/maintenance', async (request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      const entry = parseMaintenanceEntry(readJsonBody(request), {
+        today: localDay(new Date(), current.config.timezone),
+      });
+      response.status(201).json(await current.publisher.addMaintenanceEntry(entry));
+    } catch (error) {
+      fail(response, error, error instanceof MaintenanceInputError ? 400 : 500);
     }
   });
 
@@ -276,8 +331,17 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     const requested = fromUrl || String((request.params as any)[0] ?? '');
     const current = running(response);
     if (!current) return;
-    const { config, store, siteDir, version } = current;
+    const { config, store, siteDir, version, identity } = current;
     try {
+      // The configured logo, straight from the config rather than from the
+      // repository: it is the one published file the plugin holds as bytes,
+      // and the preview is where someone checks it looks right before it is
+      // committed.
+      if (config.site.logo && requested === config.site.logo.path) {
+        response.type(config.site.logo.mediaType).send(config.site.logo.content);
+        return;
+      }
+
       if (requested.startsWith('data/')) {
         const files = await renderPreviewData(
           { config, store, identity: current.identity },
@@ -288,12 +352,13 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
           },
         );
         const contents = files.get(requested);
-        if (contents === undefined) {
-          response.status(404).type('text/plain').send(`Not rendered locally: ${requested}`);
+        if (contents !== undefined) {
+          response.type(TYPES[path.extname(requested)] ?? 'text/plain').send(contents);
           return;
         }
-        response.type(TYPES[path.extname(requested)] ?? 'text/plain').send(contents);
-        return;
+        // Not everything under data/ is telemetry: the tide-station table ships
+        // with the frontend and is published from site/, so fall through to the
+        // file rather than reporting it missing.
       }
 
       const file = resolveSitePath(siteDir, requested);
@@ -303,7 +368,14 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       }
       const buffer = await fs.readFile(file).catch(() => null);
       if (buffer === null) {
-        response.status(404).type('text/plain').send('Not found');
+        response
+          .status(404)
+          .type('text/plain')
+          .send(
+            requested.startsWith('data/')
+              ? `Not rendered locally: ${requested}`
+              : 'Not found',
+          );
         return;
       }
       const extension = path.extname(file).toLowerCase();
@@ -322,17 +394,16 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         );
         return;
       }
-      if (extension === '.js' || extension === '.html' || extension === '.css') {
+      if (extension === '.js' || extension === '.html' || extension === '.css' ||
+          extension === '.json') {
+        // The same substitutions the publisher makes, through the same
+        // function: the preview is there to show what a commit would put on
+        // the site, and an untemplated one would show raw {{TOKEN}}s in the
+        // page title while the published copy read correctly.
+        const identityNow = mergeVesselIdentity(identity, readVesselDetails(current.readTree()));
         const text = buffer.toString('utf-8');
         response.send(
-          requested === 'assets/constants.js'
-            ? renderConstants(text, {
-                repo: config.github.repo,
-                branch: config.github.branch,
-                instrumentLogEntries: config.instrumentLog.entries,
-                version,
-              })
-            : text,
+          template(requested, text, frontendOptions(config, identityNow.name, version)),
         );
         return;
       }
@@ -369,4 +440,35 @@ export function parsePruneRequest(days: string | undefined): PruneRequest {
     throw new Error(`"${days}" is not a number of days or "all".`);
   }
   return { olderThanDays: Math.floor(parsed) };
+}
+
+/**
+ * The POST body, however this server's Express handed it over.
+ *
+ * Signal K parses JSON bodies for the whole app, so the normal case is an
+ * object that is already parsed. A server that does not — an older release, a
+ * proxy in front, a `text/plain` content type from a hand-rolled request —
+ * would otherwise land in the validator as `undefined` and come back as "a
+ * maintenance entry needs a title", which sends the reader looking at the
+ * wrong end of the problem.
+ */
+export function readJsonBody(request: { body?: unknown }): unknown {
+  const body = request.body;
+  if (Buffer.isBuffer(body)) return parseJsonBody(body.toString('utf-8'));
+  if (typeof body === 'string') return parseJsonBody(body);
+  if (body && typeof body === 'object') return body;
+  throw new MaintenanceInputError(
+    'This request arrived without a JSON body. Send Content-Type: application/json.',
+  );
+}
+
+function parseJsonBody(text: string): unknown {
+  if (!text.trim()) {
+    throw new MaintenanceInputError('This request arrived with an empty body.');
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new MaintenanceInputError('The request body is not valid JSON.');
+  }
 }

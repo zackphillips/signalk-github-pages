@@ -20,6 +20,7 @@
  * stand-in.
  */
 
+import { parseLogo, type VesselLogo } from './logo';
 import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
 
@@ -108,6 +109,17 @@ export interface PluginConfig {
    */
   notificationExclude: string[];
   site: {
+    /**
+     * The site's own address, with a trailing slash.
+     *
+     * Derived from the repository unless the override is ticked, which is what
+     * a custom domain needs. It is not decoration: the social-preview tags are
+     * absolute URLs, and a link shared into a group chat is rendered by a
+     * crawler that never runs the page's JavaScript.
+     */
+    url: string;
+    /** The logo to publish, or null to leave `data/vessel/logo.png` alone. */
+    logo: VesselLogo | null;
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
     /** Ticked, the typed number wins over the Signal K registrations. */
@@ -260,6 +272,8 @@ export interface PolarStatus {
 export interface SchemaContext {
   /** `<owner>.github.io`, derived from the saved owner. */
   repoName?: string;
+  /** The Pages URL, derived from the saved owner and repository name. */
+  siteUrl?: string;
   /** What the last cycle resolved for the polar table. */
   polar?: PolarStatus | null;
   /** The active polar rendered as CSV, to show in the read-only box. */
@@ -284,10 +298,11 @@ export interface SchemaContext {
  * unticked — so a stale default can never become a published value.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, polar, polarCsv, uscgNumber, hullNumber } = context;
+  const { repoName, siteUrl, polar, polarCsv, uscgNumber, hullNumber } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
   if (repoName) schema.properties.github.properties.name.default = repoName;
+  if (siteUrl) schema.properties.site.properties.url.default = siteUrl;
 
   if (polar) {
     const note =
@@ -595,10 +610,44 @@ export const configSchema = {
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
       dependencies: {
+        ...readOnlyUnless('overrideUrl', 'url'),
         ...readOnlyUnless('overrideUscgNumber', 'uscgNumber'),
         ...readOnlyUnless('overrideHullNumber', 'hullNumber'),
       },
       properties: {
+        logo: {
+          type: 'string',
+          // `format: data-url` is what makes react-json-schema-form render a
+          // file picker and hand back `data:image/png;base64,...`; the
+          // ui:schema asks for the same widget by name, because the two have
+          // been spelled differently across the versions the Signal K admin UI
+          // has shipped. A renderer that understands neither shows a text box,
+          // which still takes a pasted data URL.
+          format: 'data-url',
+          title: 'Vessel logo',
+          description:
+            'Shown beside the name at the top of the site and in the footer, and ' +
+            'used as the browser tab icon, the home-screen icon and the image on a ' +
+            'shared link. PNG, JPEG, WebP or SVG, up to 512 kB. Empty falls back to ' +
+            'data/vessel/logo.png if you have committed one, and to a generic ' +
+            'tracker icon if you have not.',
+          default: '',
+        },
+        overrideUrl: {
+          type: 'boolean',
+          title: 'Override site address',
+          description: 'Publish under a custom domain rather than the GitHub Pages URL.',
+          default: false,
+        },
+        url: {
+          type: 'string',
+          title: 'Site address',
+          description:
+            'Where the published site is served, e.g. https://example.com/. Derived ' +
+            'from the repository unless overridden. It is what a link preview in a ' +
+            'chat app resolves images and titles against.',
+          default: '',
+        },
         customLinks: {
           type: 'array',
           title: 'Custom buttons',
@@ -666,6 +715,7 @@ export const configSchema = {
 /** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
+  site: { logo: { 'ui:widget': 'file' } },
   polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
 };
@@ -778,6 +828,89 @@ export function resolveOwnerAndName(
     problems.push(`GitHub repository name "${name}" is not a GitHub repository name.`);
   }
   return { owner, name, problems };
+}
+
+/**
+ * The URL GitHub Pages serves a repository at.
+ *
+ * `<owner>.github.io` is the user site and is served at the domain root;
+ * anything else is a project site under a path of its own. Lowercased because
+ * the hostname is, and a mixed-case one in a link preview resolves to a 404 on
+ * some clients.
+ */
+export function pagesUrl(owner: string, name: string): string {
+  return /\.github\.io$/i.test(name)
+    ? `https://${name.toLowerCase()}/`
+    : `https://${owner.toLowerCase()}.github.io/${name}/`;
+}
+
+/**
+ * The site's address: derived from the repository, or the typed one.
+ *
+ * Normalised to a trailing slash and an explicit scheme, because it is
+ * concatenated with relative paths to build the absolute URLs in the
+ * social-preview tags. A typed value that will not parse falls back to the
+ * derived one with a warning rather than publishing `undefined/logo.png` into
+ * everyone's link previews.
+ */
+export function resolveSiteUrl(
+  owner: string,
+  name: string,
+  override: unknown,
+  typed: unknown,
+): { url: string; warnings: string[] } {
+  const derived = owner && name ? pagesUrl(owner, name) : '';
+  if (!bool(override)) return { url: derived, warnings: [] };
+
+  const raw = str(typed);
+  if (!raw) {
+    return {
+      url: derived,
+      warnings: [
+        'Override site address is ticked but no address is set; using ' +
+          `${derived || 'the derived GitHub Pages URL'} instead.`,
+      ],
+    };
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return {
+      url: derived,
+      warnings: [`The site address "${raw}" is not a URL; using ${derived} instead.`],
+    };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      url: derived,
+      warnings: [
+        `The site address "${raw}" is not an http:// or https:// URL; using ` +
+          `${derived} instead.`,
+      ],
+    };
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  if (!parsed.pathname.endsWith('/')) parsed.pathname = `${parsed.pathname}/`;
+  return { url: parsed.toString(), warnings: [] };
+}
+
+/**
+ * The path the site is served under, with both slashes: `/` or `/tracker/`.
+ *
+ * The web app manifest's `start_url` and `scope` are absolute paths, and a
+ * project site that claims `/` takes over the owner's whole github.io domain
+ * in an installed PWA.
+ */
+export function siteBasePath(siteUrl: string): string {
+  try {
+    const path = new URL(siteUrl).pathname;
+    return path.endsWith('/') ? path : `${path}/`;
+  } catch {
+    return '/';
+  }
 }
 
 /** A token that is plainly not a token, caught before the first 401. */
@@ -932,6 +1065,16 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const customLinks = customLinkResult.links;
   warnings.push(...customLinkResult.warnings);
 
+  const siteUrlResult = resolveSiteUrl(owner, name, site.overrideUrl, site.url);
+  warnings.push(...siteUrlResult.warnings);
+
+  // A logo that will not decode is fatal rather than a warning: it is the one
+  // setting whose failure is invisible on the config page, and the site would
+  // go on showing the previous logo — or a broken image — while the page said
+  // a new one was set.
+  const logoResult = parseLogo(site.logo);
+  problems.push(...logoResult.problems);
+
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
         .filter((zone: any) => zone && typeof zone === 'object')
@@ -1037,6 +1180,8 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           ? [...DEFAULT_NOTIFICATION_EXCLUDE]
           : parsePathList(input.notificationExclude),
       site: {
+        url: siteUrlResult.url,
+        logo: logoResult.logo,
         customLinks,
         overrideUscgNumber: bool(site.overrideUscgNumber),
         uscgNumber: str(site.uscgNumber),
