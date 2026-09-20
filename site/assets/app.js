@@ -67,71 +67,81 @@ const PANEL_SKELETONS = {
 };
 
 
-function classifyBatteryStatus(percent) {
-  if (!Number.isFinite(percent)) return null;
-  if (percent >= C.BATTERY_OK_PCT)   return { level: 'ok',    label: 'Charged' };
-  if (percent >= C.BATTERY_WARN_PCT) return { level: 'warn',  label: 'Low' };
-  return { level: 'alert', label: 'Critical' };
+// ---------------------------------------------------------------------------
+// Value classification — Signal K zones and nothing else
+// ---------------------------------------------------------------------------
+// Every "is this value OK?" question on the page goes through classifyByZones.
+// There is no constant-threshold fallback any more: six classify* functions
+// used to hard-code what counts as a low battery, a low tank and a dragging
+// anchor for every boat that publishes this site. A path with no zones set on
+// the server renders uncoloured — the honest answer to "nobody has said what
+// good looks like here" — and the fix is to set the zone in Signal K, where
+// the alarm that fires the buzzer is configured anyway.
+
+// Signal K notification states, mapped onto the three the stylesheet paints.
+const ZONE_LEVELS = {
+  nominal: 'ok',
+  normal: 'ok',
+  warn: 'warn',
+  caution: 'warn',
+  alert: 'alert',
+  alarm: 'alert',
+  emergency: 'alert',
+};
+
+// Shown when a zone carries no `message` of its own.
+const ZONE_LABELS = { ok: 'Normal', warn: 'Warning', alert: 'Alert' };
+
+function zoneMatches(value, zone, inclusiveUpper) {
+  const above = zone.lower == null || value >= zone.lower;
+  const below = zone.upper == null || (inclusiveUpper ? value <= zone.upper : value < zone.upper);
+  return above && below;
 }
 
-function classifyBatteryTime(hours) {
-  if (!Number.isFinite(hours)) return null;
-  if (hours >= C.BATTERY_TIME_OK_H)   return { level: 'ok',   label: 'Plenty' };
-  if (hours >= C.BATTERY_TIME_WARN_H) return { level: 'warn', label: 'Soon' };
-  return { level: 'alert', label: 'Short' };
-}
-
-function classifyAnchorStatus(current, max) {
-  if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) return null;
-  if (current <= max * C.ANCHOR_WARN_RATIO) return { level: 'ok',   label: 'Safe' };
-  if (current <= max * C.ANCHOR_EDGE_RATIO) return { level: 'warn', label: 'Edge' };
-  return { level: 'alert', label: 'Drifting' };
-}
-
-function classifyPacketLoss(loss) {
-  if (!Number.isFinite(loss)) return null;
-  const percentage = loss <= 1 ? loss * 100 : loss;
-  if (percentage < C.PACKET_LOSS_OK_PCT)   return { level: 'ok',   label: 'Clean' };
-  if (percentage < C.PACKET_LOSS_WARN_PCT) return { level: 'warn', label: 'Lossy' };
-  return { level: 'alert', label: 'Dropping' };
-}
-
-function classifyTankLevel(level) {
-  if (!Number.isFinite(level)) return null;
-  if (level >= C.TANK_OK_RATIO)   return { level: 'ok',   label: 'Healthy' };
-  if (level >= C.TANK_WARN_RATIO) return { level: 'warn', label: 'Low' };
-  return { level: 'alert', label: 'Refill' };
-}
-
-function classifyWasteTank(level) {
-  if (!Number.isFinite(level)) return null;
-  if (level <= C.WASTE_WARN_RATIO)  return { level: 'ok',   label: 'Clear' };
-  if (level <= C.WASTE_ALERT_RATIO) return { level: 'warn', label: 'Rising' };
-  return { level: 'alert', label: 'Full' };
-}
-
-// Classify a value using SignalK meta.zones if available, otherwise return null.
-// SignalK zone states: nominal/normal → ok, warn/caution → warn, alert/alarm/emergency → alert.
+/**
+ * Classify a value against a Signal K `meta.zones` array.
+ *
+ * Returns {level, label} or null when there are no zones, the value is not a
+ * number, or no zone covers it. Null is a real answer: the caller renders the
+ * value with no colour rather than guessing a level.
+ *
+ * Bounds are half-open (lower <= v < upper), which is what makes adjacent
+ * zones like [0,0.2) and [0.2,0.5) unambiguous. A second inclusive pass
+ * catches a value sitting exactly on the top zone's upper bound, since a
+ * bounded top zone is a common way to write them and a full tank reading
+ * exactly 1.0 should not fall out of [0.5, 1].
+ */
 function classifyByZones(value, zones) {
   if (!Array.isArray(zones) || !Number.isFinite(value)) return null;
-  for (const zone of zones) {
-    const above = zone.lower == null || value >= zone.lower;
-    const below = zone.upper == null || value <= zone.upper;
-    if (above && below) {
-      const s = zone.state;
-      if (s === 'nominal' || s === 'normal') return { level: 'ok' };
-      if (s === 'warn'    || s === 'caution') return { level: 'warn' };
-      if (s === 'alert'   || s === 'alarm' || s === 'emergency') return { level: 'alert' };
+  for (const inclusiveUpper of [false, true]) {
+    for (const zone of zones) {
+      if (!zone || typeof zone !== 'object') continue;
+      const level = ZONE_LEVELS[String(zone.state || '').toLowerCase()];
+      if (!level) continue;
+      if (!zoneMatches(value, zone, inclusiveUpper)) continue;
+      return { level, label: zone.message || ZONE_LABELS[level] };
     }
   }
   return null;
 }
 
+/** Zones for a path node in the published snapshot, or null. */
+function zonesOf(node) {
+  const zones = node?.meta?.zones;
+  return Array.isArray(zones) ? zones : null;
+}
+
 // Render a value div whose text is colored by status level (ok/warn/alert).
+//
+// The zone's own `message` becomes the hover title. That is the one place the
+// server's wording reaches the page — "House bank low" in the words whoever
+// set the zone chose, rather than a label this file invented — and it is why
+// classifyByZones returns a label at all.
 function colorValue(display, status) {
   if (display === 'N/A') return `<div class="value"><span class="value-na">N/A</span></div>`;
   const cls = status?.level ? ` value-${status.level}` : '';
-  return `<div class="value${cls}">${display}</div>`;
+  const title = status?.label ? ` title="${escapeHtml(status.label)}"` : '';
+  return `<div class="value${cls}"${title}>${display}</div>`;
 }
 
 function renderAlertSummary() {
@@ -175,6 +185,262 @@ function renderAlertSummary() {
           </div>`;
       }).join('')}
     </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+// Two things out of data/telemetry/notifications.json, answering different
+// questions. `active` is what the boat is shouting about right now and goes in
+// a banner at the top of the page. `events` is the firing log — one entry per
+// time a notification *entered* an active state — and it is what the counts
+// over 1, 3, 12 and 24 hours are built from.
+//
+// A firing is an edge, not a sample: an alarm that stays on for six hours is
+// one firing. Sampling would make the number depend on the publish cadence,
+// which halves and doubles with navigation.state, so the same alarm would
+// score thirty times higher underway than at anchor. The flip side is that
+// anything firing and clearing between two publishes is never seen, which is
+// why the panel says what it is a count *of* rather than implying a total.
+
+let notificationsData = null;
+
+// Notification messages are free text written by whatever plugin raised them.
+// They land in innerHTML, so nothing goes in unescaped.
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Signal K state → the level the stylesheet paints. Same table as
+// classifyByZones uses; notifications and zones share the state vocabulary.
+function notificationLevel(state) {
+  return ZONE_LEVELS[String(state || '').toLowerCase()] || null;
+}
+
+function relativeAge(fromMs, toMs) {
+  const s = Math.max(0, Math.round((toMs - fromMs) / 1000));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = m / 60;
+  if (h < 36) return `${h.toFixed(h < 10 ? 1 : 0)}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+// A path reads better with its last segment emphasised: the interesting part
+// of notifications.electrical.batteries.house.capacity.stateOfCharge is the
+// end of it, and on a phone the front is what gets truncated.
+function notificationTitle(item) {
+  const message = (item.message || '').trim();
+  if (message) return message;
+  const parts = String(item.path || '').split('.');
+  return parts[parts.length - 1] || item.path || 'Notification';
+}
+
+/**
+ * Count firings per path over each window in NOTIFICATION_WINDOWS_H.
+ *
+ * Counted back from the file's own `generated` time, not from the browser
+ * clock: a page left open overnight would otherwise watch every count decay
+ * to zero and read as a quiet night, when all that happened is that no new
+ * file was published. The panel shows how old `generated` is instead.
+ */
+function countNotificationFirings(payload) {
+  const windows = C.NOTIFICATION_WINDOWS_H;
+  const asOf = Date.parse(payload?.generated ?? '');
+  const reference = Number.isFinite(asOf) ? asOf : Date.now();
+  const sampledSince = Date.parse(payload?.sampled_since ?? '');
+  const events = Array.isArray(payload?.events) ? payload.events : [];
+
+  const byPath = new Map();
+  for (const event of events) {
+    const at = Date.parse(event?.at ?? '');
+    if (!Number.isFinite(at)) continue;
+    let row = byPath.get(event.path);
+    if (!row) {
+      row = { path: event.path, counts: windows.map(() => 0), last: null, level: 'warn' };
+      byPath.set(event.path, row);
+    }
+    windows.forEach((hours, i) => {
+      if (at >= reference - hours * 3600000) row.counts[i] += 1;
+    });
+    if (row.last === null || at > row.last) {
+      row.last = at;
+      row.level = notificationLevel(event.state) || row.level;
+      row.state = event.state;
+      row.message = event.message;
+    }
+  }
+
+  // A window longer than the log has been running cannot be a total, only a
+  // floor. Flagging it is the difference between "nothing fired last night"
+  // and "the plugin restarted at 06:00".
+  const partial = windows.map((hours) =>
+    Number.isFinite(sampledSince) ? sampledSince > reference - hours * 3600000 : false,
+  );
+
+  return {
+    reference,
+    sampledSince: Number.isFinite(sampledSince) ? sampledSince : null,
+    windows,
+    partial,
+    rows: [...byPath.values()].sort((a, b) => (b.last ?? 0) - (a.last ?? 0)),
+  };
+}
+
+/** The banner above the tabs: what is active right now, worst first. */
+function renderNotificationBanner(payload) {
+  const el = document.getElementById('notification-banner');
+  if (!el) return;
+  const active = Array.isArray(payload?.active) ? payload.active : [];
+  if (!active.length) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const asOf = Date.parse(payload?.generated ?? '');
+  const reference = Number.isFinite(asOf) ? asOf : Date.now();
+  const worst = active.some((item) => notificationLevel(item.state) === 'alert') ? 'alert' : 'warn';
+
+  el.style.display = '';
+  el.className = `notification-banner notification-banner--${worst}`;
+  el.innerHTML = `
+    <div class="notif-banner-head">
+      ${active.length} active notification${active.length === 1 ? '' : 's'}
+    </div>
+    <div class="notif-banner-list">
+      ${active.map((item) => {
+        const level = notificationLevel(item.state) || 'warn';
+        const since = Date.parse(item.since ?? '');
+        const age = Number.isFinite(since) ? ` · ${relativeAge(since, reference)}` : '';
+        return `
+          <div class="notif-chip notif-chip--${level}">
+            <span class="notif-chip-state">${escapeHtml(item.state)}</span>
+            <span class="notif-chip-title">${escapeHtml(notificationTitle(item))}</span>
+            <span class="notif-chip-path">${escapeHtml(item.path)}${age}</span>
+          </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/** The Data tab's panel: active rows, then how often each path has fired. */
+function renderNotificationsPanel(payload) {
+  const el = document.getElementById('notifications-body');
+  if (!el) return;
+
+  if (!payload) {
+    el.innerHTML = `
+      <div class="notif-empty">
+        No notification log published. The plugin writes
+        <code>data/telemetry/notifications.json</code> when “Publish notifications”
+        is on; an older site will not have one yet.
+      </div>`;
+    return;
+  }
+
+  const summary = countNotificationFirings(payload);
+  const active = Array.isArray(payload.active) ? payload.active : [];
+  const activeByPath = new Map(active.map((item) => [item.path, item]));
+  const asOfAge = relativeAge(summary.reference, Date.now());
+  const anyPartial = summary.partial.some(Boolean);
+
+  // Every path with either a firing in the window or an active state now.
+  const paths = [...summary.rows];
+  for (const item of active) {
+    if (!paths.some((row) => row.path === item.path)) {
+      paths.push({
+        path: item.path,
+        counts: summary.windows.map(() => 0),
+        last: null,
+        level: notificationLevel(item.state) || 'warn',
+        state: item.state,
+        message: item.message,
+      });
+    }
+  }
+
+  const head = `
+    <div class="notif-meta">
+      Firings counted as of ${asOfAge} ago${
+        summary.sampledSince
+          ? `, from a log reaching back ${relativeAge(summary.sampledSince, summary.reference)}`
+          : ''
+      }. A notification that comes on and stays on counts once; one that
+      fires and clears between two publishes is not seen at all, so these are
+      a floor rather than a total.
+    </div>`;
+
+  if (!paths.length) {
+    el.innerHTML = `${head}<div class="notif-empty">Nothing has fired in the last ${
+      payload.window_hours ?? 24
+    } hours.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    ${head}
+    <table class="notif-table">
+      <thead>
+        <tr>
+          <th class="notif-col-path">Notification</th>
+          <th class="notif-col-now">Now</th>
+          ${summary.windows.map((hours, i) =>
+            `<th class="notif-col-count">${hours}h${summary.partial[i] ? '<span class="notif-partial">*</span>' : ''}</th>`,
+          ).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        ${paths.map((row) => {
+          const current = activeByPath.get(row.path);
+          const currentLevel = current ? notificationLevel(current.state) : null;
+          const title = notificationTitle(current || row);
+          return `
+            <tr>
+              <td class="notif-col-path">
+                <span class="notif-title">${escapeHtml(title)}</span>
+                <span class="notif-path">${escapeHtml(row.path)}</span>
+              </td>
+              <td class="notif-col-now">${
+                current
+                  ? `<span class="value-${currentLevel || 'warn'}">${escapeHtml(current.state)}</span>`
+                  : '<span class="value-na">clear</span>'
+              }</td>
+              ${row.counts.map((count) =>
+                `<td class="notif-col-count${count ? ` value-${row.level}` : ''}">${count || '–'}</td>`,
+              ).join('')}
+            </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    ${anyPartial
+      ? '<div class="notif-footnote">* The log does not reach back this far yet — the count covers only the part it has seen.</div>'
+      : ''}`;
+}
+
+/**
+ * Fetch the notification file and paint both views.
+ *
+ * Separate from loadData(): a 404 here is a site published by a plugin
+ * version that did not write this file, or with notifications turned off, and
+ * that must not take the dashboard down with it.
+ */
+async function loadNotifications() {
+  let payload = null;
+  try {
+    const res = await fetch(C.NOTIFICATIONS_URL);
+    if (res.ok) payload = await res.json();
+    else console.log(`No notifications file: ${res.status} ${res.statusText}`);
+  } catch (err) {
+    console.log('Notifications unavailable:', err);
+  }
+  notificationsData = payload;
+  try { renderNotificationBanner(payload); } catch (err) { console.error('Notification banner failed:', err); }
+  try { renderNotificationsPanel(payload); } catch (err) { console.error('Notifications panel failed:', err); }
 }
 
 function renderSkeletonGrid(containerId, count = 6) {
@@ -2245,30 +2511,43 @@ async function loadData() {
     // Update navigation data
     const currentTheme = document.documentElement.getAttribute('data-theme');
 
+    // Anchor distance is coloured by zones on navigation.anchor.currentRadius,
+    // in metres, like every other path. It used to be a ratio against
+    // maxRadius — 85% of the rode is "Safe", 105% is "Drifting" — which read
+    // well and was not something any anchor alarm on board agreed with. The
+    // alarm itself now reaches the page through notifications.navigation.anchor
+    // instead of being re-derived here from a number and a guess.
     const anchorRawSI = nav.anchor?.currentRadius?.value ?? null;
-    const anchorStatus = classifyAnchorStatus(anchorRawSI, nav.anchor?.maxRadius?.value);
-    const anchorValueHtml = colorValue(fmtUnit('length', anchorRawSI), anchorStatus);
+    const anchorValueHtml = colorValue(
+      fmtUnit('length', anchorRawSI),
+      classifyByZones(anchorRawSI, zonesOf(nav.anchor?.currentRadius)),
+    );
 
-    const socRaw = elec.batteries?.house?.capacity?.stateOfCharge?.value;
-    const socZones = elec.batteries?.house?.capacity?.stateOfCharge?.meta?.zones;
+    const socNode = elec.batteries?.house?.capacity?.stateOfCharge;
+    const socRaw = socNode?.value;
     const socPercent = socRaw != null ? socRaw * 100 : null;
     const socDisplay = socPercent != null ? `${socPercent.toFixed(0)}%` : 'N/A';
-    const socValueHtml = colorValue(socDisplay, classifyByZones(socRaw, socZones) || classifyBatteryStatus(socPercent));
+    const socValueHtml = colorValue(socDisplay, classifyByZones(socRaw, zonesOf(socNode)));
 
-    const timeRemainingRaw = elec.batteries?.house?.capacity?.timeRemaining?.value;
-    const timeRemainingZones = elec.batteries?.house?.capacity?.timeRemaining?.meta?.zones;
+    const timeRemainingNode = elec.batteries?.house?.capacity?.timeRemaining;
+    const timeRemainingRaw = timeRemainingNode?.value;
     const timeRemainingHours = timeRemainingRaw != null ? timeRemainingRaw / 3600 : null;
     const timeRemainingDisplay = timeRemainingHours != null ? `${timeRemainingHours.toFixed(1)} hrs` : 'N/A';
-    const timeRemainingHtml = colorValue(timeRemainingDisplay, classifyByZones(timeRemainingRaw, timeRemainingZones) || classifyBatteryTime(timeRemainingHours));
+    const timeRemainingHtml = colorValue(
+      timeRemainingDisplay,
+      classifyByZones(timeRemainingRaw, zonesOf(timeRemainingNode)),
+    );
 
     const packetLossValueRaw = internet.packetLoss?.value;
-    const packetLossZones = internet.packetLoss?.meta?.zones;
     const packetLossPercent = packetLossValueRaw != null ? (packetLossValueRaw <= 1 ? packetLossValueRaw * 100 : packetLossValueRaw) : null;
     const packetLossDisplay = packetLossPercent != null ? `${packetLossPercent.toFixed(1)}%` : 'N/A';
-    const packetLossHtml = colorValue(packetLossDisplay, classifyByZones(packetLossValueRaw, packetLossZones) || classifyPacketLoss(packetLossValueRaw));
+    const packetLossHtml = colorValue(
+      packetLossDisplay,
+      classifyByZones(packetLossValueRaw, zonesOf(internet.packetLoss)),
+    );
 
-    const tankValueWithBadge = (level, valueDisplay, waste = false, zones = null) =>
-      colorValue(valueDisplay, classifyByZones(level, zones) || (waste ? classifyWasteTank(level) : classifyTankLevel(level)));
+    const tankValueWithBadge = (level, valueDisplay, zones = null) =>
+      colorValue(valueDisplay, classifyByZones(level, zones));
 
     paintPanel('navigation-grid', () => `
       <div class="info-item" title="${withUpdated('Current vessel latitude position', nav.position)}"><div class="label">Latitude</div><div class="value">${lat?.toFixed(6) ?? 'N/A'}</div></div>
@@ -2387,14 +2666,14 @@ async function loadData() {
     const blackwaterBow = tanks.blackwater?.bow || {};
     const liveWell0 = tanks.liveWell?.['0'] || {};
     paintPanel('tanks-grid', () => `
-      <div class="info-item" data-path="tanks.fuel.0.currentLevel" data-label="Fuel (Main)" data-unit-group="volume" data-raw="${fuelMain.currentVolume?.value ?? ''}" data-level="${toPercent(fuelMain.currentLevel?.value)}" title="${withUpdatedNodes('Main fuel tank level, volume, and temperature (if available)', fuelMain.currentLevel, fuelMain.currentVolume, fuelMain.temperature)}"><div class="label">Fuel (Main)</div>${tankValueWithBadge(fuelMain.currentLevel?.value, formatTankDisplay(fuelMain.currentLevel?.value, fuelMain.currentVolume?.value), false, fuelMain.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.fuel.reserve.currentLevel" data-label="Fuel (Reserve)" data-unit-group="volume" data-raw="${fuelReserve.currentVolume?.value ?? ''}" data-level="${toPercent(fuelReserve.currentLevel?.value)}" title="${withUpdatedNodes('Reserve fuel tank level, volume, and temperature (if available)', fuelReserve.currentLevel, fuelReserve.currentVolume, fuelReserve.temperature)}"><div class="label">Fuel (Reserve)</div>${tankValueWithBadge(fuelReserve.currentLevel?.value, formatTankDisplay(fuelReserve.currentLevel?.value, fuelReserve.currentVolume?.value), false, fuelReserve.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.freshWater.0.currentLevel" data-label="Fresh Water 1" data-unit-group="volume" data-raw="${freshWater0.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater0.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 1 level and volume', freshWater0.currentLevel, freshWater0.currentVolume)}"><div class="label">Fresh Water 1</div>${tankValueWithBadge(freshWater0.currentLevel?.value, formatTankDisplay(freshWater0.currentLevel?.value, freshWater0.currentVolume?.value), false, freshWater0.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.freshWater.1.currentLevel" data-label="Fresh Water 2" data-unit-group="volume" data-raw="${freshWater1.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater1.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 2 level and volume', freshWater1.currentLevel, freshWater1.currentVolume)}"><div class="label">Fresh Water 2</div>${tankValueWithBadge(freshWater1.currentLevel?.value, formatTankDisplay(freshWater1.currentLevel?.value, freshWater1.currentVolume?.value), false, freshWater1.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.propane.a.currentLevel" data-label="Propane A" title="${withUpdatedNodes('Propane tank A level and temperature', propaneA.currentLevel, propaneA.temperature)}"><div class="label">Propane A</div>${tankValueWithBadge(propaneA.currentLevel?.value, formatTankDisplay(propaneA.currentLevel?.value, null), false, propaneA.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.propane.b.currentLevel" data-label="Propane B" title="${withUpdatedNodes('Propane tank B level and temperature', propaneB.currentLevel, propaneB.temperature)}"><div class="label">Propane B</div>${tankValueWithBadge(propaneB.currentLevel?.value, formatTankDisplay(propaneB.currentLevel?.value, null), false, propaneB.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.blackwater.bow.currentLevel" data-label="Blackwater" title="${withUpdatedNodes('Blackwater tank level and temperature', blackwaterBow.currentLevel, blackwaterBow.temperature)}"><div class="label">Blackwater</div>${tankValueWithBadge(blackwaterBow.currentLevel?.value, formatTankDisplay(blackwaterBow.currentLevel?.value, null), true, blackwaterBow.currentLevel?.meta?.zones)}</div>
-      <div class="info-item" data-path="tanks.liveWell.0.currentLevel" data-label="Bilge" title="${withUpdated('Bilge level', liveWell0.currentLevel)}"><div class="label">Bilge</div>${tankValueWithBadge(liveWell0.currentLevel?.value, formatTankDisplay(liveWell0.currentLevel?.value, null), true, liveWell0.currentLevel?.meta?.zones)}</div>
+      <div class="info-item" data-path="tanks.fuel.0.currentLevel" data-label="Fuel (Main)" data-unit-group="volume" data-raw="${fuelMain.currentVolume?.value ?? ''}" data-level="${toPercent(fuelMain.currentLevel?.value)}" title="${withUpdatedNodes('Main fuel tank level, volume, and temperature (if available)', fuelMain.currentLevel, fuelMain.currentVolume, fuelMain.temperature)}"><div class="label">Fuel (Main)</div>${tankValueWithBadge(fuelMain.currentLevel?.value, formatTankDisplay(fuelMain.currentLevel?.value, fuelMain.currentVolume?.value), zonesOf(fuelMain.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.fuel.reserve.currentLevel" data-label="Fuel (Reserve)" data-unit-group="volume" data-raw="${fuelReserve.currentVolume?.value ?? ''}" data-level="${toPercent(fuelReserve.currentLevel?.value)}" title="${withUpdatedNodes('Reserve fuel tank level, volume, and temperature (if available)', fuelReserve.currentLevel, fuelReserve.currentVolume, fuelReserve.temperature)}"><div class="label">Fuel (Reserve)</div>${tankValueWithBadge(fuelReserve.currentLevel?.value, formatTankDisplay(fuelReserve.currentLevel?.value, fuelReserve.currentVolume?.value), zonesOf(fuelReserve.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.freshWater.0.currentLevel" data-label="Fresh Water 1" data-unit-group="volume" data-raw="${freshWater0.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater0.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 1 level and volume', freshWater0.currentLevel, freshWater0.currentVolume)}"><div class="label">Fresh Water 1</div>${tankValueWithBadge(freshWater0.currentLevel?.value, formatTankDisplay(freshWater0.currentLevel?.value, freshWater0.currentVolume?.value), zonesOf(freshWater0.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.freshWater.1.currentLevel" data-label="Fresh Water 2" data-unit-group="volume" data-raw="${freshWater1.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater1.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 2 level and volume', freshWater1.currentLevel, freshWater1.currentVolume)}"><div class="label">Fresh Water 2</div>${tankValueWithBadge(freshWater1.currentLevel?.value, formatTankDisplay(freshWater1.currentLevel?.value, freshWater1.currentVolume?.value), zonesOf(freshWater1.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.propane.a.currentLevel" data-label="Propane A" title="${withUpdatedNodes('Propane tank A level and temperature', propaneA.currentLevel, propaneA.temperature)}"><div class="label">Propane A</div>${tankValueWithBadge(propaneA.currentLevel?.value, formatTankDisplay(propaneA.currentLevel?.value, null), zonesOf(propaneA.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.propane.b.currentLevel" data-label="Propane B" title="${withUpdatedNodes('Propane tank B level and temperature', propaneB.currentLevel, propaneB.temperature)}"><div class="label">Propane B</div>${tankValueWithBadge(propaneB.currentLevel?.value, formatTankDisplay(propaneB.currentLevel?.value, null), zonesOf(propaneB.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.blackwater.bow.currentLevel" data-label="Blackwater" title="${withUpdatedNodes('Blackwater tank level and temperature', blackwaterBow.currentLevel, blackwaterBow.temperature)}"><div class="label">Blackwater</div>${tankValueWithBadge(blackwaterBow.currentLevel?.value, formatTankDisplay(blackwaterBow.currentLevel?.value, null), zonesOf(blackwaterBow.currentLevel))}</div>
+      <div class="info-item" data-path="tanks.liveWell.0.currentLevel" data-label="Bilge" title="${withUpdated('Bilge level', liveWell0.currentLevel)}"><div class="label">Bilge</div>${tankValueWithBadge(liveWell0.currentLevel?.value, formatTankDisplay(liveWell0.currentLevel?.value, null), zonesOf(liveWell0.currentLevel))}</div>
     `);
 
     // Render alert summary and inline sparklines now that all info-item cards
@@ -3646,6 +3925,7 @@ function updateChartsForTheme(theme) {
   loadPolarData();
   loadVoyageStats();
   loadData();
+  loadNotifications();
 
   // Real-time SignalK updates removed; using static data only
 

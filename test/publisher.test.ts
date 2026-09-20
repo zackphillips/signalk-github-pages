@@ -325,6 +325,77 @@ describe('Publisher', () => {
     );
   });
 
+  describe('notifications', () => {
+    const alarmed = (state: string, message = 'Shallow') => ({
+      ...tree(),
+      notifications: {
+        environment: {
+          depth: {
+            belowTransducer: {
+              value: { state, message },
+              timestamp: '2026-03-01T19:59:00Z',
+            },
+          },
+        },
+      },
+    });
+
+    it('publishes the active set and the firing log', async () => {
+      const publisher = makePublisher();
+      const result = await publisher.runCycle(alarmed('alarm'));
+      expect(result.files).toContain('data/telemetry/notifications.json');
+      const payload = JSON.parse(fake.files.get('data/telemetry/notifications.json')!);
+      expect(payload.active).toEqual([
+        expect.objectContaining({
+          path: 'environment.depth.belowTransducer',
+          state: 'alarm',
+          level: 'alert',
+          message: 'Shallow',
+        }),
+      ]);
+      expect(payload.events).toHaveLength(1);
+    });
+
+    it('counts a firing once however many cycles the alarm stays up', async () => {
+      // The whole point of the edge rule: the cadence halves and doubles with
+      // navigation.state, and the count must not move with it.
+      const publisher = makePublisher();
+      await publisher.runCycle(alarmed('normal'));
+      await publisher.runCycle(alarmed('alarm'));
+      await publisher.runCycle(alarmed('alarm'));
+      await publisher.runCycle(alarmed('alarm'));
+      const payload = JSON.parse(fake.files.get('data/telemetry/notifications.json')!);
+      expect(payload.events).toHaveLength(1);
+      expect(payload.active).toHaveLength(1);
+    });
+
+    it('keeps the firing log across a restart', async () => {
+      await makePublisher().runCycle(alarmed('normal'));
+      await makePublisher().runCycle(alarmed('alarm'));
+      // A new Publisher over the same data dir is what a server restart is.
+      await makePublisher().runCycle(alarmed('alarm'));
+      const payload = JSON.parse(fake.files.get('data/telemetry/notifications.json')!);
+      expect(payload.events).toHaveLength(1);
+    });
+
+    it('reports firings and the active set on the status line', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(alarmed('normal'));
+      logs.length = 0;
+      await publisher.runCycle(alarmed('alarm'));
+      expect(logs.some((line) => line.includes('1 fired this cycle'))).toBe(true);
+      expect(logs.some((line) => line.includes('1 active'))).toBe(true);
+    });
+
+    it('publishes nothing and claims nothing when the setting is off', async () => {
+      const publisher = makePublisher({ publishNotifications: false });
+      const result = await publisher.runCycle(alarmed('alarm'));
+      expect(result.files).not.toContain('data/telemetry/notifications.json');
+      expect(fake.files.has('data/telemetry/notifications.json')).toBe(false);
+      expect(await store.readText('notifications_log.json')).toBeNull();
+    });
+  });
+
   describe('pruning voyages', () => {
     const INDEX = {
       schema_version: 1,

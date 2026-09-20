@@ -57,6 +57,56 @@
         "stateOfCharge": {
           "value": 0.78,
           "timestamp": "2026-03-01T20:00:00Z"
+        },
+        "capacity": {
+          "stateOfCharge": {
+            "value": 0.78,
+            "timestamp": "2026-03-01T20:00:00Z",
+            "meta": {
+              "units": "ratio",
+              "zones": [
+                {
+                  "upper": 0.2,
+                  "state": "alarm",
+                  "message": "House bank critical"
+                },
+                {
+                  "lower": 0.2,
+                  "upper": 0.5,
+                  "state": "warn",
+                  "message": "House bank low"
+                },
+                {
+                  "lower": 0.5,
+                  "state": "normal"
+                }
+              ]
+            }
+          },
+          "timeRemaining": {
+            "value": 19800,
+            "timestamp": "2026-03-01T20:00:00Z",
+            "meta": {
+              "units": "s",
+              "zones": [
+                {
+                  "upper": 7200,
+                  "state": "alarm",
+                  "message": "Under two hours"
+                },
+                {
+                  "lower": 7200,
+                  "upper": 21600,
+                  "state": "warn",
+                  "message": "Under six hours"
+                },
+                {
+                  "lower": 21600,
+                  "state": "normal"
+                }
+              ]
+            }
+          }
         }
       }
     }
@@ -66,7 +116,98 @@
       "0": {
         "currentLevel": {
           "value": 0.56,
-          "timestamp": "2026-03-01T20:00:00Z"
+          "timestamp": "2026-03-01T20:00:00Z",
+          "meta": {
+            "units": "ratio",
+            "zones": [
+              {
+                "upper": 0.15,
+                "state": "alarm",
+                "message": "Fresh water nearly empty"
+              },
+              {
+                "lower": 0.15,
+                "upper": 0.3,
+                "state": "warn",
+                "message": "Fresh water low"
+              },
+              {
+                "lower": 0.3,
+                "state": "normal"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "blackwater": {
+      "bow": {
+        "currentLevel": {
+          "value": 0.74,
+          "timestamp": "2026-03-01T20:00:00Z",
+          "meta": {
+            "units": "ratio",
+            "zones": [
+              {
+                "upper": 0.5,
+                "state": "normal"
+              },
+              {
+                "lower": 0.5,
+                "upper": 0.85,
+                "state": "warn",
+                "message": "Holding tank filling"
+              },
+              {
+                "lower": 0.85,
+                "state": "alarm",
+                "message": "Pump out"
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "notifications": {
+    "navigation": {
+      "anchor": {
+        "value": {
+          "state": "normal",
+          "method": [],
+          "message": "Anchor watch within radius"
+        },
+        "timestamp": "2026-03-01T20:00:00Z"
+      }
+    },
+    "tanks": {
+      "blackwater": {
+        "bow": {
+          "currentLevel": {
+            "value": {
+              "state": "warn",
+              "method": [
+                "visual"
+              ],
+              "message": "Holding tank above 50%"
+            },
+            "timestamp": "2026-03-01T17:42:00Z"
+          }
+        }
+      }
+    },
+    "environment": {
+      "depth": {
+        "belowTransducer": {
+          "value": {
+            "state": "alarm",
+            "method": [
+              "visual",
+              "sound"
+            ],
+            "message": "Shallow water: 2.1 m under the transducer"
+          },
+          "timestamp": "2026-03-01T19:54:00Z"
         }
       }
     }

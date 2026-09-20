@@ -5,21 +5,21 @@
 
 var VESSEL_CONSTANTS = Object.freeze({
   // ── Classification thresholds ────────────────────────────────────────────
-  BATTERY_OK_PCT:       75,    // % state-of-charge → ok
-  BATTERY_WARN_PCT:     45,    // % → warn (below is alert)
-  BATTERY_TIME_OK_H:    6,     // hours remaining → ok
-  BATTERY_TIME_WARN_H:  2,     // hours → warn (below is alert)
-
-  ANCHOR_WARN_RATIO:    0.85,  // current/max ratio → ok below, warn above
-  ANCHOR_EDGE_RATIO:    1.05,  // → warn below, alert above
-
-  PACKET_LOSS_OK_PCT:   1,     // % packet loss → ok
-  PACKET_LOSS_WARN_PCT: 3,     // % → warn (above is alert)
-
-  TANK_OK_RATIO:        0.35,  // fill ratio → ok (above)
-  TANK_WARN_RATIO:      0.20,  // → warn (below is alert)
-  WASTE_WARN_RATIO:     0.40,  // fill ratio → ok (below)
-  WASTE_ALERT_RATIO:    0.70,  // → warn (above is alert)
+  // There are none, deliberately. Battery, tank, anchor and packet-loss
+  // thresholds used to live here as twelve constants, which meant every boat
+  // publishing this site agreed that 45% state of charge is "Low" and a tank
+  // under 20% needs refilling. Those numbers belong to a battery bank and a
+  // tank, not to a dashboard: 45% is comfortable on 600Ah of LiFePO4 and
+  // nearly flat on a tired 200Ah of AGM.
+  //
+  // The boat already knows. Signal K carries `meta.zones` on every path —
+  // `[{lower, upper, state, message}]`, set on the server's Data Fiddler page
+  // or by the plugin that owns the sensor — and the server is where an alarm
+  // is configured anyway, so a threshold set here would be a second answer
+  // that disagrees with the first one silently. app.js reads the zones off
+  // the published snapshot and paints from those alone; a path with no zones
+  // set renders uncoloured, the same way an unknown position renders as
+  // unknown rather than as San Francisco.
 
   // ── Cache TTLs (milliseconds) ────────────────────────────────────────────
   FORECAST_CACHE_TTL_MS: 60 * 60 * 1000,      // 1 hour
@@ -71,4 +71,12 @@ var VESSEL_CONSTANTS = Object.freeze({
   POSITIONS_INDEX_URL:  'data/telemetry/positions_index.json',
   INSTRUMENT_LOG_URL:   'data/telemetry/instrument_log.json',
   INSTRUMENT_LOG_ENTRIES: 120,  // must match backend INSTRUMENT_LOG_ENTRIES
+  NOTIFICATIONS_URL:    'data/telemetry/notifications.json',
+
+  // ── Notifications ────────────────────────────────────────────────────────
+  // Look-back windows for the firing counts, in hours. The largest must not
+  // exceed NOTIFICATION_RETENTION_HOURS in src/notifications.ts — the plugin
+  // prunes the event log to that window, so a 48-hour column here would read
+  // as a quiet day and a half that nobody ever recorded.
+  NOTIFICATION_WINDOWS_H: [1, 3, 12, 24],
 });

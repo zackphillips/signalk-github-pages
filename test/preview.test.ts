@@ -53,10 +53,39 @@ describe('renderPreviewData', () => {
   it('renders the files the frontend fetches', async () => {
     const files = await render();
     expect([...files.keys()].sort()).toEqual([
+      'data/telemetry/notifications.json',
       'data/telemetry/signalk_latest.json',
       'data/telemetry/tracks_index.json',
       'data/vessel/info.yaml',
     ]);
+  });
+
+  it('omits the notification file when publishing notifications is off', async () => {
+    const files = await render({ publishNotifications: false });
+    expect(files.has('data/telemetry/notifications.json')).toBe(false);
+  });
+
+  it('shows active notifications without advancing the firing counts', async () => {
+    // A phone left on the preview page must not be the thing that consumes an
+    // edge the next real cycle needed to see.
+    const withAlarm = {
+      ...tree(),
+      notifications: {
+        environment: {
+          depth: {
+            belowTransducer: {
+              value: { state: 'alarm', message: 'Shallow' },
+              timestamp: '2026-03-01T19:59:00Z',
+            },
+          },
+        },
+      },
+    };
+    const files = await render({}, { tree: withAlarm });
+    const payload = JSON.parse(files.get('data/telemetry/notifications.json')!);
+    expect(payload.active).toHaveLength(1);
+    expect(payload.active[0].path).toBe('environment.depth.belowTransducer');
+    expect(await store.readText('notifications_log.json')).toBeNull();
   });
 
   it('drops stale values, as the published snapshot does', async () => {

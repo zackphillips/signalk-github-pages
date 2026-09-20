@@ -63,6 +63,11 @@
     <!-- PASSAGE BANNER (shown only when passage is set in info.yaml; pinned above tabs) -->
     <div id="passage-banner" class="passage-banner" style="display:none;"></div>
 
+    <!-- NOTIFICATIONS (active Signal K notifications; pinned above the tabs and
+         above the alert summary, because an alarm the boat raised itself
+         outranks a value the page decided it did not like the look of) -->
+    <div id="notification-banner" class="notification-banner" style="display:none;"></div>
+
     <!-- ALERT SUMMARY (cross-cutting; pinned above tabs so it's visible regardless of active tab) -->
     <div id="alert-summary" class="info-panel" style="display:none;"></div>
 
@@ -284,6 +289,12 @@
 
       <!-- DATA TAB (curated instrument panels, then raw JSON at the bottom) -->
       <section class="tab-panel" data-tab-panel="data">
+
+        <!-- NOTIFICATIONS -->
+        <div class="info-panel" id="notifications-panel">
+          <div class="panel-title">Notifications</div>
+          <div id="notifications-body"></div>
+        </div>
 
         <!-- NAVIGATION -->
         <div class="info-panel" id="navigation-panel">

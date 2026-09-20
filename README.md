@@ -48,6 +48,8 @@ the live `HEAD`.
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
 | **Per-day GPX tracks** | Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
+| **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
+| **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
 | **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
 | **Sparklines from your database** | With a Signal K history provider installed, the instrument log is read back from it — full resolution, no gap across a restart, nothing accumulated on the Pi |
@@ -145,6 +147,7 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
+| `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
 The defaults are the numbers this tracker has run on since it was a Python
 daemon on a Raspberry Pi. Four settings are derived rather than typed — the
@@ -294,6 +297,72 @@ you say what to hide.
 > A zone missing its radius is a hard configuration error, not a warning. A
 > half-entered zone hides nothing while looking like it does, and the failure
 > mode is a published position someone believed was redacted.
+
+## Zones and notifications
+
+The dashboard has no thresholds of its own. Whether 46% state of charge is
+fine or alarming is a property of a battery bank, not of a web page: 46% is
+comfortable on 600Ah of LiFePO4 and nearly flat on a tired 200Ah of AGM.
+The frontend used to carry twelve constants that answered for every boat —
+battery, tank, anchor and packet-loss levels — and they are gone.
+
+What paints a value now is `meta.zones` on the Signal K path, which is where
+the server keeps it anyway:
+
+```json
+"electrical.batteries.house.capacity.stateOfCharge": {
+  "meta": {
+    "zones": [
+      { "upper": 0.2, "state": "alarm", "message": "House bank critical" },
+      { "lower": 0.2, "upper": 0.5, "state": "warn", "message": "House bank low" },
+      { "lower": 0.5, "state": "normal" }
+    ]
+  }
+}
+```
+
+Set them on the server's **Data Fiddler** page (Server → Data Fiddler → the
+path → Meta), or let the plugin that owns the sensor publish them. `normal`
+and `nominal` render green, `warn` and `caution` amber, `alert`, `alarm` and
+`emergency` red, and a zone's `message` becomes the label. Bounds are
+half-open — `lower <= value < upper` — so adjacent zones do not overlap.
+
+**A path with no zones renders with no colour.** That is deliberate, and it is
+the same rule the rest of the site follows: an unknown position renders as
+unknown rather than as San Francisco Bay. If a value should be flagged, the
+place to say so is the server, where the alarm that sounds the buzzer is
+configured — not a second set of numbers here that can disagree with it
+silently.
+
+### Notifications
+
+`data/telemetry/notifications.json` carries two things. **Active** is the
+current set straight off `notifications.*`, raised in a banner above the tabs
+whichever tab is open. **Events** is the firing log, and the Notifications
+panel counts it over 1, 3, 12 and 24 hours.
+
+A firing is an **edge**, not a sample: an alarm that comes on and stays on for
+six hours counts once. Counting samples would make the number a function of
+the publish cadence, which changes with `navigation.state` — the same alarm
+would score thirty times higher underway than at anchor. An escalation
+(`warn` → `alarm`) counts as a new firing; a producer that re-stamps an
+unchanged notification does not.
+
+The honest limit, and the panel says so: anything that fires **and clears**
+between two publishes is never seen. At the dock that gap is the stationary
+interval, an hour by default. The counts are a floor, not a total. The panel
+also marks any window longer than the log has been running, so a plugin
+restarted at 06:00 does not report a quiet night it never watched.
+
+The log lives in the plugin's data directory, is pruned to 24 hours, and is
+capped at 500 events so a float switch flapping either side of its zone cannot
+grow the file without bound.
+
+> [!NOTE]
+> A notification's `message` is free text written by whichever plugin raised
+> it, and it is published verbatim to a public website. Everything else the
+> plugin publishes is a number off a known path, which is why this one has an
+> off switch: `publishNotifications`.
 
 ## What comes from Signal K
 
@@ -550,8 +619,9 @@ npm run dev       # site/ + sample/ on http://localhost:8000
 ```
 
 `npm run dev` serves the real frontend against fixture telemetry: a day's
-track, sixty instrument-log entries, a sailing snapshot and a polar table. No
-boat required.
+track, sixty instrument-log entries, a sailing snapshot with `meta.zones` set
+on the battery and tank paths, a day of notification firings and a polar
+table. No boat required.
 
 `Publisher.runCycle()` takes a self tree and returns what it did — it never
 calls back into the server — so a full publish cycle is tested without Signal
