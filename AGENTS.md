@@ -17,7 +17,9 @@ src/
   snapshot.ts       Reading the self tree, stale filter, position redaction
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
-  instrumentLog.ts  instrument_log.json + the path allowlist
+  instrumentLog.ts  instrument_log.json: its shape and the path matcher
+  history.ts        The Signal K History API: the instrument log, read back
+                    from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
   vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
@@ -50,8 +52,8 @@ Run `npm test` and `npm run typecheck` before committing.
 - **`publisher.ts` takes a tree and returns a result.** It never calls the
   Signal K server. Keep it that way: it is what makes a full cycle testable
   without a server or a network. Anything that needs an async server call —
-  the active polar, so far — is read in `index.ts` and passed in as
-  `CycleInput`.
+  the active polar and the instrument history — is read in `index.ts` and
+  passed in as `CycleInput`.
 - **No free-form config.** `site.extraYaml` was YAML merged over everything
   the plugin wrote: an override with no schema, no validation and no way to
   tell from the config page what `info.yaml` would end up saying. A new key is
@@ -74,6 +76,30 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
+- **The track is ours, the instrument log is the provider's.** Positions are
+  accumulated here, one fix per cycle, straight from the tree: that is what
+  the GPX archive is built from, it works on a server with no history provider
+  at all, and it keeps exactly one path — and one redaction — between a
+  position and a public repository. The instrument log is the opposite: a
+  projection of the database, rebuilt every cycle, never accumulated. Do not
+  move either one to the other side without a reason bigger than symmetry.
+- **Never ask a provider for a position.** `isPositionPath` drops
+  `navigation.position` and its members from the query and from the response,
+  so a wildcard in the captured-path list cannot put a raw position into a
+  published file that nothing redacts. The privacy zones guard the track's
+  path, not this one.
+- **The three history outcomes are three different publishes.** `ok` writes
+  the log. `unavailable` — a provider is configured but did not answer —
+  writes nothing and leaves the copy on the site, because a sparkline a few
+  minutes stale beats a blank panel every time InfluxDB restarts. `none` — no
+  provider, or the setting is off — publishes an empty log once, so the panels
+  omit the sparklines instead of drawing whatever an older version last
+  accumulated. Collapsing any two of those into a nullable snapshot loses a
+  behaviour someone will notice.
+- **`instrumentLog.entries` is the query window, and 60 is not arbitrary.**
+  The frontend's `SPARKLINE_POINTS` is 60: it plots the last 60 entries and
+  ignores the rest, so a longer log is bytes uploaded on every publish that
+  nothing has ever drawn.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
@@ -91,8 +117,10 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Past GPX days are frozen.** The position index holds 24 hours; rebuilding
   yesterday from what is left of it truncates a day that is already complete.
 - **Keep the instrument-log path list tight.** The API uploads whole files, not
-  deltas; this file is the entire bandwidth cost of a cycle. Every cycle logs
-  its size and warns past `INSTRUMENT_LOG_WARN_BYTES`.
+  deltas; this file is the entire bandwidth cost of a cycle. The list is now a
+  query rather than a filter, so a path that is not on it is never fetched
+  either. Every cycle logs the file's size and warns past
+  `INSTRUMENT_LOG_WARN_BYTES`.
 - **The boat's own details come from the tree, every cycle.** Name, MMSI,
   callsign, registrations and dimensions are read in `runCycle`, not once in
   `start`: a cold boot publishes its first cycle before the first

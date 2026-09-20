@@ -590,7 +590,13 @@ async function loadTrack() {
     }
     const payload = await response.json();
     const rawPositions = Array.isArray(payload) ? payload : payload.positions;
-    if (!Array.isArray(rawPositions) || !map) return;
+    if (!Array.isArray(rawPositions) || !map) {
+      // No recent points, but the published GPX days are a separate file and
+      // still worth drawing: a boat that has not had a fix since the site was
+      // built should still show where it has been.
+      loadHistoricalTracks();
+      return;
+    }
 
     const positions = rawPositions
       .map(parsePositionPoint)
@@ -618,6 +624,9 @@ async function loadTrack() {
     loadHistoricalTracks();
   } catch (error) {
     console.warn('Unable to load track data:', error);
+    // A missing or unreadable position index must not take the voyage
+    // archive with it: the GPX days are their own files in the repository.
+    loadHistoricalTracks();
   }
 }
 

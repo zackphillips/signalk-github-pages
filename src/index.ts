@@ -22,6 +22,7 @@ import {
   type PolarStatus,
 } from './config';
 import { GitHubClient, tokenHint } from './github';
+import { HistoryReader, type HistoryHost } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { activePolarId, readActivePolar, type PolarResourceSource } from './polars';
@@ -33,7 +34,7 @@ import type { VesselIdentity } from './vesselInfo';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
 
-interface SignalKApp extends SelfTreeSource, PolarResourceSource {
+interface SignalKApp extends SelfTreeSource, PolarResourceSource, HistoryHost {
   debug: (message: string) => void;
   error: (message: string) => void;
   setPluginStatus: (message: string) => void;
@@ -91,6 +92,29 @@ function readIdentity(app: SignalKApp): VesselIdentity {
 
 function formatClock(date: Date): string {
   return date.toISOString().slice(11, 16);
+}
+
+/**
+ * Where this start expects the instrument log to come from.
+ *
+ * Worth a line in the log because the two answers produce visibly different
+ * sites — sparklines at the configured resolution, or no sparklines at all —
+ * and because "no History API on this server" is the answer on every server
+ * without a history provider installed, which is most of them. The track is
+ * not part of this: it is always the plugin's own.
+ */
+function historySetting(app: SignalKApp, config: PluginConfig): string {
+  if (!config.history.enabled) return 'no instrument log (history provider turned off)';
+  if (typeof app.getHistoryApi !== 'function') {
+    return 'no instrument log (this server has no History API)';
+  }
+  const minutes = Math.round(
+    (config.history.resolutionSeconds * config.instrumentLog.entries) / 60,
+  );
+  return (
+    `instrument log from ${config.history.providerId || 'the default'} history provider ` +
+    `at ${config.history.resolutionSeconds}s x ${config.instrumentLog.entries} entries (${minutes} min)`
+  );
 }
 
 module.exports = function (app: SignalKApp): Plugin {
@@ -178,6 +202,7 @@ module.exports = function (app: SignalKApp): Plugin {
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +
+          `${historySetting(app, config)}, ` +
           `tracks grouped by ${config.timezone || 'UTC'}.`,
       );
       if (config.privacyZones.length === 0) {
@@ -190,6 +215,13 @@ module.exports = function (app: SignalKApp): Plugin {
         branch: config.github.branch,
         token: config.github.token,
         userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
+      });
+      const history = new HistoryReader({
+        app,
+        history: config.history,
+        instrumentPaths: config.instrumentLog.paths,
+        instrumentEntries: config.instrumentLog.entries,
+        log: (message) => app.debug(message),
       });
       const identity = readIdentity(app);
       const publisher = new Publisher({
@@ -255,7 +287,13 @@ module.exports = function (app: SignalKApp): Plugin {
             return;
           }
           seconds = publisher.intervalSeconds(tree);
-          const result = await publisher.runCycle(tree, { polars: await polarsCsv(tree) });
+          // Both fetched here rather than inside the publisher, so a cycle
+          // stays a pure function of the data it is given and a provider that
+          // hangs is one skipped history read rather than a failed publish.
+          const result = await publisher.runCycle(tree, {
+            polars: await polarsCsv(tree),
+            history: await history.read(new Date()),
+          });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
             : (result.state ?? 'state unknown');

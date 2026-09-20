@@ -50,6 +50,7 @@ the live `HEAD`.
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
 | **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
+| **Sparklines from your database** | With a Signal K history provider installed, the instrument log is read back from it — full resolution, no gap across a restart, nothing accumulated on the Pi |
 | **Ownership manifest** | The plugin writes only the paths it declares; the rest of the repo is yours |
 | **On-boat console** | A Signal K webapp that renders the site from live data and prunes old voyages |
 | **Honest accounting** | Every cycle logs what it cost: bytes on the wire, API calls, rate limit left |
@@ -126,8 +127,12 @@ only. Give Pages a minute, then open the URL.
 | `interval.underway` | `120` s | When `navigation.state` is sailing or motoring |
 | `interval.stationary` | `3600` s | Moored, anchored, or state unknown |
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
-| `instrumentLog.entries` | `120` | ~5 hours at a two-minute cadence |
+| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and what the sparklines draw |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
+| `history.providerId` | *empty* | Blank uses the server's default provider |
+| `history.resolutionSeconds` | `60` | Bucket width asked of the provider, and the log's spacing |
+| `history.timeoutMs` | `20000` | Past this the cycle publishes no log and leaves the last one up |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
 | `timezone` | UTC | Chosen from a list of IANA zones, for grouping tracks by local day |
@@ -155,11 +160,66 @@ first time the plugin reads it. Fill them in and the old field can go.
 > shell on the server. Scope it to the one repository, and rotate it if the Pi
 > ever leaves your hands.
 
+## History provider
+
+The two histories the site draws come from different places, on purpose.
+
+**The track is the plugin's own.** Every cycle it takes the fix off the Signal
+K tree, redacts it against the privacy zones, appends it to
+`positions_index.json` and rolls the day's GPX. That works on any server, with
+no database and no extra plugin, and it keeps one code path — one redaction —
+between a position and a public repository.
+
+**The instrument log comes from a history provider.** If the server has one
+registered ([signalk-to-influxdb2] and friends implement the Signal K History
+API) it already stores every value at full rate, so the plugin asks it for the
+sparkline window on every cycle instead of accumulating readings itself:
+
+- The graphs are spaced at `history.resolutionSeconds` (60 s by default)
+  rather than at the publish interval, so they are finer than a two-minute
+  cadence can produce.
+- The log covers `entries x resolution`: 60 entries at 60 s is the last hour,
+  which is exactly what the bundled sparklines draw.
+- A restart, a reinstall, a moved data directory or a plugin that was off for
+  a day no longer leaves a hole. Nothing is accumulated, so there is nothing
+  to lose.
+- `navigation.position` is never asked for, by name or through a wildcard. The
+  database holds raw positions; the track does not come from there.
+
+**With no provider, the site simply has no sparklines.** The panels show
+current values and omit the graphs — `instrument_log.json` is published empty,
+once, so an upgraded install does not leave a frozen graph on the page
+forever. That is the normal case on a server without a history provider, not a
+failure.
+
+**A provider that stops answering is different from one that is not there.**
+A database still starting, a query past `history.timeoutMs`, a provider that
+threw: the cycle publishes no log at all and leaves the copy already on the
+site in place. A sparkline a few minutes stale beats a blank panel every time
+InfluxDB restarts. The plugin logs the reason, once per change of state.
+
+Wildcard paths (`electrical.batteries.*.voltage`) are expanded against the
+paths the provider reports, re-listed every 15 minutes. A literal path the
+provider has never stored is still requested — a sensor that came online five
+minutes ago is not in the listing yet.
+
+Set `history.providerId` only if more than one provider is registered and you
+want a specific one; blank means the server's default.
+
+The whole log goes up on every publish, so its size is `entries` x paths: see
+[why that matters](#why-this-matters-more-than-it-looks-like-it-should). The
+default 60 entries is what the sparklines draw; more than that is uploaded and
+never plotted.
+
+[signalk-to-influxdb2]: https://www.npmjs.com/package/signalk-to-influxdb2
+
 ## Instrument paths
 
-One Signal K path per line. `*` matches one segment, so
-`electrical.batteries.*.voltage` covers every bank. Lines starting with `#`
-are comments. A path no instrument produces costs nothing — it never appears.
+One Signal K path per line — this is what the plugin asks the history provider
+for. `*` matches one segment, so `electrical.batteries.*.voltage` covers every
+bank the provider has stored. Lines starting with `#` are comments. A path no
+instrument produces costs nothing — it comes back as a column of nulls and
+never appears in the file.
 
 This list is the entire bandwidth cost of a cycle. Trim it to what you look at.
 
@@ -204,10 +264,12 @@ instrument log is a rolling window, so *every* entry shifts position each
 cycle — there is no "only the tail changed" for a delta to find even if one
 were possible.
 
-Logging every numeric leaf in the self tree is roughly 167 paths per entry and
-a ~1 MB file. At a two-minute cadence that is about **40 MB per hour** over
-the hotspot, for data the sparklines never draw. The default list is about a
-dozen paths: ~100 kB, ~4 MB per hour.
+Asking for every path a database has stored is roughly 167 per entry, which at
+200 entries is a ~1 MB file. At a two-minute cadence that is about **40 MB per
+hour** over the hotspot, for data the sparklines never draw. The defaults are
+about two dozen patterns over 60 entries: tens of kilobytes, a megabyte or two
+an hour. Both halves are levers — the path list and `instrumentLog.entries` —
+and the second one is free below 60, because that is all the frontend plots.
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
