@@ -353,6 +353,36 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         timer.unref?.();
       };
 
+      /**
+       * One publish cycle, on demand.
+       *
+       * The console's button and the `tracker.publishNow` PUT handler both
+       * land here rather than duplicating the reads a cycle needs. It does
+       * not touch the timer: a manual publish is an extra cycle, not a
+       * replacement for the next scheduled one, so pressing the button
+       * twice cannot leave the plugin without a timer running.
+       */
+      const publishNow = async (reason: string) => {
+        if (stopped) return { published: false, files: [], bytes: 0, skipped: 'not running' };
+        const tree = readSelfTree(app);
+        if (Object.keys(tree).length === 0) {
+          return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
+        }
+        app.debug(`Publishing on request (${reason}).`);
+        passage = await readPassage(app, (problem) => app.error(problem));
+        const result = await publisher.runCycle(tree, {
+          polars: await polarsCsv(tree),
+          history: await history.read(new Date()),
+          passage,
+        });
+        return {
+          published: result.published,
+          files: result.files,
+          bytes: result.bytes,
+          commitSha: result.commitSha,
+        };
+      };
+
       const tick = async () => {
         if (stopped) return;
         let seconds = config.interval.stationary;
@@ -402,6 +432,46 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         schedule(seconds);
       };
 
+      /**
+       * `tracker.publishNow` as a PUT, so anything on the boat can ask for a
+       * publish: a KIP button, a Node-RED flow, a physical switch wired
+       * through a plugin. Useful on departure, and after an MOB, when the
+       * next scheduled cycle could be an hour away at the stationary
+       * cadence.
+       *
+       * This is input, not state. Publish results stay in the log and the
+       * plugin status line — nothing here writes cost or commit SHAs into
+       * the data model.
+       */
+      if (typeof app.registerPutHandler === 'function') {
+        try {
+          app.registerPutHandler('vessels.self', 'tracker.publishNow', (_context, _path, _value, callback) => {
+            void publishNow('a PUT to tracker.publishNow')
+              .then((result) =>
+                callback({
+                  state: 'COMPLETED',
+                  statusCode: 200,
+                  message: result.published
+                    ? `Published ${result.files.length} file(s).`
+                    : (result.skipped ?? 'Nothing to publish.'),
+                }),
+              )
+              .catch((error: any) =>
+                callback({
+                  state: 'COMPLETED',
+                  statusCode: 502,
+                  message: `Publish failed: ${error?.message ?? error}`,
+                }),
+              );
+            // Asynchronous by nature: a cycle is several round trips to
+            // GitHub, and the server expects PENDING while that happens.
+            return { state: 'PENDING' };
+          });
+        } catch (error: any) {
+          app.error(`Could not register the publish-now PUT handler: ${error?.message ?? error}`);
+        }
+      }
+
       webapp = {
         config,
         store,
@@ -412,6 +482,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         readTree: () => readSelfTree(app),
         polars: () => ({ csv: polarCsv, status: polarStatus }),
         passage: () => passage,
+        publishNow,
         log: (message) => app.debug(message),
       };
 

@@ -540,6 +540,18 @@ anchor with the hotspot off, and it is the fastest way to see what a privacy
 zone or a custom button actually does before it is committed. It shows what the Pi
 holds: past days whose GPX lives only in the repository are not in it.
 
+**Publishing on request.** *Publish now* runs a cycle immediately rather than
+waiting for the next one, which at the stationary cadence can be an hour
+away — useful on departure, and after anything you want ashore to see at
+once. *Rewrite the whole site* republishes every HTML, CSS, JavaScript and
+icon file on top of that. A plugin upgrade already does that by itself, so
+the button is for what a version number cannot see: a file deleted by hand on
+GitHub, a commit that landed half-way, a repository rolled back.
+
+The same thing is a PUT to `tracker.publishNow` on `vessels.self`, so a KIP
+button, a Node-RED flow or a switch wired through another plugin can ask for
+a publish without opening this page.
+
 **Pruning** removes old voyages. A year of two-minute cycles is a lot of GPX,
 and nothing else this plugin does ever takes anything away.
 
@@ -549,8 +561,10 @@ and nothing else this plugin does ever takes anything away.
 | *Remove all* | Keeps today only |
 
 Both name the days before they do anything: the page asks the plugin what
-would go, shows you the count and the range, and only then asks for
-confirmation. What is removed is the per-day GPX file and its row in
+would go, shows you the count and the range in a confirmation panel, and
+removes nothing until you press *Yes, remove them*. The confirmation is part
+of the page rather than a browser dialog, because Signal K serves webapps
+inside a sandboxed iframe where `window.confirm` is ignored. What is removed is the per-day GPX file and its row in
 `tracks_index.json`, in one commit — the data is still in the repository's git
 history; what goes is the copy the site serves. Today is never removed: the
 position index still holds its points and the next cycle would write the file

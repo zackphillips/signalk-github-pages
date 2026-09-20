@@ -245,10 +245,29 @@ Run `npm test` and `npm run typecheck` before committing.
   in `site/` is walked by `loadFrontend` and committed to the repository. A
   file in the wrong one either fails to appear in the admin UI or turns up on
   a public website.
-- **The console never writes plugin state.** `preview.ts` assembles the data
-  files from the store and the tree and returns them; it does not call
-  `runCycle`. Someone holding the preview open on a phone must not be able to
-  roll the publisher's state forward, or to make the boat fetch anything.
+- **The console's GET routes never write plugin state; its POST routes are
+  what buttons are for.** `preview.ts` assembles the data files from the
+  store and the tree and returns them; it does not call `runCycle`. Someone
+  holding the preview open on a phone must not be able to roll the
+  publisher's state forward or make the boat fetch anything — a page can be
+  left open for a day, and a refresh is not an instruction. A button someone
+  pressed is an instruction, which is why `/publish`, `/publish/site` and
+  `/prune` are POSTs, and why they are the only things on the page that spend
+  the boat's bandwidth on request. Keep that split: a new route that costs
+  anything is a POST.
+- **The console confirms in the page, never with `window.confirm`.** Signal K
+  serves a plugin's webapp inside a sandboxed iframe, and the browser ignores
+  `confirm()` there and returns false — so the prune button asked for
+  confirmation nobody could see and then did nothing at all, which reads
+  exactly like a broken button. The confirmation is markup in
+  `public/index.html`; `alert` and `prompt` are out for the same reason.
+- **`/preview/*` is registered before `/preview`, and that order is load
+  bearing.** Express does not run in strict-routing mode, so `/preview` also
+  matches `/preview/` — the exact path its redirect sends the browser to.
+  Registered the other way round, `/preview/` answered with `Location:
+  preview/`, the browser resolved it against `/preview/` to get
+  `/preview/preview/`, and the console's iframe showed "Not found" instead of
+  the site. `test/webapp.test.ts` pins the order and both responses.
 - **Pruning is the only thing that deletes.** It runs when a person asks for
   it in the console, never on a timer — there is deliberately no retention
   setting for tracks. Deletions go through `partitionOwned` like every write,
@@ -334,6 +353,21 @@ Run `npm test` and `npm run typecheck` before committing.
   blank.
 - **Never write `assets/custom.css`.** It is the user's override hook, loaded
   last by both pages.
+- **Record work as done only after the commit lands.** `frontendVersion`
+  used to be written the moment the frontend files were assembled, so a
+  publish that failed — a 502, a wedged hotspot — left the plugin believing
+  it had shipped this release's HTML and JavaScript, and the site kept
+  serving the previous one until the next version bump. It and
+  `state.retired` are both merged in `runCycle` after `publishFiles` returns
+  a commit. Anything else that records "this has been published" belongs
+  there too.
+- **An upgrade republishes the frontend by itself.** The fingerprint gating
+  `frontendFiles` is `version:repo:branch:entries`, so a new plugin version
+  rewrites every site file on the first cycle after the restart. The
+  console's "rewrite the whole site" button exists for what a version number
+  cannot see — a file deleted by hand on GitHub, a commit that landed
+  half-way, a repository rolled back — and does it by clearing the
+  fingerprint, not by a second code path.
 - **Never add a per-cycle file.** An earlier design wrote one snapshot per
   cycle; an off-by-one in the prune let ~32k of them accumulate and grew the
   repository past a gigabyte.

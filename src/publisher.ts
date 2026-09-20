@@ -261,7 +261,8 @@ export class Publisher {
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
-    files.push(...(await this.frontendFiles(siteDir, version, state.frontendVersion)));
+    const frontend = await this.frontendFiles(siteDir, version, state.frontendVersion);
+    files.push(...frontend.files);
     files.push(...(await this.docsIndexFiles()));
 
     const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
@@ -295,8 +296,9 @@ export class Publisher {
       lastCommit: result?.commitSha,
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
       // Only once the commit carrying them actually landed: a failed publish
-      // must leave the retirement to be retried, not recorded as done.
+      // must leave the work to be retried, not recorded as done.
       ...(result && deletions.length ? { retired: [...(state.retired ?? []), ...deletions] } : {}),
+      ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
     });
 
     if (result) {
@@ -656,10 +658,10 @@ export class Publisher {
     siteDir: string,
     version: string,
     publishedVersion: string | undefined,
-  ): Promise<PublishFile[]> {
-    const { config, store, log } = this.deps;
+  ): Promise<{ files: PublishFile[]; fingerprint: string | null }> {
+    const { config, log } = this.deps;
     const fingerprint = `${version}:${config.github.repo}:${config.github.branch}:${config.instrumentLog.entries}`;
-    if (publishedVersion === fingerprint) return [];
+    if (publishedVersion === fingerprint) return { files: [], fingerprint: null };
 
     const files = await loadFrontend(siteDir, {
       repo: config.github.repo,
@@ -667,9 +669,26 @@ export class Publisher {
       instrumentLogEntries: config.instrumentLog.entries,
       version,
     });
-    await store.mergeState({ frontendVersion: fingerprint });
+    // The fingerprint is returned rather than stored here: recording it
+    // before the commit lands means a publish that fails — a 502, a wedged
+    // hotspot — leaves the plugin believing it has already shipped this
+    // frontend, and the site keeps serving the previous release's JavaScript
+    // until the next version bump. `runCycle` stores it once the commit is in.
     log(`Publishing frontend (${files.length} files, version ${version}).`);
-    return files;
+    return { files, fingerprint };
+  }
+
+  /**
+   * Make the next cycle republish every frontend file.
+   *
+   * The console's "rewrite the whole site" button. An upgrade already does
+   * this by itself — the fingerprint carries the plugin version — so this is
+   * for the cases version alone cannot see: a file deleted by hand on GitHub,
+   * a half-finished commit, a repository restored from an older state.
+   */
+  async forceFrontendRepublish(): Promise<void> {
+    await this.deps.store.mergeState({ frontendVersion: undefined });
+    this.deps.log('Frontend marked for republishing: the next cycle rewrites every site file.');
   }
 
   /**

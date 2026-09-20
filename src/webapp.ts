@@ -54,6 +54,15 @@ export interface Router {
   post: (path: string, handler: Handler) => void;
 }
 
+/** What the console reports back after a publish it asked for. */
+export interface PublishNowResult {
+  published: boolean;
+  files: string[];
+  bytes: number;
+  commitSha?: string;
+  skipped?: string;
+}
+
 export interface WebappDeps {
   config: PluginConfig;
   store: StateStore;
@@ -68,6 +77,12 @@ export interface WebappDeps {
   polars: () => { csv: string; status: PolarStatus | null };
   /** The passage the last cycle read, for the preview's banner. */
   passage: () => Passage | null;
+  /**
+   * Run a publish cycle now. Supplied by `index.ts`, which is where the
+   * async reads a cycle needs — the polar, the history, the course — happen,
+   * so this module still never calls the server itself.
+   */
+  publishNow: (reason: string) => Promise<PublishNowResult>;
   log: (message: string) => void;
 }
 
@@ -203,16 +218,56 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     }
   });
 
+  /**
+   * Publish now, rather than waiting for the next tick.
+   *
+   * A POST, and that matters: every GET route here is free of side effects,
+   * because a phone left on the preview page must not be able to roll the
+   * publisher's state forward or make the boat fetch anything. A button
+   * someone pressed is the opposite — a deliberate instruction — and this is
+   * the only thing on the page that spends the boat's bandwidth on request.
+   */
+  router.post('/publish', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.publishNow('the console'));
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * Rewrite every frontend file on the next publish, then publish.
+   *
+   * An upgrade already republishes the frontend by itself — the fingerprint
+   * that gates it carries the plugin version — so this is for what a version
+   * number cannot see: a file deleted by hand on GitHub, a commit that landed
+   * half-way, a repository rolled back to an older state.
+   */
+  router.post('/publish/site', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      await current.publisher.forceFrontendRepublish();
+      response.json(await current.publishNow('a full site rewrite from the console'));
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
   // Everything under /preview is the site itself. `data/**` is rendered from
   // the plugin's live state; every other path is a file out of `site/`, with
   // the same substitutions the publisher makes on the way to GitHub.
-  router.get('/preview', (_request, response) => {
-    // Without the trailing slash every relative URL in the page would resolve
-    // one level too high, so send the browser to the directory form.
-    response.set('Location', 'preview/');
-    response.status(302).send('');
-  });
-
+  // Registration order is load-bearing here, so the wildcard goes first and
+  // the bare `/preview` redirect is registered at the end of this function.
+  //
+  // Express does not run in strict-routing mode, so `/preview` also matches
+  // `/preview/` — the exact path that redirect sends the browser to. With
+  // the redirect registered first, a request for `/preview/` was answered
+  // with `Location: preview/`, which the browser resolved against
+  // `/preview/` to give `/preview/preview/`, and the console's iframe showed
+  // "Not found" instead of the site.
   router.get('/preview/*', async (request, response) => {
     // Taken from the URL rather than from the wildcard parameter: Express 4
     // and 5 disagree about what `*` binds to, and `req.url` inside a mounted
@@ -285,6 +340,18 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     } catch (error) {
       fail(response, error);
     }
+  });
+
+  /**
+   * The bare form, without the trailing slash.
+   *
+   * Only reached when the path really has no slash, because the wildcard
+   * above has already claimed `/preview/`. Every relative URL in the page
+   * would otherwise resolve one level too high.
+   */
+  router.get('/preview', (_request, response) => {
+    response.set('Location', 'preview/');
+    response.status(302).send('');
   });
 }
 
