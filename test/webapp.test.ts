@@ -7,7 +7,6 @@ import { GitHubClient } from '../src/github';
 import { Publisher } from '../src/publisher';
 import { StateStore } from '../src/state';
 import {
-  pagesUrl,
   parsePruneRequest,
   readJsonBody,
   registerRoutes,
@@ -17,7 +16,6 @@ import {
 } from '../src/webapp';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
-
 const SITE = path.join(__dirname, '..', 'site');
 
 /**
@@ -68,7 +66,10 @@ function fakeRouter() {
 
 const deps = (over: Partial<WebappDeps> = {}): WebappDeps =>
   ({
-    config: { github: { repo: 'o/r', branch: 'main', owner: 'o', name: 'r' } },
+    // A real resolved config, not a stub of one: the preview renders `site/`
+    // through the same templating the publisher uses, so it reads the site
+    // address and the logo as well as the repository.
+    config: makeConfig(),
     store: {} as never,
     publisher: {} as never,
     identity: { name: 'Boat', mmsi: '' },
@@ -133,19 +134,6 @@ describe('resolveSitePath', () => {
   });
 });
 
-describe('pagesUrl', () => {
-  it('knows a user site from a project site', () => {
-    expect(pagesUrl('zackphillips', 'zackphillips.github.io')).toBe(
-      'https://zackphillips.github.io/',
-    );
-    expect(pagesUrl('zackphillips', 'tracker')).toBe('https://zackphillips.github.io/tracker/');
-  });
-
-  it('lowercases the host, which GitHub Pages serves in lower case', () => {
-    expect(pagesUrl('ZackPhillips', 'Tracker')).toBe('https://zackphillips.github.io/Tracker/');
-  });
-});
-
 describe('readJsonBody', () => {
   it('takes the body Signal K already parsed', () => {
     expect(readJsonBody({ body: { title: 'Oil change' } })).toEqual({ title: 'Oil change' });
@@ -168,7 +156,6 @@ describe('readJsonBody', () => {
     }
   });
 });
-
 describe('the preview routes', () => {
   it('serves the site for /preview/ rather than redirecting to itself', async () => {
     // Express does not run in strict-routing mode, so `/preview` also matches

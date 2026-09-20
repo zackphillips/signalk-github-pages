@@ -14,6 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   buildConfigSchema,
+  pagesUrl,
+  resolveOwnerAndName,
   configUiSchema,
   resolveConfig,
   type PluginConfig,
@@ -202,15 +204,26 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       // A server that will not hand over a tree leaves the boxes empty.
     }
     let owner = '';
+    let savedGithub: Record<string, any> = {};
     try {
       const saved = app.readPluginOptions?.() as Record<string, any> | undefined;
-      const value = saved?.github?.owner;
+      savedGithub = saved?.github ?? {};
+      const value = savedGithub.owner;
       if (typeof value === 'string') owner = value.trim();
     } catch {
       // Nothing saved yet: the box stays empty until the owner is.
     }
+    // The site address is shown derived the same way the publisher derives it,
+    // project site included, so the box says what a link preview will actually
+    // resolve against before anyone ticks the override.
+    const repo = resolveOwnerAndName(
+      owner,
+      savedGithub.name,
+      savedGithub.overrideName === true,
+    );
     return {
       repoName: owner ? `${owner}.github.io` : '',
+      siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       polar: polarNote(),
       polarCsv,
       uscgNumber: details.uscgNumber,

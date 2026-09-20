@@ -108,6 +108,21 @@ describe('custom buttons', () => {
   });
 });
 
+describe('the vessel logo', () => {
+  it('names it only when one is configured', () => {
+    expect(render(makeConfig(), IDENTITY, null).logo).toBeUndefined();
+    const config = makeConfig({ site: { logo: 'data:image/svg+xml;base64,PHN2Zy8+' } });
+    expect(render(config, IDENTITY, null).logo).toBe('data/vessel/logo.svg');
+  });
+
+  it('does not repeat the site address, which the published HTML carries', () => {
+    // A second copy nothing reads is a second copy to keep right: the pages
+    // get the address substituted in at publish time, for the crawlers that
+    // never run them.
+    expect(render(makeConfig(), IDENTITY, null).site_url).toBeUndefined();
+  });
+});
+
 describe('the default position', () => {
   it('writes default_location, which is where the site looks before a fix', () => {
     const config = makeConfig({

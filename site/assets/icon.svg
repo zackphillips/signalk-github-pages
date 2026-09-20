@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Vessel tracker">
+  <!-- The tab and home-screen icon for a site with no logo configured.
+       Deliberately generic: this slot used to hold one boat's burgee, in six
+       PNG and ICO files, published into every adopter's repository under a
+       path the plugin owns and overwrites. -->
+  <rect width="64" height="64" rx="12" fill="#12202f"/>
+  <g fill="none" stroke="#e0752a" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Hull -->
+    <path d="M13 43h38l-6 9H19z"/>
+    <!-- Mast -->
+    <path d="M32 12v27"/>
+    <!-- Mainsail -->
+    <path d="M35 17l11 22H35z"/>
+    <!-- Headsail -->
+    <path d="M29 20L18 39h11z"/>
+  </g>
+</svg>

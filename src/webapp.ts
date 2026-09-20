@@ -28,13 +28,13 @@ import path from 'node:path';
 import type { Passage } from './course';
 import { MaintenanceInputError, parseMaintenanceEntry } from './docsSeed';
 import { renderPreviewData } from './preview';
-import { renderConstants } from './frontend';
+import { frontendOptions, template } from './frontend';
 import { describePrune, type PruneRequest } from './prune';
 import { DocsExistError, type Publisher } from './publisher';
 import { localDay } from './time';
 import type { PluginConfig } from './config';
 import type { Tree } from './snapshot';
-import type { VesselIdentity } from './siteConfig';
+import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
 
@@ -126,13 +126,6 @@ export function resolveSitePath(siteDir: string, requested: string): string | nu
   return resolved;
 }
 
-/** The site URL the repository is published at, for the console's links. */
-export function pagesUrl(owner: string, name: string): string {
-  return /\.github\.io$/i.test(name)
-    ? `https://${name.toLowerCase()}/`
-    : `https://${owner.toLowerCase()}.github.io/${name}/`;
-}
-
 /**
  * Mount the console's routes.
  *
@@ -173,7 +166,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         version,
         repo: config.github.repo,
         branch: config.github.branch,
-        siteUrl: pagesUrl(config.github.owner, config.github.name),
+        siteUrl: config.site.url,
         repoUrl: `https://github.com/${config.github.repo}`,
         lastCommit: state.lastCommit ?? null,
         lastPublishedAt: state.lastPublishedAt ?? null,
@@ -259,7 +252,10 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         today: localDay(new Date(), current.config.timezone),
         engineHours: current.publisher.engineHours(current.readTree()),
         repoUrl: `https://github.com/${current.config.github.repo}`,
-        docsUrl: `${pagesUrl(current.config.github.owner, current.config.github.name)}docs.html`,
+        // config.site.url rather than deriving it here: it is the same value
+        // unless a custom domain is set, and if one is, that is the address
+        // the docs actually live at.
+        docsUrl: `${current.config.site.url}docs.html`,
       });
     } catch (error) {
       fail(response, error);
@@ -335,8 +331,17 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     const requested = fromUrl || String((request.params as any)[0] ?? '');
     const current = running(response);
     if (!current) return;
-    const { config, store, siteDir, version } = current;
+    const { config, store, siteDir, version, identity } = current;
     try {
+      // The configured logo, straight from the config rather than from the
+      // repository: it is the one published file the plugin holds as bytes,
+      // and the preview is where someone checks it looks right before it is
+      // committed.
+      if (config.site.logo && requested === config.site.logo.path) {
+        response.type(config.site.logo.mediaType).send(config.site.logo.content);
+        return;
+      }
+
       if (requested.startsWith('data/')) {
         const files = await renderPreviewData(
           { config, store, identity: current.identity },
@@ -347,12 +352,13 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
           },
         );
         const contents = files.get(requested);
-        if (contents === undefined) {
-          response.status(404).type('text/plain').send(`Not rendered locally: ${requested}`);
+        if (contents !== undefined) {
+          response.type(TYPES[path.extname(requested)] ?? 'text/plain').send(contents);
           return;
         }
-        response.type(TYPES[path.extname(requested)] ?? 'text/plain').send(contents);
-        return;
+        // Not everything under data/ is telemetry: the tide-station table ships
+        // with the frontend and is published from site/, so fall through to the
+        // file rather than reporting it missing.
       }
 
       const file = resolveSitePath(siteDir, requested);
@@ -362,7 +368,14 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       }
       const buffer = await fs.readFile(file).catch(() => null);
       if (buffer === null) {
-        response.status(404).type('text/plain').send('Not found');
+        response
+          .status(404)
+          .type('text/plain')
+          .send(
+            requested.startsWith('data/')
+              ? `Not rendered locally: ${requested}`
+              : 'Not found',
+          );
         return;
       }
       const extension = path.extname(file).toLowerCase();
@@ -381,17 +394,16 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         );
         return;
       }
-      if (extension === '.js' || extension === '.html' || extension === '.css') {
+      if (extension === '.js' || extension === '.html' || extension === '.css' ||
+          extension === '.json') {
+        // The same substitutions the publisher makes, through the same
+        // function: the preview is there to show what a commit would put on
+        // the site, and an untemplated one would show raw {{TOKEN}}s in the
+        // page title while the published copy read correctly.
+        const identityNow = mergeVesselIdentity(identity, readVesselDetails(current.readTree()));
         const text = buffer.toString('utf-8');
         response.send(
-          requested === 'assets/constants.js'
-            ? renderConstants(text, {
-                repo: config.github.repo,
-                branch: config.github.branch,
-                instrumentLogEntries: config.instrumentLog.entries,
-                version,
-              })
-            : text,
+          template(requested, text, frontendOptions(config, identityNow.name, version)),
         );
         return;
       }

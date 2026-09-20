@@ -1,4 +1,4 @@
-// Tab bar wiring for the S.V. Mermug tracker.
+// Tab bar wiring for the vessel tracker.
 //
 // Owns switching between the five top-level tabs (map / voyages /
 // environment / data / polars). Deliberately kept separate from app.js:
@@ -9,7 +9,7 @@
 (function () {
   var TAB_IDS = ['map', 'voyages', 'environment', 'data', 'polars'];
   var DEFAULT_TAB = 'map';
-  var STORAGE_KEY = 'mermug-active-tab';
+  var STORAGE_KEY = 'tracker-active-tab';
 
   var tabBar = document.getElementById('tab-bar');
   var panels = document.querySelectorAll('.tab-panel');
@@ -65,15 +65,15 @@
     // Leaflet and Chart.js both miscalculate size for anything drawn while
     // their container was `display:none`. Fix up on every switch instead
     // of touching every chart-creation call site in app.js.
-    if (tabId === 'map' && window.mermugMap) {
+    if (tabId === 'map' && window.trackerMap) {
       // Let the display:block + .map-fills reflow land before measuring.
-      requestAnimationFrame(function () { window.mermugMap.invalidateSize(); });
+      requestAnimationFrame(function () { window.trackerMap.invalidateSize(); });
     }
     window.dispatchEvent(new Event('resize'));
   }
 
   // app.js needs this to honour "Show on main map" from a voyage detail card.
-  window.mermugActivateTab = activateTab;
+  window.activateTrackerTab = activateTab;
 
   if (tabBar) {
     tabBar.addEventListener('click', function (e) {

@@ -23,8 +23,8 @@
   --radius-sm:     7px;
 }
 
-/* ── Mermug — warm dark brown inspired by the vessel logo ── */
-[data-theme="mermug"] {
+/* ── Amber — warm dark brown ── */
+[data-theme="amber"] {
   --accent:        #e0692a;
   --accent-light:  rgba(224, 105, 42, 0.16);
   --bg-primary:    #1a0d06;
@@ -434,17 +434,17 @@ body.map-fills .footer {
 .value-na    { color: var(--text-muted); font-weight: 400; }
 .value-text  { font-family: inherit; }
 
-/* The theme is never named "dark": the cycle is marine / mermug / bright and
+/* The theme is never named "dark": the cycle is marine / amber / bright and
    the first two are the dark ones. These used to be keyed on [data-theme="dark"]
    and therefore never matched, which left every warn and alert painted in the
    light-theme colour on a dark background. It matters more now that zones are
    the only thing that sets these classes. */
 [data-theme="marine"] .value-ok,
-[data-theme="mermug"] .value-ok    { color: #6dbb8a; }
+[data-theme="amber"] .value-ok    { color: #6dbb8a; }
 [data-theme="marine"] .value-warn,
-[data-theme="mermug"] .value-warn  { color: #c9a060; }
+[data-theme="amber"] .value-warn  { color: #c9a060; }
 [data-theme="marine"] .value-alert,
-[data-theme="mermug"] .value-alert { color: #d47878; }
+[data-theme="amber"] .value-alert { color: #d47878; }
 
 /* ─────────────────────────────────────────────────────────────────────────
    Track legend
@@ -922,7 +922,7 @@ body.map-fills .footer {
    CARTO's free "dark" tile endpoint now demands an API key) and fake the
    dark look by inverting the tile pane. Applies to the main map and the
    per-voyage mini maps alike, since both are `.leaflet-container`s. */
-[data-theme="mermug"] .leaflet-tile-pane,
+[data-theme="amber"] .leaflet-tile-pane,
 [data-theme="marine"] .leaflet-tile-pane {
   filter: invert(100%) hue-rotate(180deg) brightness(0.95) contrast(0.9);
 }
@@ -1804,13 +1804,13 @@ body.map-fills .footer {
 .doc-tag--maintenance { color: #1e8f58; border-color: rgba(30, 143, 88, 0.35);  background: rgba(30, 143, 88, 0.08); }
 
 [data-theme="marine"] .doc-tag--issue,
-[data-theme="mermug"] .doc-tag--issue       { color: #e08f8f; border-color: rgba(224, 143, 143, 0.4); background: rgba(224, 143, 143, 0.12); }
+[data-theme="amber"] .doc-tag--issue       { color: #e08f8f; border-color: rgba(224, 143, 143, 0.4); background: rgba(224, 143, 143, 0.12); }
 [data-theme="marine"] .doc-tag--partial,
-[data-theme="mermug"] .doc-tag--partial     { color: #d9ac6a; border-color: rgba(217, 172, 106, 0.4); background: rgba(217, 172, 106, 0.12); }
+[data-theme="amber"] .doc-tag--partial     { color: #d9ac6a; border-color: rgba(217, 172, 106, 0.4); background: rgba(217, 172, 106, 0.12); }
 [data-theme="marine"] .doc-tag--planned,
-[data-theme="mermug"] .doc-tag--planned     { color: #8fb0f0; border-color: rgba(143, 176, 240, 0.4); background: rgba(143, 176, 240, 0.12); }
+[data-theme="amber"] .doc-tag--planned     { color: #8fb0f0; border-color: rgba(143, 176, 240, 0.4); background: rgba(143, 176, 240, 0.12); }
 [data-theme="marine"] .doc-tag--maintenance,
-[data-theme="mermug"] .doc-tag--maintenance { color: #7dd0a0; border-color: rgba(125, 208, 160, 0.4); background: rgba(125, 208, 160, 0.12); }
+[data-theme="amber"] .doc-tag--maintenance { color: #7dd0a0; border-color: rgba(125, 208, 160, 0.4); background: rgba(125, 208, 160, 0.12); }
 
 .markdown-body hr {
   height: 1px;
@@ -1968,9 +1968,9 @@ body.map-fills .footer {
 .notification-banner--alert { --notif-accent: #b62323; --notif-bg: rgba(182, 35, 35, 0.09); }
 
 [data-theme="marine"] .notification-banner--warn,
-[data-theme="mermug"] .notification-banner--warn  { --notif-accent: #c9a060; --notif-bg: rgba(201, 160, 96, 0.13); }
+[data-theme="amber"] .notification-banner--warn  { --notif-accent: #c9a060; --notif-bg: rgba(201, 160, 96, 0.13); }
 [data-theme="marine"] .notification-banner--alert,
-[data-theme="mermug"] .notification-banner--alert { --notif-accent: #d47878; --notif-bg: rgba(212, 120, 120, 0.13); }
+[data-theme="amber"] .notification-banner--alert { --notif-accent: #d47878; --notif-bg: rgba(212, 120, 120, 0.13); }
 
 .notif-banner-head {
   font-weight: 600;
@@ -2002,9 +2002,9 @@ body.map-fills .footer {
 .notif-chip--alert { --notif-accent: #b62323; }
 
 [data-theme="marine"] .notif-chip--warn,
-[data-theme="mermug"] .notif-chip--warn  { --notif-accent: #c9a060; }
+[data-theme="amber"] .notif-chip--warn  { --notif-accent: #c9a060; }
 [data-theme="marine"] .notif-chip--alert,
-[data-theme="mermug"] .notif-chip--alert { --notif-accent: #d47878; }
+[data-theme="amber"] .notif-chip--alert { --notif-accent: #d47878; }
 
 .notif-chip-state {
   font-size: 0.6em;

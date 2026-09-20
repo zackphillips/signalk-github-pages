@@ -30,7 +30,8 @@ src/
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
-  frontend.ts       Reading site/ and templating constants.js
+  logo.ts           The config page's logo field, decoded into bytes and a path
+  frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
@@ -107,25 +108,34 @@ Run `npm test` and `npm run typecheck` before committing.
   `isRemovablePath` still lets the one-time deletion through the same
   ownership check every other deletion passes. The deletion is recorded in
   `state.retired` only after the commit carrying it landed.
-- **Unknown renders as unknown.** The frontend carried five invented
+- **Unknown renders as unknown.** The frontend carried seven invented
   fallbacks, each of which turned a missing value into a confident wrong one
   on somebody else's boat: a San Francisco Bay tide location; a privacy zone
   at one particular dock; a whole vessel identity (name, MMSI, documentation
   number) used when the vessel config failed to load; a one-station tide list
   — San Francisco again — used when `tide_stations.json` failed to load, so
-  that every boat's "nearest station" was the Golden Gate; a retry of any
-  failed NOAA fetch against San Francisco "because it is known to work",
-  which drew real tides for water 3000 miles away under this boat's heading;
-  and a fabricated snapshot (a position in the Bay, 10 knots of true wind, a
-  house bank at 12.5 V and 80%) shown whenever `signalk_latest.json` would
-  not load, so a boat whose publishing had failed showed someone ashore a
-  plausible afternoon's sailing. All of them are gone. `resolveTidePosition`
-  returns null and the panels say what is missing; `getPrivacyZones` returns
-  an empty list, which is safe because the plugin already redacts before it
-  publishes; a failed station list is empty; a failed NOAA fetch throws; a
-  failed snapshot is `{}` and the banner reads "Telemetry unavailable". Do
-  not add another. If a value is not known, the page says so.
-- **A published URL is an `href` on someone else's browser.** `customLinks`
+  that every boat's "nearest station" was the Golden Gate; a box drawn around
+  37.7-37.9 / -122.5 to -122.3 inside which the station picker returned 9414290
+  whatever the position said, which was one boat's home waters written into
+  everybody's picker; a retry of any failed NOAA fetch against San Francisco
+  "because it is known to work", which drew real tides for water 3000 miles
+  away under this boat's heading; and a fabricated snapshot (a position in the
+  Bay, 10 knots of true wind, a house bank at 12.5 V and 80%) shown whenever
+  `signalk_latest.json` would not load, so a boat whose publishing had failed
+  showed someone ashore a plausible afternoon's sailing. All of them are gone.
+  `resolveTidePosition` returns null and the panels say what is missing;
+  `getPrivacyZones` returns an empty list, which is safe because the plugin
+  already redacts before it publishes; `stationsByDistance` sorts by distance
+  and nothing else; a failed station list is empty; a failed NOAA fetch
+  throws; a failed snapshot is `{}` and the banner reads "Telemetry
+  unavailable". They were found in four separate passes, so assume there is
+  another. If a value is not known, the page says so.
+- **The map draws the zones it is redacting against.** `drawPrivacyZones`
+  renders `privacy_zones` from `site.json`, and no zones means no rings. The
+  ring used to be a literal at one dock in San Francisco, drawn on every
+  adopter's map while their own zones were never drawn — a redaction claim
+  false in both directions, which is worse than the fallbacks above: a ring on
+  the map is a promise about the data beside it.- **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
   that anyone with write access can edit. One check is a config validation;
@@ -220,8 +230,9 @@ Run `npm test` and `npm run typecheck` before committing.
   does and does not write the result. A phone left on the preview page would
   otherwise consume the edge the next real cycle needed to see, and the
   firing would never be counted.
-- **The theme is never named `dark`.** The cycle is marine / mermug / bright,
-  and the first two are the dark ones. A `[data-theme="dark"]` selector
+- **The theme is never named `dark`.** The cycle is marine / amber / bright,
+  and the first two are the dark ones. Nor after a boat: `amber` was `mermug`,
+  named and coloured for one vessel's logo and offered to everybody. A `[data-theme="dark"]` selector
   matches nothing — three `.value-*` rules sat dead in `styles.css` for that
   reason, which left every warn and alert painted in the light-theme colour on
   a dark background. Three more (`.alert-chip--*`, `.floating-dark-mode-btn`)
@@ -304,7 +315,37 @@ Run `npm test` and `npm run typecheck` before committing.
   excludes them by name. They are instructions for whoever edits the docs, and
   a sidebar entry called "Agents" is noise on a page that is meant to be read
   at sea.
-- **`site/` is published; `public/` is not.** Two directories with different
+- **The pages carry the boat's identity, and it is substituted, not scripted.**
+  `document.title` and the name in the status hero are patched from the
+  published snapshot after the page loads, but the OpenGraph and Twitter tags,
+  the web app manifest and the tab icon cannot be: a link pasted into a chat
+  is unfurled by a crawler that never runs the JavaScript. Those are `{{TOKEN}}`
+  placeholders in `index.html`, `docs.html` and `manifest.json`, filled in by
+  `frontend.ts` at publish time from the config and the tree. Every value goes
+  through an escaper chosen by the file's type — a vessel named `Nancy "Nan"
+  Blackett` is a broken attribute in one and an unparseable document in the
+  other — and a `{{TOKEN}}` reaching the repository is a page naming nobody's
+  boat, which `loadFrontend`'s test asserts against. Anything substituted is in
+  the frontend fingerprint, so a rename republishes the pages that carry it.
+- **Nothing in `site/` names one boat.** Not the pages, not the icons, not a
+  localStorage key, not a theme, not a `window.` global. What used to be there:
+  six favicon and home-screen PNGs of one boat's burgee under `assets/`, which
+  the plugin owns and overwrites on upgrade, so the only way to have your own
+  was to fork the plugin; a theme named after that boat; `mermug.checklist.`
+  and `mermug-active-tab` in localStorage; `window.mermugMap`. The logo is
+  `site.logo` on the config page now, published to `data/vessel/logo.<ext>`,
+  with `assets/icon.svg` as the generic fallback.
+- **The shipped constants are placeholders, and a missed substitution throws.**
+  `GITHUB_REPO: 'OWNER/REPO'` in `constants.js` is not a value, it is a slot.
+  It used to ship as one real repository, so `renderConstants` failing to match
+  — after a reformat, say — published a site whose "edit on GitHub" links all
+  pointed at somebody else's repo, silently. `replaceOrThrow` fails the publish
+  instead.
+- **The preview renders through the same `template` the publisher uses.** It is
+  the only place the substitutions can be checked before a commit goes out, so
+  a preview showing raw `{{TOKEN}}`s — or, worse, showing the right thing while
+  the published copy is wrong — defeats the point of having one. `npm run dev`
+  has its own stand-in values for the same reason.- **`site/` is published; `public/` is not.** Two directories with different
   jobs, and the split is load-bearing: Signal K mounts a package's `public/`
   as its webapp, so anything put there is served to the boat, and everything
   in `site/` is walked by `loadFrontend` and committed to the repository. A
@@ -362,16 +403,24 @@ Run `npm test` and `npm run typecheck` before committing.
   `data/vessel/polars.csv` in the manifest. Losing both sources stops
   publishing it and stops claiming it; it never deletes the file, because a
   polar table someone committed by hand is years of measurement.
+- **The logo is the user's until they set one.** `publishLogo` gates
+  `data/vessel/logo.*` in the manifest exactly the way `publishPolars` gates
+  the polar table, and for the same reason: the first adopters committed a
+  logo by hand, and clearing the config field must stop republishing and stop
+  claiming the path rather than deleting their artwork. The pages fall back to
+  `data/vessel/logo.png` and hide the image when it 404s, which is what keeps
+  a hand-committed one working.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
-- **Four settings are derived, each behind an override checkbox.** The
-  repository name from the owner (`<owner>.github.io`), the timezone from the
-  server, the polar from Polar Management, the USCG and hull numbers from the
-  Signal K registrations. `resolveConfig` derives them itself and ignores the
+- **Five settings are derived, each behind an override checkbox.** The
+  repository name from the owner (`<owner>.github.io`), the site address from
+  the repository (`pagesUrl`, which a custom domain overrides), the timezone
+  from the server, the polar from Polar Management, the USCG and hull numbers
+  from the Signal K registrations. `resolveConfig` derives them itself and ignores the
   field whenever its override is unticked, so the `default` that
   `buildConfigSchema` puts in the box is cosmetic and a stale one can never
   become a published value. Graying the box out is a JSON Schema

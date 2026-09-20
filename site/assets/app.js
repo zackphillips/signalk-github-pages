@@ -617,6 +617,34 @@ function getPrivacyZoneCenter(lat, lon) {
   ) ?? null;
 }
 
+// Draw the configured zones on the map, so the ring a viewer sees is the one
+// the plugin is actually redacting against.
+//
+// This used to be a single circle at one particular dock in San Francisco,
+// hardcoded from the Python daemon's PRIVACY_EXCLUSION_ZONES and drawn on
+// every adopter's map while their own zones were never drawn at all: a
+// redaction claim that was false in both directions. No zones configured
+// means no rings, which is the same answer getPrivacyZones gives everything
+// else.
+function drawPrivacyZones(map) {
+  for (const zone of getPrivacyZones()) {
+    if (!(zone.radius_m > 0)) continue;
+    const label = zone.name
+      ? `\u{1F4CD} ${zone.name} \u2014 position not recorded inside this area`
+      : '\u{1F4CD} Privacy zone \u2014 position not recorded inside this area';
+    L.circle([zone.lat, zone.lon], {
+      radius: zone.radius_m,
+      color: '#e74c3c',
+      fillColor: '#e74c3c',
+      fillOpacity: 0.05,
+      opacity: 0.5,
+      weight: 1.5,
+      dashArray: '5 5',
+      interactive: false,
+    }).bindTooltip(label, { sticky: true, opacity: 0.85 }).addTo(map);
+  }
+}
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -1022,7 +1050,7 @@ function bindVoyageListOnce(container) {
 
     if (e.target.closest('.voyage-show-on-map')) {
       const date = item.dataset.date;
-      if (typeof window.mermugActivateTab === 'function') window.mermugActivateTab('map');
+      if (typeof window.activateTrackerTab === 'function') window.activateTrackerTab('map');
       focusTrackDay(date);
       return;
     }
@@ -1081,6 +1109,24 @@ function toggleVoyageDetail(item) {
   renderVoyageMiniMap(item, entry);
 }
 
+// Whether docs/index.json lists the captain's log, which is what decides
+// whether the Voyages tab offers to open it. It is one boat's filing habit,
+// not a feature of the tracker: a site without that document used to get a
+// button that opened GitHub's new-file editor for a path nobody had chosen.
+let hasCaptainsLog = false;
+
+async function loadCaptainsLogPresence() {
+  if (!C.CAPTAINS_LOG_PATH) return;
+  try {
+    const response = await fetch(C.DOCS_INDEX_URL);
+    if (!response.ok) return;
+    const index = await response.json();
+    hasCaptainsLog = (index?.docs ?? []).some((doc) => doc?.path === C.CAPTAINS_LOG_PATH);
+  } catch {
+    // No docs index, no button. A site with no docs at all is the common case.
+  }
+}
+
 function voyageDetailHtml(entry) {
   const fmtTime = (iso) => {
     if (!iso) return '—';
@@ -1116,9 +1162,9 @@ function voyageDetailHtml(entry) {
     <div class="voyage-detail-actions">
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-      <a class="voyage-detail-btn voyage-detail-btn--ghost" target="_blank" rel="noopener noreferrer"
+      ${hasCaptainsLog ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" target="_blank" rel="noopener noreferrer"
          href="https://github.com/${C.GITHUB_REPO}/edit/${C.GITHUB_DEFAULT_BRANCH}/${C.CAPTAINS_LOG_PATH}"
-         title="Opens the Captain's Log in the GitHub editor — add crew, conditions and notes for this trip">Log this voyage</a>
+         title="Opens the Captain's Log in the GitHub editor — add crew, conditions and notes for this trip">Log this voyage</a>` : ''}
     </div>`;
 }
 
@@ -1460,12 +1506,27 @@ function updateVesselLinks() {
     // Update document title
     document.title = `${vesselData.name} Tracker`;
 
-    // Update logo alt text
-    const logoImg = document.querySelector('img[src="data/vessel/logo.png"]');
-    if (logoImg) {
-      logoImg.alt = `${vesselData.name} Logo`;
-    }
+  }
 
+  // The logo, and what to do when there is not one.
+  //
+  // The published pages carry the path already — the plugin substitutes it in,
+  // because the tab icon and the link preview need it before any of this runs
+  // — so all that is left here is the case where the file is not there: a site
+  // that has never set a logo on the config page and never committed one by
+  // hand. An image that 404s is hidden rather than left as a broken icon in
+  // the status hero.
+  for (const logoImg of document.querySelectorAll('img[data-logo]')) {
+    if (vesselData.logo) logoImg.src = vesselData.logo;
+    if (vesselData.name) logoImg.alt = vesselData.name;
+    // This function runs again once the snapshot supplies the name, so the
+    // listener is attached once rather than once per call.
+    if (!logoImg.dataset.logoWatched) {
+      logoImg.dataset.logoWatched = '1';
+      logoImg.addEventListener('error', () => { logoImg.style.display = 'none'; }, { once: true });
+    }
+    // A cached 404 can have fired before the listener was attached.
+    if (logoImg.complete && logoImg.naturalWidth === 0) logoImg.style.display = 'none';
   }
 
   renderPassageBanner(vesselData.passage);
@@ -1552,31 +1613,27 @@ function renderCustomLinks(links) {
 let themeChangeTimeout = null; // Timeout for theme change debouncing
 let isThemeChanging = false; // Flag to prevent multiple theme changes
 
-// Find nearest NOAA tide station from lat/lon
-// Uses local lookup table (fast and reliable)
-// Prioritizes known-working stations for certain areas
+// NOAA tide stations from the local lookup table, nearest first.
+//
+// There used to be a special case above this: a box around San Francisco Bay
+// that forced station 9414290 whatever the boat's position said, which was one
+// boat's home waters written into everybody's station picker. Distance decides
+// now, everywhere.
+function stationsByDistance(lat, lon) {
+  return getAllStations()
+    .filter(s => Number.isFinite(s?.lat) && Number.isFinite(s?.lon))
+    .map(s => ({ station: s, km: haversine(lat, lon, s.lat, s.lon) }))
+    .sort((a, b) => a.km - b.km)
+    .map(entry => entry.station);
+}
+
+// Find nearest NOAA tide station from lat/lon.
+// Uses the local lookup table (fast and reliable).
 async function findNearestNOAAStation(lat, lon) {
-  const stations = getAllStations();
-  if (!stations || stations.length === 0) {
+  const nearest = stationsByDistance(lat, lon)[0];
+  if (!nearest) {
     throw new Error('No tide stations available in lookup table');
   }
-
-  // For San Francisco Bay area, prefer San Francisco station (9414290) which reliably supports predictions
-  // South Beach Harbor and most SF locations should use SF station
-  const isSFBayArea = lat >= 37.7 && lat <= 37.9 && lon >= -122.5 && lon <= -122.3;
-  if (isSFBayArea) {
-    const sfStation = stations.find(s => s.id === '9414290');
-    if (sfStation) {
-      console.debug('SF Bay area detected, preferring San Francisco station');
-      return sfStation;
-    }
-  }
-
-  // For other areas, find nearest station using haversine distance
-  const nearest = stations.reduce((a, b) =>
-    haversine(lat, lon, a.lat, a.lon) < haversine(lat, lon, b.lat, b.lon) ? a : b
-  );
-
   return nearest;
 }
 
@@ -1647,8 +1704,7 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
   // answered a question nobody asked: the panel then showed real tides for
   // water 3000 miles away, labelled with this boat's heading.
   const targetStation = nearest;
-  const url = buildUrl(targetStation.id);
-  const tideCacheKey = `tide_${targetStation.id}_${begin}`;
+  const url = buildUrl(targetStation.id);  const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
   try {
     let res;
@@ -2441,8 +2497,7 @@ async function loadData() {
       // as missing, so hand them nothing and let them say so.
       console.log('signalk_latest.json unavailable:', fileError);
       data = {};
-      dataSource = 'unavailable';
-    }
+      dataSource = 'unavailable';    }
 
     console.log('Fetch response status:', res?.status);
     setRawDataPre('raw-signalk-latest', data);
@@ -2526,24 +2581,11 @@ async function loadData() {
     if (hasGpsFix) {
       if (!map) {
         map = L.map('map').setView([lat, lon], 13);
-        window.mermugMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
+        window.trackerMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
         tileLayerForTheme().addTo(map);
         marker = L.marker([lat, lon]).addTo(map);
 
-        // Privacy exclusion zone indicator — mirrors PRIVACY_EXCLUSION_ZONES in Python.
-        // Positions inside this ring are redacted from all stored data.
-        L.circle([37.7802069, -122.3858040], {
-          radius: 200,
-          color: '#e74c3c',
-          fillColor: '#e74c3c',
-          fillOpacity: 0.05,
-          opacity: 0.5,
-          weight: 1.5,
-          dashArray: '5 5',
-          interactive: false,
-        }).bindTooltip('📍 Privacy zone — position not recorded inside this area', {
-          sticky: true, opacity: 0.85,
-        }).addTo(map);
+        drawPrivacyZones(map);
       } else {
         map.setView([lat, lon]);
         marker.setLatLng([lat, lon]);
@@ -3894,11 +3936,15 @@ function initDarkMode() {
   const darkModeToggle = document.getElementById('darkModeToggle');
   const html = document.documentElement;
 
-  // Check for saved theme preference, then vessel config, then fall back to light
   // No vessel-config fallback: there is no theme setting and never was a
   // `theme:` key to read. The button cycles THEMES and localStorage remembers.
-  const savedTheme = localStorage.getItem('theme') || 'marine';
-  html.setAttribute('data-theme', savedTheme);
+  //
+  // A remembered theme only counts if this release still has it. docs.js has
+  // always checked; this side did not, so a theme renamed between releases
+  // left the page with a data-theme nothing in the stylesheet matched — every
+  // token falling back to the light defaults under a "Dark Mode" button.
+  let savedTheme = localStorage.getItem('theme') || 'marine';
+  if (!THEMES.includes(savedTheme)) savedTheme = THEMES[0];  html.setAttribute('data-theme', savedTheme);
   updateDarkModeButton(savedTheme);
 
   darkModeToggle.addEventListener('click', () => {
@@ -4048,6 +4094,10 @@ function updateChartsForTheme(theme) {
 
   // Load tide stations data
   await loadTideStations();
+
+  // Before the voyage list renders: it decides whether a row offers the
+  // "Log this voyage" button.
+  await loadCaptainsLogPresence();
 
   initDarkMode();
   loadPolarData();
