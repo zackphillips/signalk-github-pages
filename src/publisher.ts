@@ -3,13 +3,17 @@
  *
  * Snapshot the self tree, drop stale values, redact the position, roll the
  * local state forward, and put whatever changed into a single commit. Nothing
- * here talks to the Signal K server: it takes a tree and returns what it did,
- * which is what makes the whole cycle testable without a server or a network.
+ * here talks to the Signal K server: it takes a tree — and, when the server
+ * has a history provider, the history `index.ts` already fetched — and returns
+ * what it did, which is what makes the whole cycle testable without a server
+ * or a network.
  */
 import {
   appendInstrumentEntry,
+  type InstrumentLog,
   type InstrumentLogEntry,
 } from './instrumentLog';
+import { bucketKey, mergeByBucket, type HistorySnapshot } from './history';
 import {
   buildDocsIndex,
   DOCS_INDEX_PATH,
@@ -39,6 +43,7 @@ import {
   isUnderway,
   navigationState,
   redactPosition,
+  type PositionFix,
   type Tree,
 } from './snapshot';
 import type { PluginConfig } from './config';
@@ -164,7 +169,13 @@ export class Publisher {
       : config.interval.stationary;
   }
 
-  async runCycle(rawTree: Tree): Promise<CycleResult> {
+  /**
+   * @param history What the history provider returned for this cycle, or null
+   * when there is none: see `mergePositions` / `mergeInstrumentLog` for how
+   * the two sources combine. The fetch itself happens in `index.ts` — this
+   * class never talks to the server.
+   */
+  async runCycle(rawTree: Tree, history: HistorySnapshot | null = null): Promise<CycleResult> {
     const { config, store, log, client, version, publicDir } = this.deps;
     const startedAt = Date.now();
     const now = this.now();
@@ -193,32 +204,20 @@ export class Publisher {
       content: `${JSON.stringify({ schema_version: SNAPSHOT_SCHEMA_VERSION, ...tree }, null, 2)}\n`,
     });
 
-    if (fix) {
-      const entries = pruneAndSort(
-        [
-          ...parsePositionIndex(await store.readText('positions_index.json')),
-          buildPositionEntry(fix, config.privacyZones, now),
-        ],
-        now,
-        config.positionRetentionHours,
-      );
-      await store.writeText('positions_index.json', renderPositionIndex(entries));
-      files.push({ path: POSITIONS_PATH, content: renderPositionIndex(entries) });
+    const positions = await this.mergePositions(fix, history, now);
+    if (positions.length) {
+      const rendered = renderPositionIndex(positions);
+      // Still written locally even when it came from the provider: the store
+      // is what the next cycle falls back to if the database goes away
+      // mid-passage, so it stays warm rather than starting the track again.
+      await store.writeText('positions_index.json', rendered);
+      files.push({ path: POSITIONS_PATH, content: rendered });
       files.push(
-        ...(await this.updateTrackFiles(entries, now, state.publishedDays ?? [], identity)),
+        ...(await this.updateTrackFiles(positions, now, state.publishedDays ?? [], identity)),
       );
     }
 
-    const existingLog = await store.readJson<{ entries?: InstrumentLogEntry[] }>(
-      'instrument_log.json',
-      {},
-    );
-    const instrumentLog = appendInstrumentEntry(
-      Array.isArray(existingLog.entries) ? existingLog.entries : [],
-      now,
-      tree,
-      config.instrumentLog,
-    );
+    const instrumentLog = await this.mergeInstrumentLog(tree, history, now);
     // Written without indentation: this is the largest file in the publish and
     // nobody reads it by hand.
     const instrumentLogJson = `${JSON.stringify(instrumentLog)}\n`;
@@ -228,7 +227,8 @@ export class Publisher {
     log(
       `Instrument log: ${instrumentLog.entries.length} entries, ` +
         `${Object.keys(instrumentLog.entries[instrumentLog.entries.length - 1]?.values ?? {}).length} ` +
-        `paths this cycle, ${kb(instrumentLogBytes)}.`,
+        `paths this cycle, ${kb(instrumentLogBytes)}` +
+        (history ? `, from history provider ${history.providerId}.` : '.'),
     );
     if (instrumentLogBytes > INSTRUMENT_LOG_WARN_BYTES) {
       log(
@@ -300,6 +300,67 @@ export class Publisher {
       requests,
       durationMs,
     };
+  }
+
+  /**
+   * The position index this cycle publishes.
+   *
+   * Three sources, least authoritative first: what the plugin accumulated
+   * locally, what the history provider holds, and the fix the tree carries
+   * right now. Without a provider this collapses to the original behaviour —
+   * the stored index plus one new point.
+   */
+  private async mergePositions(
+    fix: PositionFix | null,
+    history: HistorySnapshot | null,
+    now: Date,
+  ): Promise<PositionEntry[]> {
+    const { config, store } = this.deps;
+    const stored = parsePositionIndex(await store.readText('positions_index.json'));
+    const live = fix ? [buildPositionEntry(fix, config.privacyZones, now)] : [];
+
+    if (!history) {
+      return pruneAndSort([...stored, ...live], now, config.positionRetentionHours);
+    }
+    const merged = mergeByBucket(
+      [stored, history.positions, live],
+      config.history.resolutionSeconds,
+    );
+    return pruneAndSort(merged, now, config.positionRetentionHours);
+  }
+
+  /**
+   * The instrument log this cycle publishes, on the same three sources.
+   *
+   * The live reading is taken from the tree rather than the provider even
+   * when a provider answered: the newest bucket in a database is up to one
+   * resolution behind, and the sparkline should end at what the boat is doing
+   * now.
+   */
+  private async mergeInstrumentLog(
+    tree: Tree,
+    history: HistorySnapshot | null,
+    now: Date,
+  ): Promise<InstrumentLog> {
+    const { config, store } = this.deps;
+    const existing = await store.readJson<{ entries?: InstrumentLogEntry[] }>(
+      'instrument_log.json',
+      {},
+    );
+    const stored = Array.isArray(existing.entries) ? existing.entries : [];
+    if (!history) return appendInstrumentEntry(stored, now, tree, config.instrumentLog);
+
+    // Bucket-merge the two histories, then let `appendInstrumentEntry` add the
+    // live reading and trim, so both paths produce the same file shape.
+    const merged = mergeByBucket(
+      [stored, history.instrument],
+      config.history.resolutionSeconds,
+    ).filter(
+      (entry) =>
+        bucketKey(entry.timestamp, config.history.resolutionSeconds) !==
+        bucketKey(now.toISOString(), config.history.resolutionSeconds),
+    );
+    return appendInstrumentEntry(merged, now, tree, config.instrumentLog);
   }
 
   private commitMessage(navState: string | null, now: Date): string {

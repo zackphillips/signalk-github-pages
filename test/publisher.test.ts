@@ -308,6 +308,117 @@ describe('Publisher', () => {
     expect(fake.files.has('data/telemetry/instrument_log.json')).toBe(true);
   });
 
+  it('publishes a track read back from the history provider, not just the live fix', async () => {
+    const publisher = makePublisher();
+    const result = await publisher.runCycle(tree(), {
+      providerId: 'signalk-to-influxdb2',
+      requestedPaths: ['navigation.speedOverGround'],
+      positions: [
+        {
+          timestamp: '2026-03-01T19:00:00.000Z',
+          values: [
+            { path: 'navigation.position', value: { latitude: 37.9, longitude: -122.5 } },
+          ],
+        },
+        {
+          timestamp: '2026-03-01T19:30:00.000Z',
+          values: [
+            { path: 'navigation.position', value: { latitude: 37.91, longitude: -122.51 } },
+          ],
+        },
+      ],
+      instrument: [
+        { timestamp: '2026-03-01T19:00:00.000Z', values: { 'navigation.speedOverGround': 3.9 } },
+        { timestamp: '2026-03-01T19:30:00.000Z', values: { 'navigation.speedOverGround': 4.0 } },
+      ],
+    });
+
+    expect(result.published).toBe(true);
+    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+    // Two from history plus the live fix, oldest first.
+    expect(positions.positions.map((entry: any) => entry.timestamp)).toEqual([
+      '2026-03-01T19:00:00.000Z',
+      '2026-03-01T19:30:00.000Z',
+      '2026-03-01T20:00:00.000Z',
+    ]);
+    const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
+    expect(log.entries.map((entry: any) => entry.values['navigation.speedOverGround'])).toEqual([
+      3.9, 4.0, 4.2,
+    ]);
+    // The GPX drawn for the day follows the history, not the publish cadence.
+    expect(fake.files.get('data/telemetry/tracks/2026-03-01.gpx')).toContain(
+      'lat="37.900000"',
+    );
+  });
+
+  it('lets the live reading win the bucket it shares with the provider', async () => {
+    // The newest bucket in a database is up to one resolution behind; the
+    // sparkline has to end at what the boat is doing now.
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), {
+      providerId: 'default',
+      requestedPaths: [],
+      positions: [],
+      instrument: [
+        { timestamp: '2026-03-01T20:00:30.000Z', values: { 'navigation.speedOverGround': 9.9 } },
+      ],
+    });
+    const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
+    expect(log.entries).toHaveLength(1);
+    expect(log.entries[0].values['navigation.speedOverGround']).toBe(4.2);
+  });
+
+  it('keeps locally accumulated history the provider does not have', async () => {
+    // A database installed this week holds nothing from last week's passage,
+    // and switching to it must not shorten a track already published.
+    const publisher = makePublisher();
+    await publisher.runCycle(tree({ timestamp: '2026-03-01T19:00:00Z', lat: 37.9, lon: -122.5 }));
+    const result = await publisher.runCycle(tree(), {
+      providerId: 'default',
+      requestedPaths: [],
+      positions: [
+        {
+          timestamp: '2026-03-01T19:45:00.000Z',
+          values: [
+            { path: 'navigation.position', value: { latitude: 37.91, longitude: -122.51 } },
+          ],
+        },
+      ],
+      instrument: [],
+    });
+
+    expect(result.published).toBe(true);
+    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+    expect(positions.positions.map((entry: any) => entry.timestamp)).toEqual([
+      '2026-03-01T19:00:00.000Z',
+      '2026-03-01T19:45:00.000Z',
+      '2026-03-01T20:00:00.000Z',
+    ]);
+  });
+
+  it('redacts a history position that falls inside a privacy zone', async () => {
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), {
+      providerId: 'default',
+      requestedPaths: [],
+      positions: [
+        {
+          // Already redacted upstream by positionEntriesFromHistory; what is
+          // checked here is that the publisher does not re-expand it.
+          timestamp: '2026-03-01T19:30:00.000Z',
+          values: [
+            { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
+          ],
+        },
+      ],
+      instrument: [],
+    });
+    const positions = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+    expect(positions.positions[0].values).toEqual([
+      { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
+    ]);
+  });
+
   it('freezes yesterday once the local day rolls over', async () => {
     const yesterday = makePublisher({}, '2026-03-01T20:00:00Z');
     await yesterday.seed();

@@ -3,6 +3,8 @@ import { isValidTimezone } from '../src/time';
 import {
   configSchema,
   configUiSchema,
+  DEFAULT_HISTORY_RESOLUTION_SECONDS,
+  DEFAULT_HISTORY_TIMEOUT_MS,
   DEFAULT_INSTRUMENT_LOG_ENTRIES,
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
@@ -240,5 +242,63 @@ describe('parsePathList', () => {
   it('treats an empty or missing value as no paths', () => {
     expect(parsePathList('   \n#only a comment\n')).toEqual([]);
     expect(parsePathList(undefined)).toEqual([]);
+  });
+});
+
+describe('the history provider settings', () => {
+  it('defaults to reading history from whichever provider the server has', () => {
+    const config = makeConfig();
+    expect(config.history).toEqual({
+      enabled: true,
+      providerId: '',
+      resolutionSeconds: DEFAULT_HISTORY_RESOLUTION_SECONDS,
+      timeoutMs: DEFAULT_HISTORY_TIMEOUT_MS,
+    });
+  });
+
+  it('takes a provider id, a resolution and a timeout from the form', () => {
+    const config = makeConfig({
+      history: {
+        enabled: true,
+        providerId: 'signalk-to-influxdb2',
+        resolutionSeconds: 30,
+        timeoutMs: 5000,
+      },
+    });
+    expect(config.history.providerId).toBe('signalk-to-influxdb2');
+    expect(config.history.resolutionSeconds).toBe(30);
+    expect(config.history.timeoutMs).toBe(5000);
+  });
+
+  it('can be turned off, leaving the plugin to accumulate history itself', () => {
+    expect(makeConfig({ history: { enabled: false } }).history.enabled).toBe(false);
+  });
+
+  it('floors a timeout too short to reach a database', () => {
+    expect(makeConfig({ history: { timeoutMs: 5 } }).history.timeoutMs).toBe(1000);
+  });
+
+  it('warns when the buckets are wider than the publish interval', () => {
+    // Reading history back is meant to make the track finer, not coarser.
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      interval: { underway: 60, stationary: 3600 },
+      history: { resolutionSeconds: 300 },
+    });
+    expect(resolved.ok).toBe(true);
+    expect(resolved.warnings.join(' ')).toMatch(
+      /History resolution \(300s\) is coarser than the underway publish interval \(60s\)/,
+    );
+  });
+
+  it('says nothing when the history is finer than the cadence, or turned off', () => {
+    expect(resolveConfig({ ...COMPLETE_FORM }).warnings).toEqual([]);
+    expect(
+      resolveConfig({
+        ...COMPLETE_FORM,
+        interval: { underway: 60, stationary: 3600 },
+        history: { enabled: false, resolutionSeconds: 300 },
+      }).warnings,
+    ).toEqual([]);
   });
 });

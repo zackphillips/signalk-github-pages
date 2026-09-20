@@ -61,6 +61,19 @@ export interface PluginConfig {
   positionRetentionHours: number;
   staleMaxAgeMinutes: number;
   /**
+   * Where the published history comes from. With a history provider on the
+   * server, the track and the sparklines are read back from it every cycle;
+   * without one — or with this turned off — the plugin accumulates them a
+   * sample at a time in its own data directory.
+   */
+  history: {
+    enabled: boolean;
+    /** Empty means whichever provider the server has as its default. */
+    providerId: string;
+    resolutionSeconds: number;
+    timeoutMs: number;
+  };
+  /**
    * The polar table as `data/vessel/polars.csv` is published, already in the
    * frontend's semicolon format. Empty means the plugin publishes no polars
    * and leaves a hand-committed file alone.
@@ -132,6 +145,16 @@ export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 120;
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
 export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
+/**
+ * Bucket width asked of the history provider, in seconds.
+ *
+ * One minute is finer than any publish cadence, so the track gains detail
+ * rather than just surviving restarts, and it is coarse enough that a day of
+ * positions stays a file the site can download over a phone.
+ */
+export const DEFAULT_HISTORY_RESOLUTION_SECONDS = 60;
+/** A history query is a database call; past this it is a skipped cycle. */
+export const DEFAULT_HISTORY_TIMEOUT_MS = 20_000;
 
 /** Read once: the list is the same for every field that shows it. */
 const TIMEZONES = availableTimezones();
@@ -276,6 +299,52 @@ export const configSchema = {
             'hours at a two-minute cadence. The frontend is told this number, ' +
             'so the sparklines and the publisher cannot drift apart.',
           default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
+        },
+      },
+    },
+    history: {
+      type: 'object',
+      title: 'History provider',
+      description:
+        'Where the map track and the sparklines come from. A server with a ' +
+        'history provider installed (signalk-to-influxdb2, for example) ' +
+        'already stores every value at full rate; reading it back gives the ' +
+        'site a track at the resolution below instead of one point per ' +
+        'publish, and a restart, a reinstall or a stopped plugin no longer ' +
+        'leaves a gap. With no provider registered the plugin accumulates the ' +
+        'history itself, one sample per cycle, exactly as before.',
+      properties: {
+        enabled: {
+          type: 'boolean',
+          title: 'Read history from a history provider when one is available',
+          default: true,
+        },
+        providerId: {
+          type: 'string',
+          title: 'Provider plugin id',
+          description:
+            "Leave blank to use the server's default history provider. Set it " +
+            'to a plugin id (e.g. "signalk-to-influxdb2") only when more than ' +
+            'one is registered and you want this one.',
+          default: '',
+        },
+        resolutionSeconds: {
+          type: 'number',
+          title: 'Resolution (seconds)',
+          description:
+            'Bucket width asked of the provider. This is also the spacing of ' +
+            'the instrument log, so the log covers resolution x entries: 60 s ' +
+            'x 120 entries is two hours. Finer buckets mean a bigger ' +
+            'positions_index.json uploaded on every publish.',
+          default: DEFAULT_HISTORY_RESOLUTION_SECONDS,
+        },
+        timeoutMs: {
+          type: 'number',
+          title: 'Query timeout (ms)',
+          description:
+            'A history query reaches a database. Past this the cycle gives up ' +
+            'on it and publishes locally accumulated history instead.',
+          default: DEFAULT_HISTORY_TIMEOUT_MS,
         },
       },
     },
@@ -550,6 +619,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const github = input.github ?? {};
   const interval = input.interval ?? {};
   const instrumentLog = input.instrumentLog ?? {};
+  const history = input.history ?? {};
   const site = input.site ?? {};
   const problems: string[] = [];
 
@@ -605,6 +675,20 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   const paths = parsePathList(instrumentLog.paths);
 
+  const underway = num(interval.underway) ?? DEFAULT_INTERVAL_UNDERWAY;
+  const resolutionSeconds =
+    num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
+  if (history.enabled !== false && resolutionSeconds > underway) {
+    // Reading history back is meant to give the site a finer track than one
+    // point per publish. A bucket wider than the publish interval does the
+    // opposite, and it is not obvious from either field on its own.
+    warnings.push(
+      `History resolution (${Math.round(resolutionSeconds)}s) is coarser than the ` +
+        `underway publish interval (${Math.round(underway)}s), so the published track ` +
+        'will have fewer points than publishing alone would produce.',
+    );
+  }
+
   return {
     ok: true,
     warnings,
@@ -617,7 +701,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         token,
       },
       interval: {
-        underway: num(interval.underway) ?? DEFAULT_INTERVAL_UNDERWAY,
+        underway,
         stationary: num(interval.stationary) ?? DEFAULT_INTERVAL_STATIONARY,
       },
       privacyZones: zones,
@@ -632,6 +716,15 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       positionRetentionHours:
         num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
+      history: {
+        enabled: history.enabled !== false,
+        providerId: str(history.providerId),
+        resolutionSeconds: Math.max(1, Math.round(resolutionSeconds)),
+        timeoutMs: Math.max(
+          1000,
+          Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
+        ),
+      },
       polars: polars.csv,
       buildDocsIndex: input.buildDocsIndex !== false,
       publishFrontend: input.publishFrontend !== false,

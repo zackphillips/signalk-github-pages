@@ -50,6 +50,7 @@ the live `HEAD`.
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
 | **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
+| **History from your database** | With a Signal K history provider installed, the track and the sparklines are read back from it — full resolution, no gap across a restart |
 | **Ownership manifest** | The plugin writes only the paths it declares; the rest of the repo is yours |
 | **Honest accounting** | Every cycle logs what it cost: bytes on the wire, API calls, rate limit left |
 
@@ -127,6 +128,10 @@ only. Give Pages a minute, then open the URL.
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
 | `instrumentLog.entries` | `120` | ~5 hours at a two-minute cadence |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `history.enabled` | on | Read history from a Signal K history provider — [see below](#history-provider) |
+| `history.providerId` | *empty* | Blank uses the server's default provider |
+| `history.resolutionSeconds` | `60` | Bucket width asked of the provider |
+| `history.timeoutMs` | `20000` | Past this the cycle falls back to local history |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
 | `timezone` | UTC | Chosen from a list of IANA zones, for grouping tracks by local day |
@@ -152,6 +157,67 @@ first time the plugin reads it. Fill them in and the old field can go.
 > `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
 > shell on the server. Scope it to the one repository, and rotate it if the Pi
 > ever leaves your hands.
+
+## History provider
+
+By default the plugin is its own historian: one position and one instrument
+reading are appended per publish cycle, so the map track is sampled at the
+publish cadence — a point every two minutes underway, an hour-wide gap at the
+dock, and nothing at all from before the plugin was installed or while it was
+stopped.
+
+If the server has a **history provider** registered — [signalk-to-influxdb2]
+and friends implement the Signal K History API — it already holds all of that
+at full rate. The plugin then asks it for the window it publishes, on every
+cycle, instead of relying on what it accumulated itself:
+
+- The track is drawn at `history.resolutionSeconds` (60 s by default), not at
+  the publish interval. One publish every two minutes still produces a
+  two-minute-resolution *update*, but each one carries the whole window at a
+  minute's detail.
+- A restart, a reinstall, a moved data directory or a plugin that was off for
+  a day no longer leaves a hole: the history is re-read, not accumulated.
+- The instrument log covers `resolutionSeconds x entries` — 60 s x 120 is two
+  hours — and is rebuilt from the database each cycle.
+- Privacy zones are applied to every point on the way out, so a zone added
+  after a passage redacts that passage on the next publish. The provider's own
+  copy is untouched; it is a database on your boat.
+
+Nothing about the published files changes: the frontend reads the same
+`positions_index.json` and `instrument_log.json` either way.
+
+The fallback is not a failure mode, it is the normal case on a server without
+a provider. No provider registered, none configured, the database still
+starting, a query past `history.timeoutMs` — each of those logs a line and
+publishes the locally accumulated history instead. Local history is still
+written on every cycle even when the provider answers, so a database that goes
+away mid-passage leaves the track continuing rather than starting again.
+
+Where the two overlap, the provider's value wins the bucket, but a bucket only
+the local file has is kept — a database installed this week holds nothing from
+last week's passage, and switching to it should not shorten a track that is
+already published. The live reading from the tree wins over both: the newest
+bucket in a database is up to one resolution behind.
+
+Wildcard paths (`electrical.batteries.*.voltage`) are expanded against the
+paths the provider reports, re-listed every 15 minutes. A literal path the
+provider has never stored is still requested — a sensor that came online five
+minutes ago is not in the listing yet.
+
+Set `history.providerId` only if more than one provider is registered and you
+want a specific one; blank means the server's default.
+
+**Watch the bandwidth.** The whole window goes up on every publish, so
+resolution costs data: 24 hours at 60 s is ~1,400 points, a
+`positions_index.json` of roughly 250 kB, ~330 kB base64 on the wire, ~10 MB
+an hour at a two-minute cadence. That is the same arithmetic as [the
+instrument log](#why-this-matters-more-than-it-looks-like-it-should), and the
+same levers fix it: a coarser `history.resolutionSeconds`, a shorter
+`positionRetentionHours`, or a longer `interval.underway`. Every cycle logs
+the size of each file it published, so the number is in front of you rather
+than on your data bill at the end of the month.
+
+[signalk-to-influxdb2]: https://www.npmjs.com/package/signalk-to-influxdb2
 
 ## Instrument paths
 

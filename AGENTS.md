@@ -15,6 +15,8 @@ src/
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
   instrumentLog.ts  instrument_log.json + the path allowlist
+  history.ts        The Signal K History API: reading the published history
+                    back from a provider instead of accumulating it
   gpx.ts            Per-day GPX files and tracks_index.json
   docsIndex.ts      docs/index.json (port of the old Python builder)
   vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
@@ -44,11 +46,30 @@ Run `npm test` and `npm run typecheck` before committing.
 ## Rules that are not obvious
 
 - **`publisher.ts` takes a tree and returns a result.** It never calls the
-  Signal K server. Keep it that way: it is what makes a full cycle testable
-  without a server or a network.
+  Signal K server, the history provider included: `index.ts` fetches the
+  history snapshot and hands it to `runCycle`. Keep it that way: it is what
+  makes a full cycle testable without a server or a network.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
+- **History is a source, not the source.** With a history provider registered
+  the track and the instrument log are read back from it every cycle; without
+  one the plugin accumulates them a sample per cycle, exactly as before. Both
+  paths have to keep working: a provider that is missing, turned off, still
+  starting or slow is a normal cycle that logs a line, never a failed publish.
+  Local files are written even when the provider answers, so the fallback stays
+  warm.
+- **Redact history on the way out, every cycle.** The provider stores raw
+  positions. `positionEntriesFromHistory` applies the privacy zones to every
+  point, which is also why a zone added today redacts a passage from last week
+  on the next publish. Anything that bypasses `buildPositionEntry` for history
+  data is a privacy bug.
+- **The provider wins a bucket, the live reading wins over the provider.**
+  `mergeByBucket` takes local, then history, then the fix from the tree. Never
+  replace the local series wholesale: a database installed this week has
+  nothing from last week, and a straight swap would shorten a published track.
+  The newest bucket in a database is up to one resolution behind, which is why
+  the live reading ends the series.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
