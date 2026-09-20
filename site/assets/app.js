@@ -3946,7 +3946,9 @@ function initDarkMode() {
   const html = document.documentElement;
 
   // Check for saved theme preference, then vessel config, then fall back to light
-  const savedTheme = localStorage.getItem('theme') || vesselData?.theme || 'marine';
+  // No vessel-config fallback: there is no theme setting and never was a
+  // `theme:` key to read. The button cycles THEMES and localStorage remembers.
+  const savedTheme = localStorage.getItem('theme') || 'marine';
   html.setAttribute('data-theme', savedTheme);
   updateDarkModeButton(savedTheme);
 

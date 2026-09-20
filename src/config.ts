@@ -14,8 +14,8 @@
  * the field from derived to typed. The derived value is what the plugin uses
  * whenever the box is unticked, whatever is sitting in the field.
  *
- * Defaults are the values this tracker has run on since it was a Python daemon
- * on a Raspberry Pi. What is *not* defaulted is anything that belongs to one
+ * Defaults are the values this tracker has run on for years on a Raspberry
+ * Pi. What is *not* defaulted is anything that belongs to one
  * particular boat: privacy zones start empty, and the repo and token have no
  * stand-in.
  */
@@ -782,14 +782,8 @@ export function resolveDefaultLocation(
   return { lat: latitude, lon: longitude, label: str(label) };
 }
 
-/**
- * The track timezone: the server's, unless the override is ticked.
- *
- * A plain string is accepted for a config written against the older form of
- * this field, where the box held the zone and empty meant UTC.
- */
+/** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(value: unknown): string {
-  if (typeof value === 'string') return value.trim() || serverTimezone();
   if (value && typeof value === 'object') {
     const { override, zone } = value as Record<string, unknown>;
     if (override === true) return str(zone) || serverTimezone();
@@ -797,12 +791,8 @@ export function resolveTimezone(value: unknown): string {
   return serverTimezone();
 }
 
-/**
- * The polar table setting, accepting the older form where this key was the
- * pasted table itself and served as a fallback rather than an override.
- */
+/** The polar table override: whether it is on, and what is in the box. */
 export function resolvePolars(value: unknown): { override: boolean; table: string } {
-  if (typeof value === 'string') return { override: value.trim() !== '', table: value };
   if (value && typeof value === 'object') {
     const { override, table } = value as Record<string, unknown>;
     return {
@@ -813,16 +803,10 @@ export function resolvePolars(value: unknown): { override: boolean; table: strin
   return { override: false, table: '' };
 }
 
-/** Cadence in seconds, from the minutes on the page or the legacy seconds. */
-function intervalSeconds(
-  minutes: unknown,
-  legacySeconds: unknown,
-  fallbackSeconds: number,
-): number {
+/** Cadence in seconds, from the minutes the config page asks for. */
+function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
   const fromMinutes = num(minutes);
   if (fromMinutes !== null) return Math.max(1, Math.round(fromMinutes * 60));
-  const fromSeconds = num(legacySeconds);
-  if (fromSeconds !== null) return Math.max(1, Math.round(fromSeconds));
   return fallbackSeconds;
 }
 
@@ -901,11 +885,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   const paths = parsePathList(instrumentLog.paths);
 
-  const underway = intervalSeconds(
-    interval.underwayMinutes,
-    interval.underway,
-    DEFAULT_INTERVAL_UNDERWAY,
-  );
+  const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
   const resolutionSeconds =
     num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
   const entries = Math.max(
@@ -937,11 +917,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       interval: {
         underway,
-        stationary: intervalSeconds(
-          interval.stationaryMinutes,
-          interval.stationary,
-          DEFAULT_INTERVAL_STATIONARY,
-        ),
+        stationary: intervalSeconds(interval.stationaryMinutes, DEFAULT_INTERVAL_STATIONARY),
       },
       privacyZones: zones,
       timezone: resolveTimezone(input.timezone),

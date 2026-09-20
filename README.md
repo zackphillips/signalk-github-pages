@@ -36,10 +36,11 @@ does not go down when the hotspot does, and costs nothing.
    (rolling state)
 ```
 
-No `git` binary. No working copy to corrupt. No systemd unit. No YAML to
-hand-edit over SSH. The plugin reads the self tree in-process, keeps its
-rolling state in `app.getDataDirPath()`, and each cycle is one commit built on
-the live `HEAD`.
+No `git` binary. No working copy to corrupt. No systemd unit. Nothing to
+hand-edit: every setting is either on the plugin's config page or read from
+the server. The plugin reads the self tree in-process, keeps its rolling
+state in `app.getDataDirPath()`, and each cycle is one commit built on the
+live `HEAD`.
 
 ## What you get
 
@@ -149,18 +150,14 @@ only. Give Pages a minute, then open the URL.
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
-The defaults are the numbers this tracker has run on since it was a Python
-daemon on a Raspberry Pi. Four settings are derived rather than typed — the
+The defaults are the numbers this tracker has run on for years on a
+Raspberry Pi. Four settings are derived rather than typed — the
 repository name from the owner, the timezone from the server, the polar table
 from Polar Management, and the USCG and hull numbers from the Signal K
 registrations — and each has an override checkbox beside it. What has no
 default at all is what belongs to one particular boat: privacy zones start
 empty, and [the vessel's own details](#what-comes-from-signal-k) come from
 Signal K rather than from this page.
-
-Configs written against older field names still load: a `polars` string, a
-`timezone` string, and `interval.underway` / `interval.stationary` in seconds
-are all read and carried forward.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
@@ -696,21 +693,13 @@ sample/             Fixture telemetry for the dev server
 > `window.VESSEL_CONSTANTS`, `app.js` throws on the missing global, and the
 > entire page goes blank.
 
-## Migrating an existing tracker
-
-[MIGRATION.md](MIGRATION.md) is the cutover for a repository running the
-Python daemon: measure the instrument log first, run both publishers against a
-scratch repo for a sailing day and diff them, move the config across, then
-delete the backend.
-
 ## Trade-offs worth knowing
 
 **The plugin runs inside the server process.** A bug here can affect the
-navigation data hub, which a separate daemon could not. Every cycle is
-wrapped: an exception skips one update, is reported in the admin UI, and never
-reaches the server's event loop. That is the main cost of reading the tree
-in-process, and it buys away the HTTP poll that could freeze the site on stale
-data.
+navigation data hub. Every cycle is wrapped: an exception skips one update,
+is reported in the admin UI, and never reaches the server's event loop. That
+is the cost of reading the tree in-process, and it buys away an HTTP poll
+that could freeze the site on stale data.
 
 **The token sits in plain text**, as above.
 

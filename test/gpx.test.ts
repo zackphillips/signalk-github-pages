@@ -237,7 +237,7 @@ describe('updateTracks', () => {
 });
 
 describe('tracks index round trip', () => {
-  it('reads back what it writes, and tolerates the older bare list', () => {
+  it('reads back what it writes, and nothing else', () => {
     const tracks = [
       {
         date: '2026-03-01',
@@ -251,7 +251,8 @@ describe('tracks index round trip', () => {
       },
     ];
     expect(parseTracksIndex(renderTracksIndex(tracks))).toEqual(tracks);
-    expect(parseTracksIndex(JSON.stringify(tracks))).toEqual(tracks);
+    // A bare list is not a shape this plugin has ever written.
+    expect(parseTracksIndex(JSON.stringify(tracks))).toEqual([]);
     expect(parseTracksIndex('{broken')).toEqual([]);
     expect(parseTracksIndex(null)).toEqual([]);
   });

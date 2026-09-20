@@ -170,7 +170,7 @@ Run `npm test` and `npm run typecheck` before committing.
   commit.
 - **The ref is never force-updated.** On a lost race, re-read HEAD and rebuild
   the tree, so a concurrent docs edit survives.
-- **Check every privacy zone, not just the first.** The Python daemon had this
+- **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
 - **Group tracks by local calendar day**, not by the UTC date in the
@@ -285,8 +285,8 @@ Run `npm test` and `npm run typecheck` before committing.
   blank.
 - **Never write `assets/custom.css`.** It is the user's override hook, loaded
   last by both pages.
-- **Never add a per-cycle file.** The daemon once wrote one snapshot per cycle;
-  an off-by-one in the prune let ~32k of them accumulate and grew the
+- **Never add a per-cycle file.** An earlier design wrote one snapshot per
+  cycle; an off-by-one in the prune let ~32k of them accumulate and grew the
   repository past a gigabyte.
 
 ## Installing on a server
@@ -301,9 +301,8 @@ the plugin. Do not "fix" that by committing `dist/`.
 ## Published file formats
 
 `data/telemetry/*.json` carry a `schema_version` so a plugin and a frontend of
-different versions can detect a mismatch. The shapes otherwise match what the
-Python daemon wrote, because the frontend reads them unchanged — check
-`site/assets/app.js` before altering any of them.
+different versions can detect a mismatch. The frontend reads these shapes
+directly, so check `site/assets/app.js` before altering any of them.
 
 - **A canvas has two sizes and they have to agree.** `.sparkline-inline` is
   `width: 100%` in the stylesheet, so the bitmap must be sized from the box the

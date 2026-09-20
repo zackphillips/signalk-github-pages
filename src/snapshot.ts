@@ -2,9 +2,9 @@
  * The self tree: reading it out of the running server, dropping stale values,
  * and redacting the position before anything is written anywhere.
  *
- * The Python daemon polled `/signalk/v1/api/vessels/self` over HTTP. Inside
- * the server process the same tree is a function call, so a wedged HTTP
- * connection can no longer freeze the site on stale data.
+ * Reading the tree is a function call inside the server process, not an HTTP
+ * poll of `/signalk/v1/api/vessels/self`, so a wedged connection cannot
+ * freeze the site on stale data.
  */
 import type { PrivacyZone } from './config';
 import { privacyZoneCentre, type ZoneCentre } from './privacy';
@@ -143,8 +143,9 @@ export function extractPositionFix(blob: Tree): PositionFix | null {
         ? navigation.position.timestamp
         : null,
     speedOverGround: numeric(navigation.speedOverGround),
-    // The daemon recorded headingTrue here; keep that so existing GPX and the
-    // frontend's course arrow stay consistent across the cutover.
+    // headingTrue, not courseOverGroundTrue, despite the field name: it is
+    // what the published GPX has always carried and what the frontend's
+    // course arrow reads.
     courseOverGroundTrue: numeric(navigation.headingTrue),
   };
 }

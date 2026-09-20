@@ -1,16 +1,14 @@
 /**
  * signalk-github-pages — publish vessel telemetry to a GitHub Pages site.
  *
- * The plugin replaces a Python daemon that polled the server over HTTP, wrote
- * into a git checkout on the Pi and pushed every couple of minutes. It reads
- * the same data in-process, keeps its rolling state in the plugin data
- * directory, and publishes through the GitHub Git Data API — no checkout, no
- * `git` binary, nothing on disk to rebase.
+ * The plugin reads the self tree in-process, keeps its rolling state in the
+ * plugin data directory, and publishes through the GitHub Git Data API — no
+ * checkout, no `git` binary, nothing on disk to rebase.
  *
- * The cost of moving in-process is that a bug here can take down the server
- * that a separate process could not touch, so every tick is wrapped: an
- * exception skips one cycle and is reported in the admin UI, and never
- * reaches the server's event loop.
+ * The cost of running inside the server is that a bug here can take down the
+ * navigation data hub, so every tick is wrapped: an exception skips one
+ * cycle and is reported in the admin UI, and never reaches the server's
+ * event loop.
  */
 import os from 'node:os';
 import path from 'node:path';

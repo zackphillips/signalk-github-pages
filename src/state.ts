@@ -3,9 +3,8 @@
  *
  * GitHub is publish-only: nothing is ever read back from it during a cycle
  * except on first run, when the store seeds itself from the repository so a
- * reinstall does not lose the day's track. The daemon kept this state in a
- * git checkout on the Pi, which is the thing this design removes — there is
- * no checkout to corrupt and nothing to rebase.
+ * reinstall does not lose the day's track. Nothing here is a git checkout:
+ * there is no working copy to corrupt and nothing to rebase.
  *
  * Every write goes through a temp file + fsync + rename, because a power cut
  * mid-write on a boat is a normal event, and a truncated index silently wipes
