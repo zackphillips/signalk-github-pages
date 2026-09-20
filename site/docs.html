@@ -3,23 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title id="page-title">Ship's Docs — S.V. Mermug</title>
+  <title id="page-title">Ship's Docs — {{VESSEL_NAME}}</title>
 
   <!-- OpenGraph / social sharing -->
   <meta property="og:type"        content="website" />
-  <meta property="og:title"       content="S.V. Mermug — Ship's Docs" />
-  <meta property="og:description" content="Standard operating procedures, systems reference, and checklists for S.V. Mermug." />
-  <meta property="og:url"         content="https://mermug.com/docs.html" />
-  <meta property="og:image"       content="https://mermug.com/data/vessel/logo.png" />
-  <meta name="description"        content="Standard operating procedures, systems reference, and checklists for S.V. Mermug." />
+  <meta property="og:title"       content="{{VESSEL_NAME}} — Ship's Docs" />
+  <meta property="og:description" content="Standard operating procedures, systems reference and checklists for {{VESSEL_NAME}}." />
+  <meta property="og:url"         content="{{SITE_URL}}docs.html" />
+  <meta property="og:image"       content="{{LOGO_URL}}" />
+  <meta name="description"        content="Standard operating procedures, systems reference and checklists for {{VESSEL_NAME}}." />
 
-  <link rel="icon" href="/assets/favicon.ico" />
+  <link rel="icon" href="{{ICON_PATH}}" />
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#4f46e5" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Mermug" />
-  <link rel="apple-touch-icon" href="data/vessel/logo.png" />
+  <meta name="apple-mobile-web-app-title" content="{{VESSEL_NAME}}" />
+  <link rel="apple-touch-icon" href="{{ICON_PATH}}" />
   <link rel="stylesheet" href="assets/styles.css" />
 
   <!-- Set the theme before first paint so the page does not flash light. -->
@@ -29,7 +29,7 @@
     } catch { document.documentElement.setAttribute('data-theme', 'marine'); }
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
+        navigator.serviceWorker.register('sw.js').catch(() => {});
       });
     }
   </script>
@@ -44,7 +44,7 @@
     <!-- HEADER -->
     <div id="status-hero">
       <div class="status-hero__left">
-        <img src="data/vessel/logo.png" alt="Vessel Logo" class="status-hero__logo" />
+        <img src="{{LOGO_PATH}}" alt="{{VESSEL_NAME}}" class="status-hero__logo" data-logo />
         <span id="status-vessel">Ship's Docs</span>
       </div>
       <div class="status-hero__right">
@@ -87,8 +87,8 @@
   </div><!-- /.container -->
 
   <div class="footer">
-    <img src="data/vessel/logo.png" alt="Mermug" class="footer-logo" />
-    <div>Created by <a href="https://zackphillips.com" target="_blank">Zack Phillips</a></div>
+    <img src="{{LOGO_PATH}}" alt="{{VESSEL_NAME}}" class="footer-logo" data-logo />
+    <div>Published by <a href="https://github.com/zackphillips/signalk-github-pages" target="_blank" rel="noopener">signalk-github-pages</a></div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>

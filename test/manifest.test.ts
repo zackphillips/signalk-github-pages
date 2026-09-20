@@ -54,6 +54,19 @@ describe('ownership', () => {
     expect(isOwnedPath('data/vessel/polars.csv', { ...FULL, publishPolars: true })).toBe(true);
   });
 
+  it('leaves a hand-committed logo alone until one is set on the config page', () => {
+    // Same reasoning as the polars: the path is the user's until the plugin
+    // has something of its own to put there.
+    expect(isOwnedPath('data/vessel/logo.png', FULL)).toBe(false);
+    expect(
+      isOwnedPath('data/vessel/logo.png', { ...FULL, publishLogo: 'data/vessel/logo.png' }),
+    ).toBe(true);
+    // And only the path it is actually publishing.
+    expect(
+      isOwnedPath('data/vessel/logo.png', { ...FULL, publishLogo: 'data/vessel/logo.svg' }),
+    ).toBe(false);
+  });
+
   it('drops the docs index when the Action maintains it instead', () => {
     const minimal = { buildDocsIndex: false };
     expect(isOwnedPath('docs/index.json', minimal)).toBe(false);

@@ -13,8 +13,11 @@ import {
   DEFAULT_INTERVAL_UNDERWAY,
   DEFAULT_POSITION_RETENTION_HOURS,
   DEFAULT_STALE_MAX_AGE_MINUTES,
+  pagesUrl,
   parsePathList,
   resolveConfig,
+  resolveSiteUrl,
+  siteBasePath,
 } from '../src/config';
 import { serverTimezone } from '../src/timezones';
 import { COMPLETE_FORM, makeConfig } from './helpers/config';
@@ -468,5 +471,94 @@ describe('the history provider settings', () => {
         history: { enabled: false, resolutionSeconds: 60 },
       }).warnings,
     ).toEqual([]);
+  });
+});
+
+describe('pagesUrl', () => {
+  it('knows a user site from a project site', () => {
+    expect(pagesUrl('zackphillips', 'zackphillips.github.io')).toBe(
+      'https://zackphillips.github.io/',
+    );
+    expect(pagesUrl('zackphillips', 'tracker')).toBe('https://zackphillips.github.io/tracker/');
+  });
+
+  it('lowercases the host, which GitHub Pages serves in lower case', () => {
+    expect(pagesUrl('ZackPhillips', 'Tracker')).toBe('https://zackphillips.github.io/Tracker/');
+  });
+});
+
+describe('resolveSiteUrl', () => {
+  it('derives the Pages URL when the override is not ticked', () => {
+    // Whatever is sitting in the box: a derived setting is derived.
+    expect(resolveSiteUrl('owner', 'owner.github.io', false, 'https://stale.example/').url).toBe(
+      'https://owner.github.io/',
+    );
+  });
+
+  it('takes a custom domain when it is', () => {
+    expect(resolveSiteUrl('owner', 'owner.github.io', true, 'https://mermug.com').url).toBe(
+      'https://mermug.com/',
+    );
+  });
+
+  it('assumes https for an address typed without one', () => {
+    expect(resolveSiteUrl('owner', 'owner.github.io', true, 'mermug.com').url).toBe(
+      'https://mermug.com/',
+    );
+  });
+
+  it('falls back to the derived URL rather than publishing a broken one', () => {
+    // These end up concatenated into og:image. "undefined/logo.png" in every
+    // link preview is worse than the wrong-but-valid GitHub Pages address.
+    for (const typed of ['not a url', 'javascript:alert(1)', '']) {
+      const resolved = resolveSiteUrl('owner', 'owner.github.io', true, typed);
+      expect(resolved.url, typed).toBe('https://owner.github.io/');
+      expect(resolved.warnings, typed).toHaveLength(1);
+    }
+  });
+});
+
+describe('siteBasePath', () => {
+  it('scopes a project site to its own directory', () => {
+    // An installed PWA claiming "/" takes over the owner's whole github.io
+    // domain, including every other project site on it.
+    expect(siteBasePath('https://owner.github.io/tracker/')).toBe('/tracker/');
+    expect(siteBasePath('https://owner.github.io/')).toBe('/');
+    expect(siteBasePath('')).toBe('/');
+  });
+});
+
+describe('the vessel logo', () => {
+  it('publishes an uploaded image under the type it arrived as', () => {
+    const config = makeConfig({
+      site: { logo: 'data:image/png;name=burgee.png;base64,iVBORw0KGgo=' },
+    });
+    expect(config.site.logo?.path).toBe('data/vessel/logo.png');
+    expect(config.site.logo?.mediaType).toBe('image/png');
+    expect(config.site.logo?.content.length).toBeGreaterThan(0);
+  });
+
+  it('leaves the hand-committed path alone when nothing is set', () => {
+    expect(makeConfig().site.logo).toBeNull();
+    expect(makeConfig({ site: { logo: '   ' } }).site.logo).toBeNull();
+  });
+
+  it('is a config problem rather than a silent drop', () => {
+    // A logo that vanishes looks exactly like a logo that did not upload.
+    for (const logo of [
+      'data:application/pdf;base64,JVBERi0=',
+      'https://example.com/logo.png',
+      'data:image/png;base64,',
+    ]) {
+      const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo } });
+      expect(resolved.ok, logo).toBe(false);
+    }
+  });
+
+  it('refuses one too big to upload on every frontend publish', () => {
+    const huge = `data:image/png;base64,${'A'.repeat(1024 * 1024)}`;
+    const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: huge } });
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) expect(resolved.problems.join(' ')).toMatch(/limit is/);
   });
 });

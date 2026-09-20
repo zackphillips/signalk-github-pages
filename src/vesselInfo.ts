@@ -275,6 +275,12 @@ export function renderVesselInfo(
   if (identity.imo) document.imo = identity.imo;
   if (identity.flag) document.flag = identity.flag;
   if (identity.homePort) document.home_port = identity.homePort;
+  // Where the logo was published, for the <img> tags the page fills in after
+  // it loads. The site's address is deliberately not here: the published HTML
+  // carries it already, substituted in at publish time because a link preview
+  // is rendered by a crawler that never runs the page, and a second copy
+  // nothing reads is a second copy to keep right.
+  if (config.site.logo) document.logo = config.site.logo.path;
   if (config.site.customLinks.length) {
     document.custom_links = config.site.customLinks.map((link) => ({
       label: link.label,

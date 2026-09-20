@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { pagesUrl, parsePruneRequest, resolveSitePath } from '../src/webapp';
+import { parsePruneRequest, resolveSitePath } from '../src/webapp';
 
 const SITE = path.join(__dirname, '..', 'site');
 
@@ -55,15 +55,3 @@ describe('resolveSitePath', () => {
   });
 });
 
-describe('pagesUrl', () => {
-  it('knows a user site from a project site', () => {
-    expect(pagesUrl('zackphillips', 'zackphillips.github.io')).toBe(
-      'https://zackphillips.github.io/',
-    );
-    expect(pagesUrl('zackphillips', 'tracker')).toBe('https://zackphillips.github.io/tracker/');
-  });
-
-  it('lowercases the host, which GitHub Pages serves in lower case', () => {
-    expect(pagesUrl('ZackPhillips', 'Tracker')).toBe('https://zackphillips.github.io/Tracker/');
-  });
-});

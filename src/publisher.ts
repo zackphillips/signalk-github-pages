@@ -8,6 +8,7 @@
  * what it did, which is what makes the whole cycle testable without a server
  * or a network.
  */
+import { createHash } from 'node:crypto';
 import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
 import type { HistoryResult } from './history';
 import {
@@ -18,7 +19,7 @@ import {
   renderDocsIndex,
   type DocSource,
 } from './docsIndex';
-import { loadFrontend } from './frontend';
+import { frontendOptions, loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
@@ -243,7 +244,10 @@ export class Publisher {
     files.push(...(await this.vesselInfoFile(identity)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
-    files.push(...(await this.frontendFiles(siteDir, version, state.frontendVersion)));
+    files.push(...(await this.logoFile()));
+    files.push(
+      ...(await this.frontendFiles(siteDir, version, state.frontendVersion, identity)),
+    );
     files.push(...(await this.docsIndexFiles()));
 
     const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
@@ -486,7 +490,11 @@ export class Publisher {
   private async vesselInfoFile(identity: VesselIdentity): Promise<PublishFile[]> {
     const { store, config, client } = this.deps;
     const fingerprint = JSON.stringify({
-      site: config.site,
+      // The logo's bytes are deliberately not in here: info.yaml carries only
+      // the path, and a Buffer stringifies to a JSON array of every byte in
+      // it, which would write half a megabyte of digits to the data directory
+      // on a file that had not changed.
+      site: { ...config.site, logo: config.site.logo?.path ?? null },
       zones: config.privacyZones,
       timezone: config.timezone,
       identity,
@@ -535,6 +543,7 @@ export class Publisher {
     return {
       buildDocsIndex: config.buildDocsIndex,
       publishPolars: polars !== '',
+      publishLogo: config.site.logo?.path,
     };
   }
 
@@ -556,22 +565,46 @@ export class Publisher {
     ];
   }
 
+  /**
+   * `data/vessel/logo.*`, when the config page has one.
+   *
+   * Same arrangement as the polar table: written when it changes, never
+   * deleted. Clearing the field stops republishing the logo and stops claiming
+   * the path, which leaves whatever is on the site in place rather than
+   * removing a boat's own artwork because a form was emptied.
+   */
+  private async logoFile(): Promise<PublishFile[]> {
+    const { config, store, log } = this.deps;
+    const logo = config.site.logo;
+    if (!logo) return [];
+
+    // The fingerprint is over the bytes, not the path: re-uploading a 40 kB
+    // PNG on every cycle is the kind of thing that only shows up on a metered
+    // hotspot at the end of the month.
+    const fingerprint = `${logo.path}:${createHash('sha256').update(logo.content).digest('hex')}`;
+    if ((await store.readText('logo-fingerprint.txt')) === fingerprint) return [];
+    await store.writeText('logo-fingerprint.txt', fingerprint);
+    log(`Publishing ${logo.path} (${kb(logo.content.length)}).`);
+    return [{ path: logo.path, content: logo.content }];
+  }
+
   /** The frontend goes up on first run and after an upgrade, never per cycle. */
   private async frontendFiles(
     siteDir: string,
     version: string,
     publishedVersion: string | undefined,
+    identity: VesselIdentity,
   ): Promise<PublishFile[]> {
     const { config, store, log } = this.deps;
-    const fingerprint = `${version}:${config.github.repo}:${config.github.branch}:${config.instrumentLog.entries}`;
+    const options = frontendOptions(config, identity.name, version);
+    // Everything substituted into the published files is in here, so a rename
+    // or a new logo republishes the pages that carry it. The name comes off
+    // the tree, which is why it is part of the fingerprint rather than read
+    // once at start.
+    const fingerprint = JSON.stringify({ ...options, version });
     if (publishedVersion === fingerprint) return [];
 
-    const files = await loadFrontend(siteDir, {
-      repo: config.github.repo,
-      branch: config.github.branch,
-      instrumentLogEntries: config.instrumentLog.entries,
-      version,
-    });
+    const files = await loadFrontend(siteDir, options);
     await store.mergeState({ frontendVersion: fingerprint });
     log(`Publishing frontend (${files.length} files, version ${version}).`);
     return files;

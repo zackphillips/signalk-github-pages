@@ -784,7 +784,7 @@ function bindVoyageListOnce(container) {
 
     if (e.target.closest('.voyage-show-on-map')) {
       const date = item.dataset.date;
-      if (typeof window.mermugActivateTab === 'function') window.mermugActivateTab('map');
+      if (typeof window.activateTrackerTab === 'function') window.activateTrackerTab('map');
       focusTrackDay(date);
       return;
     }
@@ -843,6 +843,24 @@ function toggleVoyageDetail(item) {
   renderVoyageMiniMap(item, entry);
 }
 
+// Whether docs/index.json lists the captain's log, which is what decides
+// whether the Voyages tab offers to open it. It is one boat's filing habit,
+// not a feature of the tracker: a site without that document used to get a
+// button that opened GitHub's new-file editor for a path nobody had chosen.
+let hasCaptainsLog = false;
+
+async function loadCaptainsLogPresence() {
+  if (!C.CAPTAINS_LOG_PATH) return;
+  try {
+    const response = await fetch(C.DOCS_INDEX_URL);
+    if (!response.ok) return;
+    const index = await response.json();
+    hasCaptainsLog = (index?.docs ?? []).some((doc) => doc?.path === C.CAPTAINS_LOG_PATH);
+  } catch {
+    // No docs index, no button. A site with no docs at all is the common case.
+  }
+}
+
 function voyageDetailHtml(entry) {
   const fmtTime = (iso) => {
     if (!iso) return '—';
@@ -878,9 +896,9 @@ function voyageDetailHtml(entry) {
     <div class="voyage-detail-actions">
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-      <a class="voyage-detail-btn voyage-detail-btn--ghost" target="_blank" rel="noopener noreferrer"
+      ${hasCaptainsLog ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" target="_blank" rel="noopener noreferrer"
          href="https://github.com/${C.GITHUB_REPO}/edit/${C.GITHUB_DEFAULT_BRANCH}/${C.CAPTAINS_LOG_PATH}"
-         title="Opens the Captain's Log in the GitHub editor — add crew, conditions and notes for this trip">Log this voyage</a>
+         title="Opens the Captain's Log in the GitHub editor — add crew, conditions and notes for this trip">Log this voyage</a>` : ''}
     </div>`;
 }
 
@@ -1204,12 +1222,22 @@ function updateVesselLinks() {
     // Update document title
     document.title = `${vesselData.name} Tracker`;
 
-    // Update logo alt text
-    const logoImg = document.querySelector('img[src="data/vessel/logo.png"]');
-    if (logoImg) {
-      logoImg.alt = `${vesselData.name} Logo`;
-    }
+  }
 
+  // The logo, and what to do when there is not one.
+  //
+  // The published pages carry the path already — the plugin substitutes it in,
+  // because the tab icon and the link preview need it before any of this runs
+  // — so all that is left here is the case where the file is not there: a site
+  // that has never set a logo on the config page and never committed one by
+  // hand. An image that 404s is hidden rather than left as a broken icon in
+  // the status hero.
+  for (const logoImg of document.querySelectorAll('img[data-logo]')) {
+    if (vesselData.logo) logoImg.src = vesselData.logo;
+    if (vesselData.name) logoImg.alt = vesselData.name;
+    logoImg.addEventListener('error', () => { logoImg.style.display = 'none'; }, { once: true });
+    // A cached 404 can have fired before the listener was attached.
+    if (logoImg.complete && logoImg.naturalWidth === 0) logoImg.style.display = 'none';
   }
 
   // Render passage banner if a current passage is configured
@@ -2170,7 +2198,7 @@ async function loadData() {
     if (hasGpsFix) {
       if (!map) {
         map = L.map('map').setView([lat, lon], 13);
-        window.mermugMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
+        window.trackerMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
         tileLayerForTheme().addTo(map);
         marker = L.marker([lat, lon]).addTo(map);
 
@@ -3512,8 +3540,12 @@ function initDarkMode() {
   const darkModeToggle = document.getElementById('darkModeToggle');
   const html = document.documentElement;
 
-  // Check for saved theme preference, then vessel config, then fall back to light
-  const savedTheme = localStorage.getItem('theme') || vesselData?.theme || 'marine';
+  // A remembered theme, if this release still has it. docs.js has always
+  // checked; this side did not, so a theme renamed between releases left the
+  // page with a data-theme nothing in the stylesheet matched — every token
+  // falling back to the light defaults under a "Dark Mode" button.
+  let savedTheme = localStorage.getItem('theme') || 'marine';
+  if (!THEMES.includes(savedTheme)) savedTheme = THEMES[0];
   html.setAttribute('data-theme', savedTheme);
   updateDarkModeButton(savedTheme);
 
@@ -3664,6 +3696,10 @@ function updateChartsForTheme(theme) {
 
   // Load tide stations data
   await loadTideStations();
+
+  // Before the voyage list renders: it decides whether a row offers the
+  // "Log this voyage" button.
+  await loadCaptainsLogPresence();
 
   initDarkMode();
   loadPolarData();

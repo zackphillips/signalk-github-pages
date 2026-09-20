@@ -325,6 +325,75 @@ describe('Publisher', () => {
     );
   });
 
+  describe('the vessel logo', () => {
+    // A 1x1 PNG, which is all the publisher needs to see bytes go up.
+    const PNG =
+      'data:image/png;name=burgee.png;base64,' +
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+    it('publishes an uploaded logo to the path the pages point at', async () => {
+      const publisher = makePublisher({ site: { logo: PNG } });
+      await publisher.seed();
+      const result = await publisher.runCycle(tree());
+
+      expect(result.files).toContain('data/vessel/logo.png');
+      expect(result.rejected).toEqual([]);
+      // And claims it, so a later cycle may rewrite it.
+      const manifest = JSON.parse(String(fake.files.get('.tracker-manifest.json')));
+      expect(manifest.owned).toContain('data/vessel/logo.png');
+    });
+
+    it('does not re-upload it on every cycle', async () => {
+      // It is a binary in every commit otherwise, on a boat's hotspot.
+      const publisher = makePublisher({ site: { logo: PNG } });
+      await publisher.seed();
+      await publisher.runCycle(tree());
+      const second = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }));
+      expect(second.files).not.toContain('data/vessel/logo.png');
+    });
+
+    it('leaves a logo committed by hand alone when none is configured', async () => {
+      const publisher = makePublisher();
+      await publisher.seed();
+      const result = await publisher.runCycle(tree());
+
+      expect(result.files).not.toContain('data/vessel/logo.png');
+      const manifest = JSON.parse(String(fake.files.get('.tracker-manifest.json')));
+      expect(manifest.owned).not.toContain('data/vessel/logo.png');
+    });
+
+    it('names the boat in the tags a crawler reads', async () => {
+      // The visible name is patched in by app.js at runtime; these are not,
+      // because a link preview is rendered without running the page.
+      const publisher = makePublisher();
+      await publisher.seed();
+      await publisher.runCycle(tree());
+
+      const page = String(fake.files.get('index.html'));
+      expect(page).toContain('content="S.V.Mermug \u2014 Live Vessel Tracker"');
+      expect(page).toContain('content="https://owner.github.io/site/"');
+      expect(page).not.toMatch(/\{\{[A-Z_]+\}\}/);
+
+      const manifest = JSON.parse(String(fake.files.get('manifest.json')));
+      expect(manifest.short_name).toBe('S.V.Mermug');
+      expect(manifest.start_url).toBe('/site/');
+    });
+
+    it('republishes the pages when the boat is renamed', async () => {
+      // The name is substituted into the published HTML, so it is part of the
+      // frontend fingerprint: a rename that never republished would leave the
+      // old name in every link preview.
+      const publisher = makePublisher();
+      await publisher.seed();
+      await publisher.runCycle(tree());
+      const renamed = { ...tree({ timestamp: '2026-03-01T20:02:00Z' }), name: 'Swallow' };
+      const second = await publisher.runCycle(renamed);
+
+      expect(second.files).toContain('index.html');
+      expect(String(fake.files.get('index.html'))).toContain('content="Swallow');
+    });
+  });
+
   describe('pruning voyages', () => {
     const INDEX = {
       schema_version: 1,

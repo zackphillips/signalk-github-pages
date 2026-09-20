@@ -1,18 +1,18 @@
 {
-  "name": "S.V. Mermug Tracker",
-  "short_name": "Mermug",
-  "description": "Live vessel tracker — position, weather, and systems for S.V. Mermug.",
-  "start_url": "/",
-  "scope": "/",
+  "name": "{{VESSEL_NAME}} Tracker",
+  "short_name": "{{VESSEL_NAME}}",
+  "description": "Live vessel tracker — position, weather and systems for {{VESSEL_NAME}}.",
+  "start_url": "{{BASE_PATH}}",
+  "scope": "{{BASE_PATH}}",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#1a2332",
   "theme_color": "#2c3e50",
   "icons": [
     {
-      "src": "data/vessel/logo.png",
+      "src": "{{ICON_PATH}}",
       "sizes": "any",
-      "type": "image/png",
+      "type": "{{ICON_TYPE}}",
       "purpose": "any maskable"
     }
   ]

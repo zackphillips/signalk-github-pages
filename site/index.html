@@ -3,30 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title id="page-title">Vessel Tracker</title>
+  <title id="page-title">{{VESSEL_NAME}} Tracker</title>
 
-  <!-- OpenGraph / social sharing -->
+  <!-- OpenGraph / social sharing. The placeholders below are substituted by
+       the plugin on the way into the repository (src/frontend.ts): a link
+       pasted into a chat is unfurled by a crawler that never runs this page's
+       JavaScript, so these cannot be filled in at runtime the way the visible
+       vessel name is. -->
   <meta property="og:type"        content="website" />
-  <meta property="og:title"       content="S.V. Mermug — Live Vessel Tracker" />
-  <meta property="og:description" content="Real-time position, weather, and systems for S.V. Mermug sailing on San Francisco Bay and beyond." />
-  <meta property="og:url"         content="https://mermug.com/" />
-  <meta property="og:image"       content="https://mermug.com/data/vessel/logo.png" />
-  <meta name="description"        content="Real-time position, weather, and systems for S.V. Mermug sailing on San Francisco Bay and beyond." />
+  <meta property="og:title"       content="{{VESSEL_NAME}} — Live Vessel Tracker" />
+  <meta property="og:description" content="Live position, weather and systems for {{VESSEL_NAME}}." />
+  <meta property="og:url"         content="{{SITE_URL}}" />
+  <meta property="og:image"       content="{{LOGO_URL}}" />
+  <meta name="description"        content="Live position, weather and systems for {{VESSEL_NAME}}." />
 
   <!-- Twitter card -->
   <meta name="twitter:card"        content="summary" />
-  <meta name="twitter:title"       content="S.V. Mermug — Live Vessel Tracker" />
-  <meta name="twitter:description" content="Real-time position, weather, and systems for S.V. Mermug." />
-  <meta name="twitter:image"       content="https://mermug.com/data/vessel/logo.png" />
+  <meta name="twitter:title"       content="{{VESSEL_NAME}} — Live Vessel Tracker" />
+  <meta name="twitter:description" content="Live position, weather and systems for {{VESSEL_NAME}}." />
+  <meta name="twitter:image"       content="{{LOGO_URL}}" />
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="icon" href="/assets/favicon.ico" />
+  <link rel="icon" href="{{ICON_PATH}}" />
   <link rel="manifest" href="manifest.json" />
   <meta name="theme-color" content="#4f46e5" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Mermug" />
-  <link rel="apple-touch-icon" href="data/vessel/logo.png" />
+  <meta name="apple-mobile-web-app-title" content="{{VESSEL_NAME}}" />
+  <link rel="apple-touch-icon" href="{{ICON_PATH}}" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
   <link rel="stylesheet" href="assets/styles.css" />
@@ -35,7 +39,9 @@
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
+        // Relative, so a project site served under /tracker/ registers its
+        // own worker rather than one at the domain root it does not own.
+        navigator.serviceWorker.register('sw.js').catch(() => {});
       });
     }
   </script>
@@ -51,7 +57,7 @@
     <!-- STATUS HERO (pinned above tabs on every screen) -->
     <div id="status-hero">
       <div class="status-hero__left">
-        <img src="data/vessel/logo.png" alt="Vessel Logo" class="status-hero__logo" />
+        <img src="{{LOGO_PATH}}" alt="{{VESSEL_NAME}}" class="status-hero__logo" data-logo />
         <span id="status-vessel"></span>
       </div>
       <div class="status-hero__right">
@@ -368,8 +374,8 @@
   </div><!-- /.container -->
 
   <div class="footer">
-    <img src="data/vessel/logo.png" alt="Mermug" class="footer-logo" />
-    <div>Created by <a href="https://zackphillips.com" target="_blank">Zack Phillips</a></div>
+    <img src="{{LOGO_PATH}}" alt="{{VESSEL_NAME}}" class="footer-logo" data-logo />
+    <div>Published by <a href="https://github.com/zackphillips/signalk-github-pages" target="_blank" rel="noopener">signalk-github-pages</a></div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

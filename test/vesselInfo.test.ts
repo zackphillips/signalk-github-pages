@@ -93,6 +93,22 @@ describe('custom buttons', () => {
   });
 });
 
+describe('the vessel logo', () => {
+  it('names it only when one is configured', () => {
+    expect((yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any).logo).toBeUndefined();
+    const config = makeConfig({ site: { logo: 'data:image/svg+xml;base64,PHN2Zy8+' } });
+    expect((yaml.load(renderVesselInfo(config, IDENTITY)) as any).logo).toBe(
+      'data/vessel/logo.svg',
+    );
+  });
+
+  it('does not repeat the site address, which the published HTML carries', () => {
+    // A second copy nothing reads is a second copy to keep right.
+    expect((yaml.load(renderVesselInfo(makeConfig(), IDENTITY)) as any).site_url)
+      .toBeUndefined();
+  });
+});
+
 describe('the default position', () => {
   it('writes default_location, which is where the site looks before a fix', () => {
     const config = makeConfig({

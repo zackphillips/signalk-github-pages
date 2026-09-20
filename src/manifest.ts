@@ -19,6 +19,12 @@ export interface ManifestOptions {
    * publisher.
    */
   publishPolars?: boolean;
+  /**
+   * The path a configured vessel logo is published at, or undefined. Same
+   * reasoning as the polars: unset, a logo committed by hand stays out of
+   * reach of the publisher.
+   */
+  publishLogo?: string;
 }
 
 export const MANIFEST_PATH = '.tracker-manifest.json';
@@ -47,6 +53,7 @@ export function ownedPatterns(options: ManifestOptions): string[] {
   const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS];
   if (options.buildDocsIndex) patterns.push('docs/index.json');
   if (options.publishPolars) patterns.push(POLARS_PATTERN);
+  if (options.publishLogo) patterns.push(options.publishLogo);
   return patterns;
 }
 

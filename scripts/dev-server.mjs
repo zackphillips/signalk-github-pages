@@ -3,9 +3,10 @@
  * Serve the bundled frontend against sample telemetry.
  *
  * `npm run dev` gives you the published site at http://localhost:8000 without
- * a boat, a Signal K server or a GitHub repository: `site/` is served as-is,
- * and anything under `data/` falls back to `sample/` when the file is not
- * there. Use it to check a frontend change before it ships in a release.
+ * a boat, a Signal K server or a GitHub repository: `site/` is served with the
+ * publisher's `{{TOKEN}}` substitutions filled in from the sample vessel, and
+ * anything under `data/` falls back to `sample/` when the file is not there.
+ * Use it to check a frontend change before it ships in a release.
  */
 import { createServer } from 'node:http';
 import { createReadStream, promises as fs } from 'node:fs';
@@ -15,6 +16,25 @@ import { fileURLToPath } from 'node:url';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const roots = [path.join(root, 'site'), path.join(root, 'sample')];
 const port = Number(process.env.PORT ?? 8000);
+
+/**
+ * Stand-ins for what the plugin substitutes at publish time.
+ *
+ * Without these the dev server shows raw `{{VESSEL_NAME}}` in the title bar,
+ * which is a confusing way to review a CSS change. They are only ever seen
+ * here: the publisher fills the same tokens from the boat's own config.
+ */
+const TOKENS = {
+  VESSEL_NAME: 'Sample Vessel',
+  SITE_URL: `http://localhost:${port}/`,
+  LOGO_PATH: 'data/vessel/logo.png',
+  LOGO_URL: `http://localhost:${port}/data/vessel/logo.png`,
+  ICON_PATH: 'assets/icon.svg',
+  ICON_TYPE: 'image/svg+xml',
+  BASE_PATH: '/',
+};
+
+const TOKENISED = new Set(['index.html', 'docs.html', 'manifest.json']);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -52,10 +72,21 @@ createServer(async (request, response) => {
     response.end('Not found\n');
     return;
   }
-  response.writeHead(200, {
+  const headers = {
     'Content-Type': TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
     'Cache-Control': 'no-store',
-  });
+  };
+  const relative = path.relative(roots[0], file).split(path.sep).join('/');
+  if (TOKENISED.has(relative)) {
+    const text = (await fs.readFile(file, 'utf-8')).replace(
+      /\{\{([A-Z_]+)\}\}/g,
+      (match, key) => TOKENS[key] ?? match,
+    );
+    response.writeHead(200, headers);
+    response.end(text);
+    return;
+  }
+  response.writeHead(200, headers);
   createReadStream(file).pipe(response);
 }).listen(port, () => {
   console.log(`Serving the tracker on http://localhost:${port}`);

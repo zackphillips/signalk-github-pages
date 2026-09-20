@@ -39,8 +39,8 @@ var VESSEL_CONSTANTS = Object.freeze({
   // ── Theming ──────────────────────────────────────────────────────────────
   // Cycle order for the floating theme button. Shared by index.html and
   // docs.html so the two pages never drift apart.
-  THEMES:      ['marine', 'mermug', 'bright'],
-  DARK_THEMES: ['marine', 'mermug'],
+  THEMES:      ['marine', 'amber', 'bright'],
+  DARK_THEMES: ['marine', 'amber'],
 
   // ── Ship's docs (docs.html) ──────────────────────────────────────────────
   DOCS_INDEX_URL: 'docs/index.json',
@@ -52,7 +52,7 @@ var VESSEL_CONSTANTS = Object.freeze({
   DOCS_CATEGORY_ORDER: ['Operations', 'Systems', 'Maintenance', 'Voyages'],
   // Checklist ticks are per-device UI state, not vessel data — they live in
   // localStorage under this prefix and are never committed anywhere.
-  DOCS_CHECKLIST_PREFIX: 'mermug.checklist.',
+  DOCS_CHECKLIST_PREFIX: 'tracker.checklist.',
 
   // ── GitHub (edit-in-place links) ────────────────────────────────────────
   // "Edit on GitHub" links (docs.js, the Voyages tab's "Log this voyage"
@@ -60,10 +60,16 @@ var VESSEL_CONSTANTS = Object.freeze({
   // with push access can commit straight to GITHUB_DEFAULT_BRANCH — GitHub
   // routes everyone else through "fork + pull request" automatically, so
   // this alone is what keeps edits gated to contributors.
-  GITHUB_REPO: 'zackphillips/zackphillips.github.io',
+  // Placeholders: src/frontend.ts substitutes the configured repository on the
+  // way into the repository, and throws if it cannot find these lines. They
+  // used to ship as one particular repository, which meant a substitution that
+  // silently stopped matching sent every adopter's "edit on GitHub" links to
+  // somebody else's repo.
+  GITHUB_REPO: 'OWNER/REPO',
   GITHUB_DEFAULT_BRANCH: 'main',
-  // Slug of docs/captains-log.md, used to build its edit link from the
-  // Voyages tab without waiting on docs/index.json to load.
+  // The Voyages tab's "Log this voyage" button edits this file on GitHub. The
+  // button is only rendered when docs/index.json actually lists it, so a site
+  // without a captain's log does not offer to open one.
   CAPTAINS_LOG_PATH: 'docs/captains-log.md',
 
   // ── Data URLs ────────────────────────────────────────────────────────────

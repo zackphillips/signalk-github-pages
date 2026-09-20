@@ -140,6 +140,9 @@ only. Give Pages a minute, then open the URL.
 | `timezone.zone` | the server's zone | IANA zone, for grouping tracks by local day |
 | `polars.override` | off | Publish the table below instead of the active polar |
 | `polars.table` | the active polar | Read-only until the override is ticked, [see below](#polars) |
+| `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](#branding) |
+| `site.overrideUrl` | off | Publish under a custom domain rather than the Pages URL |
+| `site.url` | derived | Where the site is served, e.g. `https://example.com/` |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
 | `site.overrideUscgNumber` | off | Type a documentation number instead of reading it from Signal K |
 | `site.overrideHullNumber` | off | Likewise for the hull number |
@@ -147,10 +150,11 @@ only. Give Pages a minute, then open the URL.
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 
 The defaults are the numbers this tracker has run on since it was a Python
-daemon on a Raspberry Pi. Four settings are derived rather than typed — the
-repository name from the owner, the timezone from the server, the polar table
-from Polar Management, and the USCG and hull numbers from the Signal K
-registrations — and each has an override checkbox beside it. What has no
+daemon on a Raspberry Pi. Five settings are derived rather than typed — the
+repository name from the owner, the site address from the repository, the
+timezone from the server, the polar table from Polar Management, and the USCG
+and hull numbers from the Signal K registrations — and each has an override
+checkbox beside it. What has no
 default at all is what belongs to one particular boat: privacy zones start
 empty, and [the vessel's own details](#what-comes-from-signal-k) come from
 Signal K rather than from this page.
@@ -290,10 +294,47 @@ show you manoeuvring in the harbour.
 Every check walks the whole list. Zones start empty: nothing is hidden until
 you say what to hide.
 
+The map draws the zones it is redacting against, as dashed rings. It used to
+draw one fixed ring at the Python daemon's old dock in San Francisco, on every
+site, while the configured zones were never drawn at all — a redaction claim
+that was wrong in both directions.
+
 > [!NOTE]
 > A zone missing its radius is a hard configuration error, not a warning. A
 > half-entered zone hides nothing while looking like it does, and the failure
 > mode is a published position someone believed was redacted.
+
+## Branding
+
+The site carries the boat's name and logo in places the page cannot fill in
+after it loads. `document.title` and the name in the status hero are patched
+from `info.yaml` at runtime, but a link pasted into a group chat is unfurled by
+a crawler that never runs the JavaScript, and the browser tab has its icon
+before the first fetch. So the plugin substitutes them on the way into the
+repository: the OpenGraph and Twitter tags, the web app manifest's name, scope
+and icon, and the `<link rel="icon">` on both pages.
+
+Everything it needs comes off the config page or the Signal K tree. The name is
+`vessels.self`. The address is derived from the repository (`<owner>.github.io`,
+or `<owner>.github.io/<name>/` for a project site) unless `site.overrideUrl` is
+ticked for a custom domain. The logo is `site.logo`, which is a file picker:
+choose a PNG, JPEG, WebP or SVG up to 512 kB and the plugin publishes it to
+`data/vessel/logo.<ext>` and points the pages, the tab icon and the home-screen
+icon at it. It is uploaded when it changes, not every cycle.
+
+With no logo set, the pages ask for `data/vessel/logo.png` — where the first
+adopters of this tracker committed theirs by hand — and hide the image if it is
+not there. The tab and home-screen icon fall back to a generic
+`assets/icon.svg` that ships with the plugin.
+
+None of this used to be configurable. The pages named one boat in their
+preview tags and their manifest, and the six favicon and home-screen icons in
+`assets/` were that boat's logo, published into every adopter's repository
+under paths the plugin owns and overwrites on upgrade. Editing them by hand
+lasted until the next release.
+
+`assets/custom.css` is still yours, loaded last by both pages and never written
+by the plugin, for anything the config page does not reach.
 
 ## What comes from Signal K
 
@@ -398,8 +439,8 @@ into a commit.
 | `docs/index.json` | Plugin, when the docs tree changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
+| `data/vessel/logo.*` | Plugin, but only while a logo is set on the config page |
 | `docs/*.md` | **You** |
-| `data/vessel/logo.png` | **You** |
 | `assets/custom.css` | **You** — loaded last by both pages, never written here |
 | Everything else | **You** |
 
