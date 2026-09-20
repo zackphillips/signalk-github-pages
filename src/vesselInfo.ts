@@ -6,8 +6,8 @@
  * server already holds it and a second copy typed into a form is a second copy
  * to keep right. The name, MMSI, callsign, registrations and dimensions are
  * read straight off `vessels.self` every cycle; the config fields for a USCG
- * or hull number are fallbacks for a server that does not carry them, and win
- * when they are filled in, which is logged so an override is visible.
+ * or hull number are used only when their override checkbox is ticked, and
+ * the difference from what Signal K reports is logged.
  *
  * One key is not ours either way: `passage:`. The passage banner is edited
  * from the GitHub web UI by whoever is ashore following the boat, so it is
@@ -234,13 +234,21 @@ export function extractPassage(existingYaml: string | null | undefined): unknown
   return undefined;
 }
 
-/** The configured value if there is one, otherwise what Signal K reported. */
+/**
+ * What Signal K reported, unless the config page overrides it.
+ *
+ * An override that disagrees with the tree is logged: a server reporting one
+ * documentation number while the page says another is a thing to notice, not
+ * to resolve silently.
+ */
 function pick(
   label: string,
+  override: boolean,
   configured: string,
   fromSignalK: string | undefined,
   onProblem: (message: string) => void,
 ): string {
+  if (!override) return fromSignalK || '';
   if (configured && fromSignalK && configured !== fromSignalK) {
     onProblem(
       `The ${label} on the config page ("${configured}") differs from the one Signal K ` +
@@ -260,7 +268,6 @@ export function renderVesselInfo(
   const document: Record<string, unknown> = {};
 
   if (passage !== undefined) document.passage = passage;
-  document.theme = config.site.theme;
   if (identity.name) document.name = identity.name;
   if (identity.mmsi) document.mmsi = identity.mmsi;
   if (identity.callsign) document.callsign = identity.callsign;
@@ -268,8 +275,6 @@ export function renderVesselInfo(
   if (identity.imo) document.imo = identity.imo;
   if (identity.flag) document.flag = identity.flag;
   if (identity.homePort) document.home_port = identity.homePort;
-  if (config.site.marinetrafficShipId)
-    document.marinetraffic_ship_id = config.site.marinetrafficShipId;
   if (config.site.customLinks.length) {
     document.custom_links = config.site.customLinks.map((link) => ({
       label: link.label,
@@ -281,17 +286,21 @@ export function renderVesselInfo(
     document.default_location = label ? { lat, lon, label } : { lat, lon };
   }
 
-  // Typed on the config page beats read off the tree, and says so: a server
-  // that reports one documentation number while the page says another is a
-  // thing to notice, not to resolve silently.
   const uscgNumber = pick(
     'USCG documentation number',
+    config.site.overrideUscgNumber,
     config.site.uscgNumber,
     identity.uscgNumber,
     onProblem,
   );
   if (uscgNumber) document.uscg_number = uscgNumber;
-  const hullNumber = pick('hull number', config.site.hullNumber, identity.hullNumber, onProblem);
+  const hullNumber = pick(
+    'hull number',
+    config.site.overrideHullNumber,
+    config.site.hullNumber,
+    identity.hullNumber,
+    onProblem,
+  );
   if (hullNumber) document.hull_number = hullNumber;
   if (identity.registrations && Object.keys(identity.registrations).length) {
     document.registrations = identity.registrations;

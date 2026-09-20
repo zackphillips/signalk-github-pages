@@ -152,11 +152,13 @@ Run `npm test` and `npm run typecheck` before committing.
   the whole of `polars.ts`. Round to two decimals on the way out: the file is
   rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
   comes back as 5.999999999999999.
-- **The config polar table is a fallback, not an override.** The server wins
-  whenever it has a polar that converts; the pasted table is used when it has
-  none, and when what it has will not convert. `plugin.schema` is a function
-  so the field's description can say which of the two is live — that note is
-  the only way a user can tell which plugin the chart is coming from.
+- **The config polar table is an override, not a fallback.** Untick "Override
+  polar" and the field is read-only and ignored, whatever is in it; tick it
+  and it beats the server's active polar. An override that will not parse
+  falls back to the server rather than blanking the chart. `plugin.schema` is
+  a function so the field's description can say which of the two is live —
+  that note is the only way a user can tell which plugin the chart is coming
+  from.
 - **The polar table is only ours while we have one.** `publishPolars` gates
   `data/vessel/polars.csv` in the manifest. Losing both sources stops
   publishing it and stops claiming it; it never deletes the file, because a
@@ -164,10 +166,19 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
-  timezone, repo, token and the vessel identifiers have none: a guessed
-  privacy zone hides the wrong water, and a guessed timezone splits tracks on
-  the wrong midnight. An incomplete privacy zone is a hard config error, not a
+  the repo owner and the token have none: a guessed privacy zone hides the
+  wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
+- **Four settings are derived, each behind an override checkbox.** The
+  repository name from the owner (`<owner>.github.io`), the timezone from the
+  server, the polar from Polar Management, the USCG and hull numbers from the
+  Signal K registrations. `resolveConfig` derives them itself and ignores the
+  field whenever its override is unticked, so the `default` that
+  `buildConfigSchema` puts in the box is cosmetic and a stale one can never
+  become a published value. Graying the box out is a JSON Schema
+  `dependencies` block, not `if`/`then`: every react-json-schema-form the
+  Signal K admin UI has shipped understands one, and a renderer that
+  understands neither still shows the plain editable field from `properties`.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
   nothing is fatal; a token that is not shaped like one is a warning. The test
@@ -178,10 +189,19 @@ Run `npm test` and `npm run typecheck` before committing.
   from `Intl.supportedValuesOf('timeZone')`, so every name offered is one
   `localDay()` can group by. "PST" used to be accepted, silently fall back to
   UTC, and split every track at 4pm.
-- **`SITE_THEMES` must match the themes in `site/assets/styles.css`.** It
-  once carried names from a stale comment in one boat's `info.yaml`; picking
-  one of those left the page unstyled. Today: `marine`, `mermug`, `bright`,
-  `dark`.
+- **The config page asks for minutes; everything else is seconds.**
+  `interval.underwayMinutes` and `interval.stationaryMinutes` are converted in
+  `resolveConfig`. `PluginConfig.interval` and the scheduler stay in seconds,
+  and the legacy seconds fields are still read.
+- **The theme is the site's, not the plugin's.** There is no theme setting and
+  no `theme:` key in `info.yaml`; the floating button on the page cycles the
+  themes in `site/assets/styles.css` and remembers the choice in
+  `localStorage`. A config field for it once carried names from a stale
+  comment in one boat's `info.yaml`, and picking one left the page unstyled.
+- **The link row has no built-in external links.** A MarineTraffic button
+  used to be hardcoded into `index.html` and fed by a `marinetraffic_ship_id`
+  config field, which meant every site carried one vendor's link whether or
+  not the boat was on it. Buttons are `site.customLinks` now, all of them.
 - **Publish state stays out of the Signal K tree.** Cost, commit SHA and
   failures go to `app.debug` / `app.error` and the plugin status line. Do not
   add `setPluginStatus`-style state as data paths.
@@ -222,3 +242,17 @@ the plugin. Do not "fix" that by committing `dist/`.
 different versions can detect a mismatch. The shapes otherwise match what the
 Python daemon wrote, because the frontend reads them unchanged — check
 `site/assets/app.js` before altering any of them.
+
+- **A canvas has two sizes and they have to agree.** `.sparkline-inline` is
+  `width: 100%` in the stylesheet, so the bitmap must be sized from the box the
+  canvas actually occupies, times `devicePixelRatio`, with the drawing
+  transform scaled to match. It used to be sized from the card's `clientWidth`
+  — which includes the card's padding — at 1x, so every sparkline was squeezed
+  horizontally and then upscaled by the phone, and 10px axis labels came out as
+  smears. `sizeSparkline` is the only place that touches `canvas.width`.
+- **Measure a label before reserving room for it.** The sparkline's left gutter
+  was a fixed 34px while the y labels carry their unit; "0.01nm" is 38px at
+  that font, so it ran off the left edge of the canvas. The gutter is
+  `measureText` plus a margin now, and the x-axis tick count is whatever fits
+  the remaining width rather than always four — four "HH:MM" labels do not fit
+  the ~100px of plot a phone-width card leaves.

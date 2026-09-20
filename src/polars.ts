@@ -9,11 +9,10 @@
  * that resource and renders it in the one format `app.js` parses.
  *
  * That is one copy of the polar on the boat rather than two that drift apart.
- * The table on this plugin's config page is the fallback, for a server that
- * has no polar to give — nothing active, or something active that will not
- * convert. The server always wins when it has an answer, and `readActivePolar`
- * reports which of the two was used so the config page can say so rather than
- * leaving someone to guess which plugin the chart is coming from.
+ * The table on this plugin's config page is an override: it is used when
+ * "Override polar" is ticked, and ignored otherwise, so the config page shows
+ * the active polar read-only rather than inviting an edit that would do
+ * nothing. `readActivePolar` reports which of the two was used.
  *
  * The resource is canonical polar-format: SI units (true wind speed and boat
  * speed in m/s, true wind angle in radians), the matrix indexed
@@ -215,12 +214,11 @@ export function polarTableFromResource(resource: unknown): ParsedPolars {
 }
 
 /**
- * The fallback: a polar table typed into the config page.
+ * The override: a polar table typed into the config page.
  *
- * Only reached when the server has no polar to give — Polar Management is not
- * installed, or nothing is active. It exists because a boat with a polar on a
- * sailmaker's PDF and no internet at anchor should still get a chart, and the
- * alternative was telling that person to install a second plugin first.
+ * It exists because a boat with a polar on a sailmaker's PDF and no internet
+ * at anchor should still get a chart, and the alternative was telling that
+ * person to install a second plugin first.
  *
  * The parser is deliberately unfussy about what it is handed: semicolons,
  * commas, tabs or runs of spaces, a European decimal comma, `#` comments. A
@@ -363,13 +361,20 @@ export interface ActivePolar {
 const describe = (table: PolarTable): string =>
   `${table.rows.length} angle(s) x ${table.windSpeeds.length} wind speed(s)`;
 
+/** The config page's half of the decision. */
+export interface PolarOverride {
+  override: boolean;
+  table: string;
+}
+
 /**
  * Work out which polar to publish this cycle.
  *
- * The server wins. A polar selected in Polar Management is the boat's polar,
- * maintained in one place by the plugin whose job that is; the table on our
- * config page is a fallback for a server that has none, and it stays silent
- * while the server has one rather than quietly diverging from it.
+ * The polar selected in Polar Management is the boat's polar, maintained in
+ * one place by the plugin whose job that is. The table on our config page
+ * takes over only when "Override polar" is ticked, and is read first when it
+ * is; an override that will not parse falls through to the server rather than
+ * publishing nothing.
  *
  * Called once per cycle from `index.ts` — the resource lives behind an async
  * server API, and `publisher.ts` stays a pure function of the tree. Publishing
@@ -379,10 +384,25 @@ const describe = (table: PolarTable): string =>
 export async function readActivePolar(
   app: PolarResourceSource,
   tree: Tree,
-  fallback: unknown = '',
+  polars: PolarOverride = { override: false, table: '' },
 ): Promise<ActivePolar> {
   const problems: string[] = [];
   const id = activePolarId(tree);
+
+  if (polars.override) {
+    const pasted = parsePolarTable(polars.table);
+    problems.push(...pasted.problems);
+    if (pasted.table) {
+      return {
+        id,
+        csv: renderPolarCsv(pasted.table),
+        source: 'config',
+        problems,
+        summary: `the table on the config page, ${describe(pasted.table)}`,
+      };
+    }
+    problems.push('Override polar is ticked but the table on the config page is not usable.');
+  }
 
   if (id) {
     const getResource = app.resourcesApi?.getResource;
@@ -410,28 +430,13 @@ export async function readActivePolar(
     }
   }
 
-  // Either nothing is active, or what is active would not convert. Both are
-  // cases the config table exists for, so fall through to it rather than
-  // publishing nothing because another plugin is misconfigured.
-  const pasted = parsePolarTable(fallback);
-  problems.push(...pasted.problems);
-  if (pasted.table) {
-    return {
-      id,
-      csv: renderPolarCsv(pasted.table),
-      source: 'config',
-      problems,
-      summary: `the table on the config page, ${describe(pasted.table)}`,
-    };
-  }
-
   return {
     id,
     csv: '',
     source: 'none',
     problems,
     summary: id
-      ? `"${id}" is active but could not be read, and the config page has no table`
-      : 'no active polar on the server and no table on the config page',
+      ? `"${id}" is active but could not be read`
+      : 'no active polar on the server, and Override polar is not ticked',
   };
 }

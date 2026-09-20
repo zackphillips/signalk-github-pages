@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isOwnedPath, matchesPattern, partitionOwned, renderManifest } from '../src/manifest';
 
-const FULL = { buildDocsIndex: true, publishFrontend: true };
+const FULL = { buildDocsIndex: true };
 
 describe('matchesPattern', () => {
   it('matches a literal path', () => {
@@ -54,10 +54,11 @@ describe('ownership', () => {
     expect(isOwnedPath('data/vessel/polars.csv', { ...FULL, publishPolars: true })).toBe(true);
   });
 
-  it('drops the frontend and the docs index when those are turned off', () => {
-    const minimal = { buildDocsIndex: false, publishFrontend: false };
-    expect(isOwnedPath('assets/app.js', minimal)).toBe(false);
+  it('drops the docs index when the Action maintains it instead', () => {
+    const minimal = { buildDocsIndex: false };
     expect(isOwnedPath('docs/index.json', minimal)).toBe(false);
+    // The frontend is always the plugin's: there is no setting for it.
+    expect(isOwnedPath('assets/app.js', minimal)).toBe(true);
     expect(isOwnedPath('data/telemetry/positions_index.json', minimal)).toBe(true);
   });
 });

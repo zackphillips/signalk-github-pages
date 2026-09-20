@@ -57,9 +57,9 @@ the live `HEAD`.
 
 ## Quick start
 
-**1. A repository with Pages on.** Any repo works — `<you>.github.io` serves
-at the apex, anything else at `/<repo>/`. Settings → Pages → Deploy from a
-branch → `main` / `(root)`.
+**1. A repository with Pages on.** The plugin publishes to `<you>.github.io`
+unless you override the name; anything else is served at `/<repo>/`.
+Settings → Pages → Deploy from a branch → `main` / `(root)`.
 
 **2. A token.** [Make a fine-grained
 PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
@@ -104,9 +104,9 @@ npm clones it, installs the dependencies and runs the TypeScript build via the
 package's `prepare` script, leaving a loadable plugin in
 `~/.signalk/node_modules/signalk-github-pages`.
 
-Then open **Server → Plugin Config → GitHub Pages vessel tracker**, fill in
-the repository owner, the repository name and the token, enable. Everything
-else has a working default.
+Then open **Server → Plugin Config → GitHub Pages Vessel Tracker**, fill in
+the repository owner and the token, enable. Everything else has a working
+default or is derived.
 
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
 only. Give Pages a minute, then open the URL.
@@ -121,11 +121,12 @@ only. Give Pages a minute, then open the URL.
 | Field | Default | Notes |
 |---|---|---|
 | `github.owner` | **required** | The user or organisation, e.g. `yourname` |
-| `github.name` | **required** | The repository alone, e.g. `yourname.github.io` |
+| `github.overrideName` | off | Publish somewhere other than `<owner>.github.io` |
+| `github.name` | derived | `<owner>.github.io` unless the override is ticked |
 | `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
 | `github.branch` | `main` | Branch Pages serves |
-| `interval.underway` | `120` s | When `navigation.state` is sailing or motoring |
-| `interval.stationary` | `3600` s | Moored, anchored, or state unknown |
+| `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
+| `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
 | `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and what the sparklines draw |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
@@ -135,24 +136,28 @@ only. Give Pages a minute, then open the URL.
 | `history.timeoutMs` | `20000` | Past this the cycle publishes no log and leaves the last one up |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
-| `timezone` | UTC | Chosen from a list of IANA zones, for grouping tracks by local day |
-| `polars` | *empty* | Fallback polar table — only used when the server has none, [see below](#polars) |
-| `site.theme` | `marine` | `marine`, `mermug`, `bright`, `dark` |
+| `timezone.override` | off | Group tracks by a zone other than the server's |
+| `timezone.zone` | the server's zone | IANA zone, for grouping tracks by local day |
+| `polars.override` | off | Publish the table below instead of the active polar |
+| `polars.table` | the active polar | Read-only until the override is ticked, [see below](#polars) |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
-| `site.defaultLocation` | *empty* | Home waters `{lat, lon, label}` — tides and the map before the boat has a fix |
+| `site.overrideUscgNumber` | off | Type a documentation number instead of reading it from Signal K |
+| `site.overrideHullNumber` | off | Likewise for the hull number |
+| `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
-| `publishFrontend` | on | Write the bundled site on install and upgrade |
 
 The defaults are the numbers this tracker has run on since it was a Python
-daemon on a Raspberry Pi. What has no default is anything belonging to one
-particular boat: privacy zones start empty, the timezone starts at UTC (the
-field names the zone your server is set to, so you know which one to pick),
-and [the vessel's own details](#what-comes-from-signal-k) come from Signal K
-rather than from this page.
+daemon on a Raspberry Pi. Four settings are derived rather than typed — the
+repository name from the owner, the timezone from the server, the polar table
+from Polar Management, and the USCG and hull numbers from the Signal K
+registrations — and each has an override checkbox beside it. What has no
+default at all is what belongs to one particular boat: privacy zones start
+empty, and [the vessel's own details](#what-comes-from-signal-k) come from
+Signal K rather than from this page.
 
-Upgrading from a version with a single `owner/name` box: it still works until
-you next save the config page, and the two new fields are filled from it the
-first time the plugin reads it. Fill them in and the old field can go.
+Configs written against older field names still load: a `polars` string, a
+`timezone` string, and `interval.underway` / `interval.stationary` in seconds
+are all read and carried forward.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
@@ -312,17 +317,18 @@ would leave the site saying "Vessel" until the next restart. Dimensions are
 rounded to the millimetre, so a float that wobbles in the last decimal place
 does not commit `info.yaml` every two minutes.
 
-`site.uscgNumber` and `site.hullNumber` on the config page are fallbacks for a
-server that carries neither. Fill one in and it wins; if Signal K reports
-something different, the log says so rather than quietly picking one.
+The config page shows both numbers read-only. Tick `site.overrideUscgNumber`
+or `site.overrideHullNumber` to type one instead; if Signal K reports something
+different, the log says so rather than quietly picking one.
 
 The polar table comes from the server the same way — see below.
 
-### Home waters
+### Default position
 
 The tide and forecast panels use the boat's position. Before there is a fix
 they use `site.defaultLocation`, and if that is not set either they say so and
-wait.
+wait. Tick **Set to the current position** on the config page and save: the
+plugin copies `navigation.position` into the coordinates and unticks the box.
 
 Nothing stands in for it. The frontend used to carry a hardcoded San Francisco
 Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
@@ -360,18 +366,16 @@ The read is in-process, so there is no HTTP call and no token. Re-import a
 polar or switch which one is active and the change reaches the site on the
 next cycle, with nothing to restart.
 
-### When the server has no polar
+### Overriding it
 
-The `polars` field on the config page is the fallback, for a boat whose polar
-is on a sailmaker's PDF and which is not about to install a second plugin to
-type it in. Paste the table in any shape it arrives — semicolons, commas, tabs
-or spaces, `#` comments, a European decimal comma — and the plugin re-renders
-it into the form the chart parses.
-
-The server wins whenever it has something. The config table is used when
-Polar Management has nothing active, and also when what it *does* have will
-not convert, so a misconfigured polar elsewhere does not blank the chart. The
-config page says which of the two is in use every time you open it:
+The config page shows the active polar in a read-only box. Tick **Override
+polar** to publish a table typed there instead — for a boat whose polar is on
+a sailmaker's PDF and which is not about to install a second plugin to type it
+in. Paste it in any shape it arrives — semicolons, commas, tabs or spaces, `#`
+comments, a European decimal comma — and the plugin re-renders it into the
+form the chart parses. An override that will not parse falls back to the
+server rather than blanking the chart. The config page says which of the two
+is in use every time you open it:
 
 > In use: `"mermug-orc"` from Polar Management, 18 angle(s) x 7 wind speed(s).
 > This box is ignored while that holds.
@@ -414,8 +418,8 @@ cannot.
 **The preview** renders the published site from the plugin's own data, on the
 boat, with no round trip to GitHub — the same HTML, CSS and JavaScript that
 Pages serves, reading live telemetry instead of committed JSON. It works at
-anchor with the hotspot off, and it is the fastest way to see what a theme or
-a privacy zone actually does before it is committed. It shows what the Pi
+anchor with the hotspot off, and it is the fastest way to see what a privacy
+zone or a custom button actually does before it is committed. It shows what the Pi
 holds: past days whose GPX lives only in the repository are not in it.
 
 **Pruning** removes old voyages. A year of two-minute cycles is a lot of GPX,

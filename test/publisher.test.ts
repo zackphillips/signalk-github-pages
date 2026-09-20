@@ -226,10 +226,12 @@ describe('Publisher', () => {
       'data/vessel/info.yaml',
       yaml.dump({ ...first, passage: { from: 'SF', to: 'Santa Cruz' } }),
     );
-    const changed = makePublisher({ site: { theme: 'bright' } });
+    const changed = makePublisher({
+      site: { customLinks: [{ label: 'Starlink', url: 'https://example.com/' }] },
+    });
     await changed.runCycle(tree());
     const second = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
-    expect(second.theme).toBe('bright');
+    expect(second.custom_links).toEqual([{ label: 'Starlink', url: 'https://example.com/' }]);
     expect(second.passage).toEqual({ from: 'SF', to: 'Santa Cruz' });
   });
 
@@ -529,7 +531,7 @@ describe('cycle accounting', () => {
         fetchImpl: fake.fetch,
       }),
       store: new StateStore(dataDir),
-      config: makeConfig({ publishFrontend: false, buildDocsIndex: false, ...config }),
+      config: makeConfig({ buildDocsIndex: false, ...config }),
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
       siteDir: SITE_DIR,
       version: '0.1.0',

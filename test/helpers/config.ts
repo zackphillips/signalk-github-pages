@@ -8,15 +8,21 @@
 import { resolveConfig, type PluginConfig } from '../../src/config';
 
 export const COMPLETE_FORM = {
-  github: { owner: 'owner', name: 'site', branch: 'main', token: 'ghp_token' },
-  interval: { underway: 120, stationary: 3600 },
+  github: {
+    owner: 'owner',
+    overrideName: true,
+    name: 'site',
+    branch: 'main',
+    token: 'ghp_token',
+  },
+  interval: { underwayMinutes: 2, stationaryMinutes: 60 },
   instrumentLog: {
     paths: 'navigation.speedOverGround\nelectrical.batteries.*.voltage\n',
     entries: 120,
   },
   positionRetentionHours: 24,
   staleMaxAgeMinutes: 60,
-  timezone: 'America/Los_Angeles',
+  timezone: { override: true, zone: 'America/Los_Angeles' },
   privacyZones: [],
 };
 

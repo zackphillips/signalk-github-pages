@@ -1216,18 +1216,9 @@ function updateVesselLinks() {
     vesselData.signalk.websocket_url = `${wsUrl}/signalk/v1/stream`;
   }
 
-  // Construct external tracking links
-  vesselData.links = vesselData.links || {};
-  if (vesselData.marinetraffic_ship_id) {
-    vesselData.links.marinetraffic = `https://www.marinetraffic.com/en/ais/details/ships/shipid:${vesselData.marinetraffic_ship_id}`;
-  }
-
-  // Update the link cluster in the tab bar
-  const marinetrafficLink = document.getElementById('marinetraffic-link');
-  if (marinetrafficLink && vesselData.links?.marinetraffic) {
-    marinetrafficLink.href = vesselData.links.marinetraffic;
-  }
-
+  // The link row is entirely the owner's: an AIS tracker, a ship's log, a
+  // Starlink status page. Add them as custom buttons on the plugin's config
+  // page — there are no built-in external links.
   renderCustomLinks(vesselData.custom_links);
 }
 
@@ -1735,7 +1726,41 @@ async function loadData() {
     'environment.rpi.sd.utilisation':                    { transform: v => v * 100,                        unit: '%'     },
   };
 
-  const renderSparkline = (canvas, points, displayConfig = {}, colors = {}) => {
+  const SPARKLINE_FONT = '10px system-ui,-apple-system,sans-serif';
+  /** Displayed height, in CSS pixels. The bitmap is this times the DPR. */
+  const SPARKLINE_CSS_HEIGHT = 80;
+
+  /**
+   * Size the bitmap to the box the canvas actually occupies, at device
+   * resolution, and return the CSS-pixel size to draw in.
+   *
+   * The stylesheet sets `width: 100%`, so a bitmap sized to anything else is
+   * stretched to fit: the card's `clientWidth` includes its padding, which
+   * made every canvas a few pixels too wide and squeezed the axis text
+   * horizontally. On a 3x phone the same bitmap was then upscaled again. Both
+   * together are what turned 10px labels into smears.
+   *
+   * A hidden canvas has no layout box, so the card's content width stands in
+   * until the panel is opened; opening re-renders at the real width.
+   */
+  const sizeSparkline = (canvas, item) => {
+    let width = canvas.clientWidth;
+    if (!width && item) {
+      const style = getComputedStyle(item);
+      width =
+        item.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    }
+    width = Math.max(120, Math.round(width || 120));
+    // Past 3x there is nothing left to resolve and the bitmap is four times
+    // the memory for it.
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(SPARKLINE_CSS_HEIGHT * dpr);
+    canvas.style.height = `${SPARKLINE_CSS_HEIGHT}px`;
+    return { width, height: SPARKLINE_CSS_HEIGHT, dpr };
+  };
+
+  const renderSparkline = (canvas, points, displayConfig = {}, colors = {}, item = null) => {
     const { transform = v => v, unit = '' } = displayConfig;
     const {
       line: lineColor     = 'rgba(255, 255, 255, 0.85)',
@@ -1743,21 +1768,39 @@ async function loadData() {
       label: labelColor   = 'rgba(255, 255, 255, 0.6)',
       noData: noDataColor = 'rgba(255, 255, 255, 0.5)',
     } = colors;
+    const { width, height, dpr } = sizeSparkline(canvas, item);
     const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Everything below is in CSS pixels; the transform does the scaling.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.font = SPARKLINE_FONT;
     if (!points || points.length < 2) {
       ctx.fillStyle = noDataColor;
-      ctx.font = '10px system-ui,-apple-system,sans-serif';
-      ctx.fillText('No data', 6, canvas.height / 2 + 4);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('No data', 6, height / 2);
       return;
     }
-    const formatValue = (value) => {
+    const formatValue = (value, digits) => {
       if (!Number.isFinite(value)) return '';
-      const abs = Math.abs(value);
-      if (abs >= 1000) return `${(value / 1000).toFixed(1)}k`;
-      if (abs >= 100 || abs === 0) return value.toFixed(0);
-      if (abs >= 10) return value.toFixed(1);
-      return value.toFixed(2);
+      if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}k`;
+      return value.toFixed(digits);
+    };
+    /**
+     * Labels for the two ends of the range, at the coarsest precision that
+     * still tells them apart.
+     *
+     * A fixed rule by magnitude printed a 696.28-to-696.34 nm log as "696nm"
+     * at both ends, which is an axis that says nothing. Equal ends are a flat
+     * line and correctly get the same label.
+     */
+    const formatRange = (lo, hi) => {
+      for (const digits of [0, 1, 2, 3]) {
+        const low = formatValue(lo, digits);
+        const high = formatValue(hi, digits);
+        if (low !== high || lo === hi) return [low, high];
+      }
+      return [lo.toPrecision(5), hi.toPrecision(5)];
     };
     const formatTime = (date) =>
       date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -1770,10 +1813,22 @@ async function loadData() {
     const rawMax = Math.max(...rawValues);
     const rawRange = rawMax - rawMin || 1;
 
-    const padding = { top: 8, right: 8, bottom: 20, left: 34 };
-    const w = canvas.width - padding.left - padding.right;
-    const h = canvas.height - padding.top - padding.bottom;
-    const axisX = canvas.height - padding.bottom;
+    const [minLabel, maxLabel] = formatRange(min, max);
+    const yLabels = [`${minLabel}${unit}`, `${maxLabel}${unit}`];
+
+    // The left gutter is measured, not assumed. It was a fixed 34px while the
+    // labels carry their unit, so "0.01nm" — 38px at this font — ran off the
+    // left edge of every canvas. Capped so a long label cannot eat the plot.
+    const gutter = Math.ceil(Math.max(...yLabels.map((text) => ctx.measureText(text).width))) + 5;
+    const padding = {
+      top: 8,
+      right: 6,
+      bottom: 20,
+      left: Math.min(gutter, Math.round(width * 0.45)),
+    };
+    const w = width - padding.left - padding.right;
+    const h = height - padding.top - padding.bottom;
+    const axisX = height - padding.bottom;
     const axisY = padding.left;
 
     // Axes
@@ -1782,29 +1837,36 @@ async function loadData() {
     ctx.beginPath();
     ctx.moveTo(axisY, padding.top);
     ctx.lineTo(axisY, axisX);
-    ctx.lineTo(canvas.width - padding.right, axisX);
+    ctx.lineTo(width - padding.right, axisX);
     ctx.stroke();
 
-    // Y-axis labels (right-aligned into left padding, no unit to save space)
+    // Y-axis labels, right-aligned into the gutter measured for them.
     ctx.fillStyle = labelColor;
-    ctx.font = '10px system-ui,-apple-system,sans-serif';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'top';
-    ctx.fillText(`${formatValue(max)}${unit}`, axisY - 2, padding.top);
+    ctx.fillText(yLabels[1], axisY - 3, padding.top);
     ctx.textBaseline = 'bottom';
-    ctx.fillText(`${formatValue(min)}${unit}`, axisY - 2, axisX);
+    ctx.fillText(yLabels[0], axisY - 3, axisX);
 
-    // X-axis time ticks (4 labels: start, ⅓, ⅔, end)
+    // X-axis time ticks: as many as fit, never more than four.
+    //
+    // It used to be four regardless of width. A card is about 145px across on
+    // a phone, which leaves roughly 100px of plot for four 30px "HH:MM"
+    // labels, and they overprinted each other into an unreadable run of
+    // digits. Two — the start and the end — is the floor, because a time axis
+    // with one label does not say what it spans.
     const tFirst = points[0].t.getTime();
     const tLast  = points[points.length - 1].t.getTime();
-    const numTicks = 3;
-    ctx.font = '10px system-ui,-apple-system,sans-serif';
+    const timeWidth = ctx.measureText(formatTime(points[points.length - 1].t)).width;
+    const labelCount = Math.max(2, Math.min(4, Math.floor(w / (timeWidth + 10))));
+    const numTicks = labelCount - 1;
     ctx.textBaseline = 'top';
     for (let i = 0; i <= numTicks; i++) {
       const ratio = i / numTicks;
       const x = padding.left + ratio * w;
       const tickDate = new Date(tFirst + ratio * (tLast - tFirst));
       ctx.textAlign = i === 0 ? 'left' : i === numTicks ? 'right' : 'center';
+      ctx.fillStyle = labelColor;
       ctx.fillText(formatTime(tickDate), x, axisX + 3);
       // tick mark
       ctx.strokeStyle = axisColor;
@@ -1833,8 +1895,6 @@ async function loadData() {
    * Safe to call multiple times — re-renders existing canvases in place.
    * Also exposed as module-level refreshSparklines for the theme toggle.
    */
-  const SPARKLINE_HEIGHT = 80;
-
   // Parse a computed rgb()/rgba() color string and return [r, g, b].
   const parseRgb = (str) => {
     const m = str.match(/rgba?\(\s*(\d+),\s*(\d+),\s*(\d+)/);
@@ -1864,12 +1924,9 @@ async function loadData() {
       if (!canvas) {
         canvas = document.createElement('canvas');
         canvas.className = 'sparkline-inline';
-        canvas.height = SPARKLINE_HEIGHT;
         canvas.style.display = 'none'; // hidden by default
         item.appendChild(canvas);
       }
-      canvas.width = item.clientWidth || 120;
-      canvas.height = SPARKLINE_HEIGHT;
 
       // Derive line color from the parent panel's left-border accent.
       let lineColor = fallbackLine;
@@ -1884,7 +1941,7 @@ async function loadData() {
       const displayCfg = grp
         ? { transform: getUnitCfg(grp).transform, unit: getUnitCfg(grp).unit }
         : (PATH_DISPLAY_CONFIG[path] || {});
-      renderSparkline(canvas, points, displayCfg, { ...baseColors, line: lineColor });
+      renderSparkline(canvas, points, displayCfg, { ...baseColors, line: lineColor }, item);
     });
 
     // Add a toggle button to each panel that has at least one sparkline canvas.
@@ -1917,12 +1974,24 @@ async function loadData() {
         });
         btn.dataset.open = opening ? 'true' : 'false';
         btn.textContent = opening ? 'Hide History' : 'Show History';
+        // Now that the canvases have a layout box, redraw at their real
+        // width. The first render had to guess it from the card.
+        if (opening) initInlineSparklines();
       });
     });
   };
 
   // Expose so theme toggle can re-render sparklines with updated colors.
   refreshSparklines = initInlineSparklines;
+
+  // A rotation changes every card's width, and the bitmaps do not follow on
+  // their own: the labels would be drawn for the old one and stretched to the
+  // new. Debounced because a rotation fires a burst of these.
+  let sparklineResizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(sparklineResizeTimer);
+    sparklineResizeTimer = setTimeout(() => initInlineSparklines(), 150);
+  });
 
   try {
     console.log('Starting to load data...');

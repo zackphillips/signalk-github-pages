@@ -12,8 +12,6 @@
 export interface ManifestOptions {
   /** The plugin maintains docs/index.json (off when the Action does it). */
   buildDocsIndex: boolean;
-  /** The plugin ships the frontend into the repo. */
-  publishFrontend: boolean;
   /**
    * The Polar Management plugin has an active polar, so `data/vessel/polars.csv`
    * is generated rather than hand-committed. Off by default, which is what
@@ -31,7 +29,7 @@ const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/info.yaml'];
 /** The polar table, owned only while the server has an active polar. */
 export const POLARS_PATTERN = 'data/vessel/polars.csv';
 
-/** Paths written on install and after a version upgrade. */
+/** Paths written on install and after a version upgrade. Always owned. */
 const FRONTEND_PATTERNS = [
   'index.html',
   'docs.html',
@@ -46,8 +44,7 @@ const FRONTEND_PATTERNS = [
 export const USER_OWNED_EXCEPTIONS = ['assets/custom.css'];
 
 export function ownedPatterns(options: ManifestOptions): string[] {
-  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS];
-  if (options.publishFrontend) patterns.push(...FRONTEND_PATTERNS);
+  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS];
   if (options.buildDocsIndex) patterns.push('docs/index.json');
   if (options.publishPolars) patterns.push(POLARS_PATTERN);
   return patterns;
