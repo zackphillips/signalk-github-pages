@@ -3,30 +3,21 @@
  * TypeScript shape it produces, and the resolver that turns a filled-in form
  * into values the rest of the plugin can rely on.
  *
- * The config page is the only place any of this is set. There is no YAML to
- * hand-edit and no wizard to run: `data/vessel/info.yaml` in the published
- * repo is an *output* of this file, written for the frontend to read.
+ * The config page is the only place any of this is set. `data/vessel/info.yaml`
+ * in the published repo is an *output* of this file, written for the frontend
+ * to read.
  *
- * Defaults are the values the tracker has run on since it was a Python daemon
- * on a Raspberry Pi: a two-minute cadence underway, hourly at the dock and a
- * 24-hour position window, plus an hour of instrument history at one-minute
- * buckets, which is exactly what the sparklines draw. They are a working
- * configuration for any boat, so a fresh install publishes without a setup
- * session.
+ * Four settings are derived rather than typed: the repository name from the
+ * owner, the track timezone from the server, the polar table from the Polar
+ * Management plugin, and the USCG and hull numbers from the Signal K
+ * registrations. Each one has an "Override" checkbox beside it that switches
+ * the field from derived to typed. The derived value is what the plugin uses
+ * whenever the box is unticked, whatever is sitting in the field.
  *
- * What is *not* defaulted is anything that belongs to one particular boat:
- * privacy zones start empty, the timezone starts at UTC, and the repo and the
- * token have no stand-in. Guessing at a privacy zone would be worse than
- * having none, and a guessed timezone splits tracks on the wrong midnight —
- * so the timezone field names the zone the server is set to and lets you pick
- * it, rather than picking it for you.
- *
- * The vessel's own details — name, MMSI, callsign, registrations, dimensions —
- * are not on this page at all: they are read from the Signal K tree, which is
- * where the server already keeps them. The fields here are fallbacks for what
- * a server does not carry. The polar table is not here either: it belongs to
- * the Polar Management plugin, and this one publishes whichever polar that
- * plugin has made active.
+ * Defaults are the values this tracker has run on since it was a Python daemon
+ * on a Raspberry Pi. What is *not* defaulted is anything that belongs to one
+ * particular boat: privacy zones start empty, and the repo and token have no
+ * stand-in.
  */
 
 import { availableTimezones, serverTimezone } from './timezones';
@@ -56,11 +47,13 @@ export interface PluginConfig {
     branch: string;
     token: string;
   };
+  /** Publish cadence in seconds. The config page asks for minutes. */
   interval: {
     underway: number;
     stationary: number;
   };
   privacyZones: PrivacyZone[];
+  /** IANA zone tracks are grouped by: the server's, or the one overridden. */
   timezone: string;
   instrumentLog: {
     paths: string[];
@@ -82,18 +75,21 @@ export interface PluginConfig {
     timeoutMs: number;
   };
   /**
-   * The fallback polar table, exactly as it was typed on the config page.
-   * Used only when the server has no polar to give; see `polars.ts`.
+   * The polar table. Unticked, the active polar from Polar Management is
+   * published and `table` is ignored; ticked, `table` is published instead.
    */
-  polars: string;
+  polars: {
+    override: boolean;
+    table: string;
+  };
   buildDocsIndex: boolean;
-  publishFrontend: boolean;
   site: {
-    theme: string;
-    marinetrafficShipId: string;
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
+    /** Ticked, the typed number wins over the Signal K registrations. */
+    overrideUscgNumber: boolean;
     uscgNumber: string;
+    overrideHullNumber: boolean;
     hullNumber: string;
     /**
      * Where the site looks before it has a fix: the tide station it picks and
@@ -104,21 +100,12 @@ export interface PluginConfig {
   };
 }
 
-/** Theme names understood by the frontend's `constants.js`. */
-// Only these four exist in the bundled styles.css. An earlier, longer list
-// came from a stale comment in one boat's info.yaml; picking one of those
-// names left the page unstyled.
-export const SITE_THEMES = ['marine', 'mermug', 'bright', 'dark'];
-export const DEFAULT_THEME = 'marine';
-
 /**
  * Default `instrumentLog.paths`: what the bundled sparklines draw.
  *
  * A path no instrument produces costs nothing — it simply never appears in the
- * log — so this list is safe to ship. What it is not is a list to leave alone
- * forever: every path here is recorded for every entry and re-uploaded on
- * every publish, so trimming it to what you actually look at is the single
- * biggest thing you can do for a cellular data plan.
+ * log. Every path here is recorded for every entry and re-uploaded on every
+ * publish, so the list is worth trimming on a cellular data plan.
  */
 export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'navigation.speedOverGround',
@@ -148,10 +135,13 @@ export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'propulsion.*.runTime',
 ];
 
-/** Cadence while `navigation.state` says the boat is moving, in seconds. */
-export const DEFAULT_INTERVAL_UNDERWAY = 120;
-/** Cadence while moored, anchored, or state unknown, in seconds. */
-export const DEFAULT_INTERVAL_STATIONARY = 3600;
+/** Cadence while `navigation.state` says the boat is moving, in minutes. */
+export const DEFAULT_INTERVAL_UNDERWAY_MINUTES = 2;
+/** Cadence while moored, anchored, or state unknown, in minutes. */
+export const DEFAULT_INTERVAL_STATIONARY_MINUTES = 60;
+/** The same two, in the seconds the scheduler runs on. */
+export const DEFAULT_INTERVAL_UNDERWAY = DEFAULT_INTERVAL_UNDERWAY_MINUTES * 60;
+export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES * 60;
 /**
  * Rolling length of the instrument log, in buckets.
  *
@@ -168,9 +158,8 @@ export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
 /**
  * Bucket width asked of the history provider, in seconds.
  *
- * One minute is finer than any publish cadence, so the sparklines gain detail
- * rather than just surviving restarts, and it is the spacing of the published
- * log: `resolutionSeconds x entries` is how far back the graphs go.
+ * One minute is finer than any publish cadence, and it is the spacing of the
+ * published log: `resolutionSeconds x entries` is how far back the graphs go.
  */
 export const DEFAULT_HISTORY_RESOLUTION_SECONDS = 60;
 /** A history query is a database call; past this it is a skipped cycle. */
@@ -180,41 +169,30 @@ export const DEFAULT_HISTORY_TIMEOUT_MS = 20_000;
 const TIMEZONES = availableTimezones();
 
 /**
- * What to tick when making the token, in the description under the field.
+ * What to tick when making the token.
  *
- * Two of these are worth the words they cost: "Contents: read and write" is
- * the permission people miss (a token with only Metadata reads fine and fails
- * the first commit with a 403), and the organisation approval step is
- * invisible until a publish 404s on a repository that plainly exists.
+ * Only what the token will not work without. "Contents: read and write" is the
+ * permission people miss — a token with only Metadata reads fine and fails the
+ * first commit with a 403 — and an organisation-owned repository needs an
+ * owner to approve the token, which is invisible until a publish 404s on a
+ * repository that plainly exists.
  */
 export const PAT_GUIDANCE =
-  'Fine-grained token (Settings > Developer settings > Personal access tokens > ' +
-  'Fine-grained tokens): set Repository access to "Only select repositories" and ' +
-  'pick this one, then under Repository permissions set Contents to "Read and ' +
-  'write". Metadata: Read-only is added automatically; nothing else is needed. ' +
-  'A repository owned by an organisation also needs an organisation owner to ' +
-  'approve the token before it works. Classic token alternative: the "repo" ' +
-  'scope, or "public_repo" if the repository is public. The token stops working ' +
-  'on its expiry date: publishing then fails with HTTP 401 until you issue a ' +
-  'new one. Signal K stores plugin configuration as plain JSON on disk, so this ' +
-  'token is readable by anyone with a shell on the server: scope it to the one ' +
-  'repository and nothing else.';
+  'GitHub > Settings > Developer settings > Personal access tokens > Fine-grained ' +
+  'tokens. Repository access: Only select repositories, this one. Repository ' +
+  'permissions: Contents "Read and write". An organisation-owned repository also ' +
+  'needs an organisation owner to approve the token.';
 
 /**
  * The polar field's help text when the plugin has not yet looked.
  *
- * `buildConfigSchema` replaces it with what the last cycle actually found, so
- * the page tells you whether this box is in use rather than leaving you to
- * guess which of two plugins the chart is coming from.
+ * `buildConfigSchema` replaces it with what the last cycle actually found.
  */
 export const POLARS_FIELD_DESCRIPTION =
-  'Used only when the server has no polar of its own. Manage polars in the ' +
-  'Polar Management plugin where you can: it imports from ORC by boat name or ' +
-  'sail number, and this plugin publishes whichever one you make active. ' +
-  'Paste a table here for a boat whose polar is on paper: first line the true ' +
-  'wind speeds in knots, then one line per true wind angle in degrees ' +
-  'followed by the target boat speeds. Semicolons, commas, tabs or spaces all ' +
-  'work, and # starts a comment.';
+  'The active polar from the Polar Management plugin. Tick Override polar to ' +
+  'publish the table below instead: first line the true wind speeds in knots, ' +
+  'then one line per true wind angle in degrees followed by the target boat ' +
+  'speeds. Semicolons, commas, tabs or spaces all work, and # starts a comment.';
 
 /** What the last cycle found, for the note under the polar field. */
 export interface PolarStatus {
@@ -224,33 +202,79 @@ export interface PolarStatus {
   problems: string[];
 }
 
+/** What the plugin knows that the form does not, at the moment it is opened. */
+export interface SchemaContext {
+  /** `<owner>.github.io`, derived from the saved owner. */
+  repoName?: string;
+  /** What the last cycle resolved for the polar table. */
+  polar?: PolarStatus | null;
+  /** The active polar rendered as CSV, to show in the read-only box. */
+  polarCsv?: string;
+  /** The USCG documentation number read off the Signal K registrations. */
+  uscgNumber?: string;
+  /** Likewise the hull identification number. */
+  hullNumber?: string;
+}
+
 /**
- * The config schema, with the polar field's description rewritten to say what
- * the plugin is actually publishing.
+ * The config schema, with the derived fields prefilled from what the plugin
+ * can see right now.
  *
  * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
- * not at install: open the page after changing the active polar and the note
- * is current.
+ * not at install: open the page after changing the active polar and the box
+ * shows it.
+ *
+ * The prefilled values are JSON Schema `default`s, which the admin UI shows
+ * only in a field the user has not filled in. They are cosmetic — `resolveConfig`
+ * derives the same values itself and ignores the field whenever its override is
+ * unticked — so a stale default can never become a published value.
  */
-export function buildConfigSchema(polar?: PolarStatus | null): typeof configSchema {
-  if (!polar) return configSchema;
-  const note =
-    polar.source === 'resource'
-      ? `In use: ${polar.summary}. This box is ignored while that holds — clear ` +
-        'the active polar in Polar Management to fall back to it.'
-      : polar.source === 'config'
-        ? `In use: ${polar.summary}. No polar is active on the server, so this ` +
-          'box is what the chart draws.'
-        : `Nothing is being published: ${polar.summary}.`;
-  const problems = polar.problems.length ? ` Last cycle reported: ${polar.problems.join(' ')}` : '';
+export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
+  const { repoName, polar, polarCsv, uscgNumber, hullNumber } = context;
+  const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
+
+  if (repoName) schema.properties.github.properties.name.default = repoName;
+
+  if (polar) {
+    const note =
+      polar.source === 'resource'
+        ? `Publishing ${polar.summary}.`
+        : polar.source === 'config'
+          ? `Publishing ${polar.summary}.`
+          : `Publishing no polar: ${polar.summary}.`;
+    const problems = polar.problems.length ? ` ${polar.problems.join(' ')}` : '';
+    schema.properties.polars.properties.table.description =
+      `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`;
+  }
+  if (polarCsv) schema.properties.polars.properties.table.default = polarCsv;
+  if (uscgNumber) schema.properties.site.properties.uscgNumber.default = uscgNumber;
+  if (hullNumber) schema.properties.site.properties.hullNumber.default = hullNumber;
+
+  return schema;
+}
+
+/**
+ * A derived field's "Override" checkbox, as a JSON Schema dependency.
+ *
+ * Unticked, the field goes read-only so the page shows what the plugin will
+ * publish without inviting an edit that would be ignored. It is a `dependencies`
+ * block rather than `if`/`then` because every version of react-json-schema-form
+ * the Signal K admin UI has shipped understands one, and a renderer that
+ * understands neither falls back to the plain editable field in `properties` —
+ * a cosmetic loss, not a lost setting.
+ */
+function readOnlyUnless(flag: string, field: string) {
   return {
-    ...configSchema,
-    properties: {
-      ...configSchema.properties,
-      polars: {
-        ...configSchema.properties.polars,
-        description: `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`,
-      },
+    [flag]: {
+      oneOf: [
+        {
+          properties: {
+            [flag]: { enum: [false] },
+            [field]: { readOnly: true },
+          },
+        },
+        { properties: { [flag]: { enum: [true] } } },
+      ],
     },
   };
 }
@@ -262,27 +286,32 @@ export const configSchema = {
     github: {
       type: 'object',
       title: 'GitHub repository',
-      required: ['owner', 'name', 'token'],
+      required: ['owner', 'token'],
+      dependencies: readOnlyUnless('overrideName', 'name'),
       properties: {
         owner: {
           type: 'string',
           title: 'Repository owner',
-          description:
-            'The GitHub user or organisation that owns the repository — your ' +
-            'username for a personal site, e.g. "yourname".',
+          description: 'Your GitHub username, or the organisation that owns the repository.',
+        },
+        overrideName: {
+          type: 'boolean',
+          title: 'Override repository name',
+          description: 'Publish to a repository other than <owner>.github.io.',
+          default: false,
         },
         name: {
           type: 'string',
           title: 'Repository name',
           description:
-            'The repository GitHub Pages serves, without the owner: ' +
-            '"yourname.github.io" for a user site, or e.g. "tracker" for a ' +
-            'project site served at /tracker/.',
+            'Defaults to <owner>.github.io, the user site. A project site — e.g. ' +
+            '"tracker", served at /tracker/ — needs the override.',
+          default: '',
         },
         branch: {
           type: 'string',
           title: 'Branch',
-          description: 'Branch Pages publishes from.',
+          description: 'Branch GitHub Pages publishes from.',
           default: 'main',
         },
         token: {
@@ -296,19 +325,17 @@ export const configSchema = {
       type: 'object',
       title: 'Publish cadence',
       properties: {
-        underway: {
+        underwayMinutes: {
           type: 'number',
-          title: 'Underway interval (seconds)',
-          description:
-            'Used when navigation.state is sailing or motoring. Each publish ' +
-            'costs the size of the changed files, uploaded in full.',
-          default: DEFAULT_INTERVAL_UNDERWAY,
+          title: 'Underway interval (minutes)',
+          description: 'Used when navigation.state is sailing or motoring.',
+          default: DEFAULT_INTERVAL_UNDERWAY_MINUTES,
         },
-        stationary: {
+        stationaryMinutes: {
           type: 'number',
-          title: 'Stationary interval (seconds)',
+          title: 'Stationary interval (minutes)',
           description: 'Used when moored, anchored, or the state is unknown.',
-          default: DEFAULT_INTERVAL_STATIONARY,
+          default: DEFAULT_INTERVAL_STATIONARY_MINUTES,
         },
       },
     },
@@ -316,9 +343,8 @@ export const configSchema = {
       type: 'array',
       title: 'Privacy zones',
       description:
-        'Positions inside any of these circles are redacted before they are ' +
-        'stored or published: the zone centre is shown instead, and the point ' +
-        'is left out of the GPX track entirely. Empty means nothing is hidden.',
+        'Positions inside any of these circles are published as the zone centre ' +
+        'and left out of the GPX track. Empty means nothing is hidden.',
       items: {
         type: 'object',
         required: ['lat', 'lon', 'radius_m'],
@@ -332,16 +358,25 @@ export const configSchema = {
       default: [],
     },
     timezone: {
-      type: 'string',
+      type: 'object',
       title: 'Track timezone',
-      description:
-        'Calendar day used to group GPX tracks. Stored timestamps are UTC; ' +
-        'grouping by UTC date splits a voyage mid-afternoon on the US west ' +
-        `coast. This server is set to ${serverTimezone()}. Leave on UTC to ` +
-        'group by the UTC day.',
-      enum: ['', ...TIMEZONES],
-      enumNames: ['UTC (no local grouping)', ...TIMEZONES],
-      default: '',
+      description: `Calendar day GPX tracks are grouped by. This server is set to ${serverTimezone()}.`,
+      dependencies: readOnlyUnless('override', 'zone'),
+      properties: {
+        override: {
+          type: 'boolean',
+          title: 'Override timezone',
+          description: "Group tracks by a zone other than the server's.",
+          default: false,
+        },
+        zone: {
+          type: 'string',
+          enum: ['UTC', ...TIMEZONES],
+          enumNames: ['UTC', ...TIMEZONES],
+          title: 'Timezone',
+          default: serverTimezone(),
+        },
+      },
     },
     instrumentLog: {
       type: 'object',
@@ -351,24 +386,18 @@ export const configSchema = {
           type: 'string',
           title: 'Captured paths',
           description:
-            'One Signal K path per line — what is asked of the history ' +
-            'provider. "*" matches one path segment, so ' +
-            'electrical.batteries.*.voltage covers every bank the provider has ' +
-            'stored. Lines starting with # are comments. This list is the ' +
-            'entire bandwidth cost of a cycle: every path here is uploaded, ' +
-            'for every entry, on every publish. Trim it to what you actually ' +
-            'look at. navigation.position is never asked for — the track comes ' +
-            'from the boat, through the privacy zones.',
+            'One Signal K path per line, asked of the history provider. "*" matches ' +
+            'one path segment. Lines starting with # are comments. Every path here is ' +
+            'uploaded for every entry on every publish. navigation.position is never ' +
+            'asked for: the track comes from the boat, through the privacy zones.',
           default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
         },
         entries: {
           type: 'number',
           title: 'Entries retained',
           description:
-            'Rolling length of instrument_log.json, and the query window: the ' +
-            'log covers entries x resolution, so 60 entries at 60 s is the ' +
-            'last hour. The bundled sparklines draw the last 60 points, so ' +
-            'more than that is uploaded on every publish and never plotted.',
+            'Rolling length of instrument_log.json, and the query window: the log ' +
+            'covers entries x resolution. The bundled sparklines draw the last 60 points.',
           default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
         },
       },
@@ -377,13 +406,10 @@ export const configSchema = {
       type: 'object',
       title: 'History provider (sparklines)',
       description:
-        'Where the instrument log comes from. A server with a history ' +
-        'provider installed (signalk-to-influxdb2, for example) already ' +
-        'stores every value at full rate, so the sparklines are read back ' +
-        'from it on every cycle and survive a restart, a reinstall or a ' +
-        'stopped plugin. With no provider registered the site has no ' +
-        'sparklines: the panels show current values and omit the graphs. The ' +
-        'map track does not come from here — it is always the plugin\'s own.',
+        'Where the instrument log comes from. With a history provider installed ' +
+        '(signalk-to-influxdb2, for example) the sparklines are read back from it ' +
+        'every cycle; with none the site shows current values and omits the graphs. ' +
+        "The map track does not come from here — it is always the plugin's own.",
       properties: {
         enabled: {
           type: 'boolean',
@@ -394,28 +420,23 @@ export const configSchema = {
           type: 'string',
           title: 'Provider plugin id',
           description:
-            "Leave blank to use the server's default history provider. Set it " +
-            'to a plugin id (e.g. "signalk-to-influxdb2") only when more than ' +
-            'one is registered and you want this one.',
+            "Blank uses the server's default provider. Set a plugin id (e.g. " +
+            '"signalk-to-influxdb2") when more than one is registered.',
           default: '',
         },
         resolutionSeconds: {
           type: 'number',
           title: 'Resolution (seconds)',
           description:
-            'Bucket width asked of the provider, and the spacing of the ' +
-            'published log: it covers resolution x entries, so 60 s x 60 ' +
-            'entries is the last hour. Finer buckets mean a bigger file ' +
-            'uploaded on every publish.',
+            'Bucket width asked of the provider, and the spacing of the published log.',
           default: DEFAULT_HISTORY_RESOLUTION_SECONDS,
         },
         timeoutMs: {
           type: 'number',
           title: 'Query timeout (ms)',
           description:
-            'A history query reaches a database. Past this the cycle gives up ' +
-            'on it and publishes no instrument log at all, leaving the copy ' +
-            'already on the site in place until the provider answers again.',
+            'Past this the cycle publishes no instrument log and leaves the copy ' +
+            'already on the site in place.',
           default: DEFAULT_HISTORY_TIMEOUT_MS,
         },
       },
@@ -424,69 +445,62 @@ export const configSchema = {
       type: 'number',
       title: 'Position retention (hours)',
       description:
-        'How long raw positions stay in positions_index.json — the map track. ' +
-        'Past days survive as GPX regardless.',
+        'How long raw positions stay in positions_index.json — the map track. Past ' +
+        'days survive as GPX regardless.',
       default: DEFAULT_POSITION_RETENTION_HOURS,
     },
     staleMaxAgeMinutes: {
       type: 'number',
       title: 'Stale value cutoff (minutes)',
       description:
-        'Values older than this are dropped from the published snapshot so the ' +
-        'site shows them as unavailable rather than as current.',
+        'Values older than this are dropped from the published snapshot, so the site ' +
+        'shows them as unavailable rather than as current.',
       default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
     polars: {
-      type: 'string',
-      title: 'Polar table (fallback)',
-      description: POLARS_FIELD_DESCRIPTION,
-      default: '',
+      type: 'object',
+      title: 'Polar table',
+      dependencies: readOnlyUnless('override', 'table'),
+      properties: {
+        override: {
+          type: 'boolean',
+          title: 'Override polar',
+          description: 'Publish the table below instead of the active polar.',
+          default: false,
+        },
+        table: {
+          type: 'string',
+          title: 'Polar table',
+          description: POLARS_FIELD_DESCRIPTION,
+          default: '',
+        },
+      },
     },
     buildDocsIndex: {
       type: 'boolean',
-      title: "Maintain docs/index.json",
+      title: 'Maintain docs/index.json',
       description:
-        "Rebuild the ship's-docs manifest when the docs tree changes. Turn this " +
-        'off if you run the docs-index GitHub Action instead.',
-      default: true,
-    },
-    publishFrontend: {
-      type: 'boolean',
-      title: 'Publish the site frontend',
-      description:
-        'Write the bundled HTML/CSS/JS into the repository on start and after a ' +
-        'plugin upgrade. Turn off only if you maintain your own frontend.',
+        "Rebuild the ship's-docs manifest when the docs tree changes. Turn off if you " +
+        'run the docs-index GitHub Action instead.',
       default: true,
     },
     site: {
       type: 'object',
       title: 'Site details',
       description:
-        "The vessel's own details are not here: name, MMSI, callsign, " +
-        'registrations and dimensions are read from the Signal K tree every ' +
-        'cycle and written into data/vessel/info.yaml. These are the fields ' +
-        'that belong to the site, plus fallbacks for what a server does not ' +
-        'carry.',
+        'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
+        'tree every cycle and written into data/vessel/info.yaml.',
+      dependencies: {
+        ...readOnlyUnless('overrideUscgNumber', 'uscgNumber'),
+        ...readOnlyUnless('overrideHullNumber', 'hullNumber'),
+      },
       properties: {
-        theme: {
-          type: 'string',
-          title: 'Theme',
-          enum: SITE_THEMES,
-          default: DEFAULT_THEME,
-        },
-        marinetrafficShipId: {
-          type: 'string',
-          title: 'MarineTraffic ship ID',
-          default: '',
-        },
         customLinks: {
           type: 'array',
           title: 'Custom buttons',
           description:
-            'Buttons added to the link row at the top of the site, in this ' +
-            'order — a PostgSail log, a Starlink status page, a crew ' +
-            'handbook, anything with a URL. Only http:// and https:// links ' +
-            'are published.',
+            'Buttons added to the link row at the top of the site, in this order. ' +
+            'Only http:// and https:// links are published.',
           items: {
             type: 'object',
             required: ['label', 'url'],
@@ -497,32 +511,44 @@ export const configSchema = {
           },
           default: [],
         },
+        overrideUscgNumber: {
+          type: 'boolean',
+          title: 'Override USCG documentation number',
+          default: false,
+        },
         uscgNumber: {
           type: 'string',
           title: 'USCG documentation number',
-          description:
-            'Only needed if your server does not carry it. The plugin reads ' +
-            'registrations.national / .other out of the Signal K tree first; a ' +
-            'value here overrides what it found, and the difference is logged.',
+          description: 'Read from the Signal K registrations.',
           default: '',
+        },
+        overrideHullNumber: {
+          type: 'boolean',
+          title: 'Override hull number',
+          default: false,
         },
         hullNumber: {
           type: 'string',
           title: 'Hull number (HIN)',
-          description:
-            'As above: read from the Signal K registrations when one looks like ' +
-            'a hull identification number, and only typed here when it is not.',
+          description: 'Read from the Signal K registrations.',
           default: '',
         },
         defaultLocation: {
           type: 'object',
-          title: 'Home waters',
+          title: 'Default position',
           description:
-            'Where the site looks before the boat has reported a position: the ' +
-            'tide station it picks and the map it opens on. Leave the ' +
-            'coordinates blank and the tide and forecast panels wait for a GPS ' +
-            'fix instead — they will not stand in some other coast for yours.',
+            'Where the site looks before the boat has reported a position: the tide ' +
+            'station it picks and the map it opens on. Blank coordinates mean the tide ' +
+            'and forecast panels wait for a fix.',
           properties: {
+            useCurrentPosition: {
+              type: 'boolean',
+              title: 'Set to the current position',
+              description:
+                'Fills the coordinates below from navigation.position and unticks ' +
+                'itself. Takes effect when the plugin restarts on save.',
+              default: false,
+            },
             lat: { type: 'number', title: 'Latitude' },
             lon: { type: 'number', title: 'Longitude' },
             label: { type: 'string', title: 'Label', default: '' },
@@ -536,12 +562,16 @@ export const configSchema = {
 /** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
-  polars: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
+  polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
 };
 
 function str(value: unknown, fallback = ''): string {
   return typeof value === 'string' ? value.trim() : fallback;
+}
+
+function bool(value: unknown): boolean {
+  return value === true;
 }
 
 function num(value: unknown): number | null {
@@ -599,28 +629,32 @@ export interface OwnerAndName {
 }
 
 /**
- * Resolve the two repository fields.
+ * Resolve the repository.
  *
- * Two boxes rather than one `owner/name` box is mostly a usability change, but
- * it also removes the most common setup mistake: a value with no slash, or
- * with a whole GitHub URL in it, that failed only on the first publish. A
- * pasted URL or an `owner/name` in the owner box is split here rather than
- * rejected.
+ * The name is `<owner>.github.io` — the user site, which is what almost every
+ * install wants — unless the override is ticked, in which case the typed name
+ * is used. A pasted URL or an `owner/name` in either box is split rather than
+ * rejected: it was the most common setup mistake, and it used to fail only on
+ * the first publish.
  */
-export function resolveOwnerAndName(rawOwner: unknown, rawName: unknown): OwnerAndName {
+export function resolveOwnerAndName(
+  rawOwner: unknown,
+  rawName: unknown,
+  override = false,
+): OwnerAndName {
   const problems: string[] = [];
   let owner = stripRepoUrl(str(rawOwner));
-  let name = stripRepoUrl(str(rawName));
+  let typed = stripRepoUrl(str(rawName));
 
   // "owner/name" pasted into either box.
   if (owner.includes('/')) {
     const [first, ...rest] = owner.split('/');
     owner = first ?? '';
-    if (!name) name = rest.join('/');
+    if (!typed) typed = rest.join('/');
   }
-  if (name.includes('/')) {
-    const parts = name.split('/');
-    name = parts[parts.length - 1] ?? '';
+  if (typed.includes('/')) {
+    const parts = typed.split('/');
+    typed = parts[parts.length - 1] ?? '';
     if (!owner) owner = parts[0] ?? '';
   }
 
@@ -629,9 +663,14 @@ export function resolveOwnerAndName(rawOwner: unknown, rawName: unknown): OwnerA
   } else if (!OWNER_PATTERN.test(owner)) {
     problems.push(`GitHub repository owner "${owner}" is not a GitHub username or organisation.`);
   }
-  if (!name) {
-    problems.push('GitHub repository name is not set (the repository, without the owner).');
-  } else if (!NAME_PATTERN.test(name)) {
+
+  const name = override ? typed : owner ? `${owner}.github.io` : '';
+  if (override && !name) {
+    problems.push(
+      'Override repository name is ticked but no repository name is set; untick it to ' +
+        'publish to <owner>.github.io.',
+    );
+  } else if (name && !NAME_PATTERN.test(name)) {
     problems.push(`GitHub repository name "${name}" is not a GitHub repository name.`);
   }
   return { owner, name, problems };
@@ -661,21 +700,6 @@ export interface UnresolvedConfig {
   warnings: string[];
 }
 
-/**
- * Validate the admin-UI payload and produce a complete config, or the list of
- * everything that stops the plugin publishing.
- *
- * Missing numbers fall back to the documented defaults — the schema supplies
- * them in the admin UI, and this repeats the fallback for a config written
- * before a field existed. What has no fallback is what belongs to one boat:
- * the repository and the token. A privacy zone missing its radius is fatal
- * too: a half-entered zone hides nothing while looking like it does, and the
- * failure mode is a published position someone believed was redacted.
- *
- * Every problem is reported at once: filling one field, restarting, and being
- * told about the next one is a miserable way to configure a plugin over a
- * boat's wifi.
- */
 /**
  * Keep the custom buttons that are actually buttons.
  *
@@ -714,7 +738,7 @@ export function resolveCustomLinks(value: unknown): {
 }
 
 /**
- * The home-waters coordinates, or null.
+ * The default-position coordinates, or null.
  *
  * Both halves or neither: a latitude with no longitude is not a place, and
  * sending half a fix to the tide-station lookup would land the panel somewhere
@@ -732,6 +756,65 @@ export function resolveDefaultLocation(
   return { lat: latitude, lon: longitude, label: str(label) };
 }
 
+/**
+ * The track timezone: the server's, unless the override is ticked.
+ *
+ * A plain string is accepted for a config written against the older form of
+ * this field, where the box held the zone and empty meant UTC.
+ */
+export function resolveTimezone(value: unknown): string {
+  if (typeof value === 'string') return value.trim() || serverTimezone();
+  if (value && typeof value === 'object') {
+    const { override, zone } = value as Record<string, unknown>;
+    if (override === true) return str(zone) || serverTimezone();
+  }
+  return serverTimezone();
+}
+
+/**
+ * The polar table setting, accepting the older form where this key was the
+ * pasted table itself and served as a fallback rather than an override.
+ */
+export function resolvePolars(value: unknown): { override: boolean; table: string } {
+  if (typeof value === 'string') return { override: value.trim() !== '', table: value };
+  if (value && typeof value === 'object') {
+    const { override, table } = value as Record<string, unknown>;
+    return {
+      override: bool(override),
+      table: typeof table === 'string' ? table : '',
+    };
+  }
+  return { override: false, table: '' };
+}
+
+/** Cadence in seconds, from the minutes on the page or the legacy seconds. */
+function intervalSeconds(
+  minutes: unknown,
+  legacySeconds: unknown,
+  fallbackSeconds: number,
+): number {
+  const fromMinutes = num(minutes);
+  if (fromMinutes !== null) return Math.max(1, Math.round(fromMinutes * 60));
+  const fromSeconds = num(legacySeconds);
+  if (fromSeconds !== null) return Math.max(1, Math.round(fromSeconds));
+  return fallbackSeconds;
+}
+
+/**
+ * Validate the admin-UI payload and produce a complete config, or the list of
+ * everything that stops the plugin publishing.
+ *
+ * Missing numbers fall back to the documented defaults — the schema supplies
+ * them in the admin UI, and this repeats the fallback for a config written
+ * before a field existed. What has no fallback is what belongs to one boat:
+ * the repository and the token. A privacy zone missing its radius is fatal
+ * too: a half-entered zone hides nothing while looking like it does, and the
+ * failure mode is a published position someone believed was redacted.
+ *
+ * Every problem is reported at once: filling one field, restarting, and being
+ * told about the next one is a miserable way to configure a plugin over a
+ * boat's wifi.
+ */
 export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
@@ -746,6 +829,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const { owner, name, problems: repoProblems } = resolveOwnerAndName(
     github.owner,
     github.name,
+    bool(github.overrideName),
   );
   problems.push(...repoProblems);
 
@@ -791,7 +875,11 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   const paths = parsePathList(instrumentLog.paths);
 
-  const underway = num(interval.underway) ?? DEFAULT_INTERVAL_UNDERWAY;
+  const underway = intervalSeconds(
+    interval.underwayMinutes,
+    interval.underway,
+    DEFAULT_INTERVAL_UNDERWAY,
+  );
   const resolutionSeconds =
     num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
   const entries = Math.max(
@@ -823,15 +911,19 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       interval: {
         underway,
-        stationary: num(interval.stationary) ?? DEFAULT_INTERVAL_STATIONARY,
+        stationary: intervalSeconds(
+          interval.stationaryMinutes,
+          interval.stationary,
+          DEFAULT_INTERVAL_STATIONARY,
+        ),
       },
       privacyZones: zones,
-      timezone: str(input.timezone),
+      timezone: resolveTimezone(input.timezone),
       instrumentLog: {
         paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
         entries,
       },
-      polars: typeof input.polars === 'string' ? input.polars : '',
+      polars: resolvePolars(input.polars),
       positionRetentionHours:
         num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
@@ -845,12 +937,11 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         ),
       },
       buildDocsIndex: input.buildDocsIndex !== false,
-      publishFrontend: input.publishFrontend !== false,
       site: {
-        theme: SITE_THEMES.includes(str(site.theme)) ? str(site.theme) : DEFAULT_THEME,
-        marinetrafficShipId: str(site.marinetrafficShipId),
         customLinks,
+        overrideUscgNumber: bool(site.overrideUscgNumber),
         uscgNumber: str(site.uscgNumber),
+        overrideHullNumber: bool(site.overrideHullNumber),
         hullNumber: str(site.hullNumber),
         defaultLocation: resolveDefaultLocation(site.defaultLocation),
       },

@@ -153,7 +153,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         repoUrl: `https://github.com/${config.github.repo}`,
         lastCommit: state.lastCommit ?? null,
         lastPublishedAt: state.lastPublishedAt ?? null,
-        timezone: config.timezone || 'UTC',
+        timezone: config.timezone,
         privacyZones: config.privacyZones.length,
         polars: polars.status,
         tracks: await publisher.listTracks(),

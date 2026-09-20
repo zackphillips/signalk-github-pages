@@ -147,27 +147,50 @@ describe('readActivePolar', () => {
     expect(result.problems).toEqual([]);
   });
 
-  it('falls back to the config table when nothing is active on the server', async () => {
-    const result = await readActivePolar(app(RESOURCE), {}, 'twa/tws;6;10\n52;4.1;5.8\n');
+  it('publishes the config table when the override is ticked', async () => {
+    const result = await readActivePolar(app(RESOURCE), {}, {
+      override: true,
+      table: 'twa/tws;6;10\n52;4.1;5.8\n',
+    });
     expect(result.source).toBe('config');
     expect(result.csv).toBe('twa/tws;6;10\n52;4.1;5.8\n');
     expect(result.summary).toContain('config page');
   });
 
-  it('prefers the server over the config table, and stays quiet about it', async () => {
-    const result = await readActivePolar(app(RESOURCE), selected, 'twa/tws;6\n52;9.9\n');
+  it('beats an active polar when the override is ticked', async () => {
+    const result = await readActivePolar(app(RESOURCE), selected, {
+      override: true,
+      table: 'twa/tws;6\n52;9.9\n',
+    });
+    expect(result.source).toBe('config');
+    expect(result.csv).toContain('9.9');
+  });
+
+  it('ignores the config table while the override is not ticked', async () => {
+    const result = await readActivePolar(app(RESOURCE), selected, {
+      override: false,
+      table: 'twa/tws;6\n52;9.9\n',
+    });
     expect(result.source).toBe('resource');
     expect(result.csv).not.toContain('9.9');
   });
 
-  it('falls back when the active polar will not convert, and says both things', async () => {
+  it('falls back to the server when the override will not parse, and says so', async () => {
+    const result = await readActivePolar(app(RESOURCE), selected, {
+      override: true,
+      table: 'not a polar table',
+    });
+    expect(result.source).toBe('resource');
+    expect(result.problems.join(' ')).toContain('not usable');
+  });
+
+  it('publishes nothing when the active polar will not convert', async () => {
     const result = await readActivePolar(
       app({ ...RESOURCE, units: { tws: 'furlongs', twa: 'rad', boatSpeed: 'm/s' } }),
       selected,
-      'twa/tws;6\n52;4.1\n',
     );
-    expect(result.source).toBe('config');
-    expect(result.csv).toBe('twa/tws;6\n52;4.1\n');
+    expect(result.source).toBe('none');
+    expect(result.csv).toBe('');
     expect(result.problems.join(' ')).toContain('units this plugin does not know');
   });
 

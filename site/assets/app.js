@@ -1216,18 +1216,9 @@ function updateVesselLinks() {
     vesselData.signalk.websocket_url = `${wsUrl}/signalk/v1/stream`;
   }
 
-  // Construct external tracking links
-  vesselData.links = vesselData.links || {};
-  if (vesselData.marinetraffic_ship_id) {
-    vesselData.links.marinetraffic = `https://www.marinetraffic.com/en/ais/details/ships/shipid:${vesselData.marinetraffic_ship_id}`;
-  }
-
-  // Update the link cluster in the tab bar
-  const marinetrafficLink = document.getElementById('marinetraffic-link');
-  if (marinetrafficLink && vesselData.links?.marinetraffic) {
-    marinetrafficLink.href = vesselData.links.marinetraffic;
-  }
-
+  // The link row is entirely the owner's: an AIS tracker, a ship's log, a
+  // Starlink status page. Add them as custom buttons on the plugin's config
+  // page — there are no built-in external links.
   renderCustomLinks(vesselData.custom_links);
 }
 

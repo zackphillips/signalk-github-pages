@@ -13,10 +13,10 @@ const CONFIG = makeConfig({
     { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 },
   ],
   site: {
-    theme: 'mermug',
-    marinetrafficShipId: '9698083',
     postgsailLogsUrl: 'https://example.invalid/logs',
+    overrideUscgNumber: true,
     uscgNumber: '1024168',
+    overrideHullNumber: true,
     hullNumber: 'BEY57004E494',
   },
 });
@@ -32,8 +32,6 @@ describe('renderVesselInfo', () => {
     const parsed = yaml.load(renderVesselInfo(CONFIG, IDENTITY)) as any;
     expect(parsed.name).toBe('S.V.Mermug');
     expect(parsed.mmsi).toBe('338543654');
-    expect(parsed.theme).toBe('mermug');
-    expect(parsed.marinetraffic_ship_id).toBe('9698083');
     expect(parsed.signalk).toEqual({ host: '192.168.8.50', port: '3000', protocol: 'http' });
     expect(parsed.privacy_zones).toEqual([
       { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 },
@@ -95,7 +93,7 @@ describe('custom buttons', () => {
   });
 });
 
-describe('home waters', () => {
+describe('the default position', () => {
   it('writes default_location, which is where the site looks before a fix', () => {
     const config = makeConfig({
       site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'San Francisco Bay' } },
@@ -225,9 +223,9 @@ describe('what is read from Signal K versus typed on the config page', () => {
     expect(parsed.registrations).toEqual({ 'national.usa': '1024168' });
   });
 
-  it('prefers the config page and says so when the two disagree', () => {
+  it('takes the config page only when the override is ticked, and says so', () => {
     const problems: string[] = [];
-    const config = makeConfig({ site: { uscgNumber: '9999999' } });
+    const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '9999999' } });
     const parsed = yaml.load(
       renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem)),
     ) as any;
@@ -235,9 +233,19 @@ describe('what is read from Signal K versus typed on the config page', () => {
     expect(problems.join(' ')).toContain('differs from the one Signal K reports');
   });
 
+  it('ignores a number left in the box with the override unticked', () => {
+    const problems: string[] = [];
+    const config = makeConfig({ site: { uscgNumber: '9999999' } });
+    const parsed = yaml.load(
+      renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem)),
+    ) as any;
+    expect(parsed.uscg_number).toBe('1024168');
+    expect(problems).toEqual([]);
+  });
+
   it('says nothing when the config page agrees with Signal K', () => {
     const problems: string[] = [];
-    const config = makeConfig({ site: { uscgNumber: '1024168' } });
+    const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '1024168' } });
     renderVesselInfo(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
     expect(problems).toEqual([]);
   });

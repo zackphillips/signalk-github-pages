@@ -534,7 +534,6 @@ export class Publisher {
     const { config } = this.deps;
     return {
       buildDocsIndex: config.buildDocsIndex,
-      publishFrontend: config.publishFrontend,
       publishPolars: polars !== '',
     };
   }
@@ -564,7 +563,6 @@ export class Publisher {
     publishedVersion: string | undefined,
   ): Promise<PublishFile[]> {
     const { config, store, log } = this.deps;
-    if (!config.publishFrontend) return [];
     const fingerprint = `${version}:${config.github.repo}:${config.github.branch}:${config.instrumentLog.entries}`;
     if (publishedVersion === fingerprint) return [];
 
