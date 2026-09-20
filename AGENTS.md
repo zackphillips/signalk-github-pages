@@ -18,6 +18,8 @@ src/
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
   instrumentLog.ts  instrument_log.json: its shape and the path matcher
+  notifications.ts  notifications.json: the notification tree flattened, and
+                    the firing log that turns states into edges
   history.ts        The Signal K History API: the instrument log, read back
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
@@ -99,6 +101,45 @@ Run `npm test` and `npm run typecheck` before committing.
   so a wildcard in the captured-path list cannot put a raw position into a
   published file that nothing redacts. The privacy zones guard the track's
   path, not this one.
+- **The frontend has no thresholds, and must not grow one back.** Twelve
+  constants in `constants.js` used to decide what a low battery, a low tank, a
+  dragging anchor and a lossy link were for every boat that publishes this
+  site. They are gone: `classifyByZones` reads `meta.zones` off the published
+  snapshot and is the only classifier there is. A path with no zones renders
+  uncoloured — the same rule as the invented tide location and the invented
+  vessel identity, one layer down. The server is where a threshold belongs,
+  because it is where the alarm that sounds the buzzer is already configured,
+  and a second copy here can only disagree with it silently. If a panel needs
+  a level, set the zone in Signal K.
+- **A notification firing is an edge, not a sample.** The publish cadence
+  swings 30x with `navigation.state`, so counting cycles in which an alarm was
+  up would score the same six-hour alarm at 180 underway and 6 at anchor.
+  `updateNotificationLog` counts a transition *into* an active state, plus an
+  escalation within one. It deliberately does not count a re-stamped
+  timestamp — some producers re-send an unchanged notification on every delta
+  — and it does not count a path that drops out of the tree and returns, which
+  is what a restarting producer looks like. The cost of that rule is that
+  anything firing and clearing between two publishes is invisible, so the
+  counts are a floor; the panel says so, and `sampled_since` bounds them to
+  what the log has actually watched.
+- **Notifications are not stale-filtered, on purpose.** `STALE_FILTER_KEYS`
+  covers `environment`, `navigation` and `entertainment`, where an old value
+  presented as current is a lie. A notification is a *state*: it stays up
+  until something clears it, and ageing one out would silently clear a real
+  alarm on the site while the boat still has it. The banner shows how long it
+  has been up instead.
+- **The preview folds the firing log forward and throws it away.**
+  `renderPreviewData` calls the same `updateNotificationLog` the publisher
+  does and does not write the result. A phone left on the preview page would
+  otherwise consume the edge the next real cycle needed to see, and the
+  firing would never be counted.
+- **The theme is never named `dark`.** The cycle is marine / amber / bright,
+  and the first two are the dark ones. Nor after a boat: `amber` was `mermug`,
+  named and coloured for one vessel's logo and offered to everybody. A `[data-theme="dark"]` selector
+  matches nothing — three `.value-*` rules sat dead in `styles.css` for that
+  reason, which left every warn and alert painted in the light-theme colour on
+  a dark background. Three more (`.alert-chip--*`, `.floating-dark-mode-btn`)
+  are still keyed that way.
 - **The three history outcomes are three different publishes.** `ok` writes
   the log. `unavailable` — a provider is configured but did not answer —
   writes nothing and leaves the copy on the site, because a sparkline a few
@@ -107,10 +148,17 @@ Run `npm test` and `npm run typecheck` before committing.
   omit the sparklines instead of drawing whatever an older version last
   accumulated. Collapsing any two of those into a nullable snapshot loses a
   behaviour someone will notice.
-- **`instrumentLog.entries` is the query window, and 60 is not arbitrary.**
-  The frontend's `SPARKLINE_POINTS` is 60: it plots the last 60 entries and
-  ignores the rest, so a longer log is bytes uploaded on every publish that
-  nothing has ever drawn.
+- **`instrumentLog.entries` is the query window, and it is also the history
+  dropdown.** `entries x resolutionSeconds` is how far back the log reaches,
+  and the sparklines' window dropdown offers 1/3/12/24 hours against exactly
+  that: a span the published file does not cover is disabled in the menu
+  rather than drawn as a duplicate of a shorter one. The frontend plots every
+  entry it is given, so raising `entries` is what makes the longer windows
+  selectable — and every one of those entries is uploaded in full on every
+  publish. At the default 60 s resolution, 24 hours is 1440 entries and about
+  half a megabyte a cycle, which is a real decision on a hotspot, not a knob
+  to turn up by default. `SPARKLINE_MAX_POINTS` is a draw cap, not a trim;
+  it does not shorten the window.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.

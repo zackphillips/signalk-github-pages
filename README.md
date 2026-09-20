@@ -48,6 +48,8 @@ the live `HEAD`.
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
 | **Per-day GPX tracks** | Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
+| **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
+| **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
 | **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
 | **Sparklines from your database** | With a Signal K history provider installed, the instrument log is read back from it — full resolution, no gap across a restart, nothing accumulated on the Pi |
@@ -128,7 +130,7 @@ only. Give Pages a minute, then open the URL.
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
-| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and what the sparklines draw |
+| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and the longest window the site's history dropdown will offer |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
 | `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
 | `history.providerId` | *empty* | Blank uses the server's default provider |
@@ -148,6 +150,7 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
+| `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
 The defaults are the numbers this tracker has run on since it was a Python
 daemon on a Raspberry Pi. Five settings are derived rather than typed — the
@@ -187,8 +190,9 @@ sparkline window on every cycle instead of accumulating readings itself:
 - The graphs are spaced at `history.resolutionSeconds` (60 s by default)
   rather than at the publish interval, so they are finer than a two-minute
   cadence can produce.
-- The log covers `entries x resolution`: 60 entries at 60 s is the last hour,
-  which is exactly what the bundled sparklines draw.
+- The log covers `entries x resolution`: 60 entries at 60 s is the last hour.
+  That span is also what the site's history dropdown can offer — see
+  [how far back the sparklines go](#how-far-back-the-sparklines-go).
 - A restart, a reinstall, a moved data directory or a plugin that was off for
   a day no longer leaves a hole. Nothing is accumulated, so there is nothing
   to lose.
@@ -216,11 +220,39 @@ Set `history.providerId` only if more than one provider is registered and you
 want a specific one; blank means the server's default.
 
 The whole log goes up on every publish, so its size is `entries` x paths: see
-[why that matters](#why-this-matters-more-than-it-looks-like-it-should). The
-default 60 entries is what the sparklines draw; more than that is uploaded and
-never plotted.
+[why that matters](#why-this-matters-more-than-it-looks-like-it-should).
 
 [signalk-to-influxdb2]: https://www.npmjs.com/package/signalk-to-influxdb2
+
+### How far back the sparklines go
+
+Open a panel's **Show History** and a window dropdown appears beside it: 1, 3,
+12 or 24 hours. It is one setting for the whole page, not one per panel —
+battery voltage is read against solar power and boat speed, and they only line
+up on a shared axis.
+
+What the dropdown can offer is decided by the published file, not by the site.
+`instrument_log.json` reaches back `entries x resolution`, so the defaults (60
+entries at 60 s) cover an hour, and the site marks the three longer windows
+*(not logged)* and disables them rather than drawing three copies of the same
+chart under different labels.
+
+To make them selectable, raise `instrumentLog.entries`:
+
+| Window | `entries` at 60 s | `entries` at 300 s |
+| --- | --- | --- |
+| 1 hour | 60 | 12 |
+| 3 hours | 180 | 36 |
+| 12 hours | 720 | 144 |
+| 24 hours | 1440 | 288 |
+
+Every one of those entries is uploaded in full on every publish, so this is a
+real decision and not a knob to turn up by reflex. At the default path list, 24
+hours at 60 s is roughly half a megabyte a cycle — fine on a dock, expensive on
+a hotspot at a two-minute cadence. Coarsening `history.resolutionSeconds` buys
+the same window for a fifth of the bytes and costs detail inside the shorter
+ones: at 300 s the 1-hour view is twelve points. Pick the pair you want, or
+leave it at an hour.
 
 ## Instrument paths
 
@@ -278,7 +310,8 @@ Asking for every path a database has stored is roughly 167 per entry, which at
 hour** over the hotspot, for data the sparklines never draw. The defaults are
 about two dozen patterns over 60 entries: tens of kilobytes, a megabyte or two
 an hour. Both halves are levers — the path list and `instrumentLog.entries` —
-and the second one is free below 60, because that is all the frontend plots.
+and the second one is what the history dropdown spends: see [how far back the
+sparklines go](#how-far-back-the-sparklines-go).
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
@@ -303,6 +336,72 @@ that was wrong in both directions.
 > A zone missing its radius is a hard configuration error, not a warning. A
 > half-entered zone hides nothing while looking like it does, and the failure
 > mode is a published position someone believed was redacted.
+
+## Zones and notifications
+
+The dashboard has no thresholds of its own. Whether 46% state of charge is
+fine or alarming is a property of a battery bank, not of a web page: 46% is
+comfortable on 600Ah of LiFePO4 and nearly flat on a tired 200Ah of AGM.
+The frontend used to carry twelve constants that answered for every boat —
+battery, tank, anchor and packet-loss levels — and they are gone.
+
+What paints a value now is `meta.zones` on the Signal K path, which is where
+the server keeps it anyway:
+
+```json
+"electrical.batteries.house.capacity.stateOfCharge": {
+  "meta": {
+    "zones": [
+      { "upper": 0.2, "state": "alarm", "message": "House bank critical" },
+      { "lower": 0.2, "upper": 0.5, "state": "warn", "message": "House bank low" },
+      { "lower": 0.5, "state": "normal" }
+    ]
+  }
+}
+```
+
+Set them on the server's **Data Fiddler** page (Server → Data Fiddler → the
+path → Meta), or let the plugin that owns the sensor publish them. `normal`
+and `nominal` render green, `warn` and `caution` amber, `alert`, `alarm` and
+`emergency` red, and a zone's `message` becomes the label. Bounds are
+half-open — `lower <= value < upper` — so adjacent zones do not overlap.
+
+**A path with no zones renders with no colour.** That is deliberate, and it is
+the same rule the rest of the site follows: an unknown position renders as
+unknown rather than as San Francisco Bay. If a value should be flagged, the
+place to say so is the server, where the alarm that sounds the buzzer is
+configured — not a second set of numbers here that can disagree with it
+silently.
+
+### Notifications
+
+`data/telemetry/notifications.json` carries two things. **Active** is the
+current set straight off `notifications.*`, raised in a banner above the tabs
+whichever tab is open. **Events** is the firing log, and the Notifications
+panel counts it over 1, 3, 12 and 24 hours.
+
+A firing is an **edge**, not a sample: an alarm that comes on and stays on for
+six hours counts once. Counting samples would make the number a function of
+the publish cadence, which changes with `navigation.state` — the same alarm
+would score thirty times higher underway than at anchor. An escalation
+(`warn` → `alarm`) counts as a new firing; a producer that re-stamps an
+unchanged notification does not.
+
+The honest limit, and the panel says so: anything that fires **and clears**
+between two publishes is never seen. At the dock that gap is the stationary
+interval, an hour by default. The counts are a floor, not a total. The panel
+also marks any window longer than the log has been running, so a plugin
+restarted at 06:00 does not report a quiet night it never watched.
+
+The log lives in the plugin's data directory, is pruned to 24 hours, and is
+capped at 500 events so a float switch flapping either side of its zone cannot
+grow the file without bound.
+
+> [!NOTE]
+> A notification's `message` is free text written by whichever plugin raised
+> it, and it is published verbatim to a public website. Everything else the
+> plugin publishes is a number off a known path, which is why this one has an
+> off switch: `publishNotifications`.
 
 ## Branding
 
@@ -335,7 +434,6 @@ lasted until the next release.
 
 `assets/custom.css` is still yours, loaded last by both pages and never written
 by the plugin, for anything the config page does not reach.
-
 ## What comes from Signal K
 
 The boat's own details are not typed on the config page. Every cycle the
@@ -591,8 +689,9 @@ npm run dev       # site/ + sample/ on http://localhost:8000
 ```
 
 `npm run dev` serves the real frontend against fixture telemetry: a day's
-track, sixty instrument-log entries, a sailing snapshot and a polar table. No
-boat required.
+track, sixty instrument-log entries, a sailing snapshot with `meta.zones` set
+on the battery and tank paths, a day of notification firings and a polar
+table. No boat required.
 
 `Publisher.runCycle()` takes a self tree and returns what it did — it never
 calls back into the server — so a full publish cycle is tested without Signal

@@ -19,6 +19,12 @@
  */
 import type { PluginConfig } from './config';
 import { groupPointsByDay, renderGpxDocument, TRACKS_INDEX_SCHEMA_VERSION } from './gpx';
+import {
+  parseNotificationLog,
+  readNotifications,
+  renderNotifications,
+  updateNotificationLog,
+} from './notifications';
 import { parsePositionIndex } from './positions';
 import { TRACKS_DIR } from './prune';
 import { filterStaleData, redactPosition, type Tree } from './snapshot';
@@ -100,6 +106,17 @@ export async function renderPreviewData(
       `${TRACKS_DIR}/${day}.gpx`,
       renderGpxDocument(points, day, merged.name || 'Vessel'),
     );
+  }
+
+  // The firing log is folded forward in memory and thrown away: the preview
+  // shows what the next publish would say, without being the thing that says
+  // it. Writing here would let a phone left on the preview page roll the
+  // counts forward and then lose the edge the real cycle needed to see.
+  if (config.publishNotifications) {
+    const observed = readNotifications(tree);
+    const stored = parseNotificationLog(await store.readText('notifications_log.json'), now);
+    const { log } = updateNotificationLog(stored, observed, now);
+    files.set(`${TELEMETRY_DIR}/notifications.json`, renderNotifications(log, observed, now));
   }
 
   files.set('data/vessel/info.yaml', renderVesselInfo(config, merged));
