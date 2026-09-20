@@ -635,6 +635,39 @@ body.map-fills .footer {
   opacity: 0.9;
 }
 
+.sparkline-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Sized and styled to match the toggle button beside it, so the header reads
+   as one control rather than a form field next to a button. */
+.sparkline-window-select {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.72em;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.sparkline-window-select:hover {
+  background: var(--bg-quaternary);
+  color: var(--text-primary);
+}
+
+/* A window the published log does not reach back far enough to draw. */
+.sparkline-window-select option:disabled {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+
 .sparkline-toggle-btn {
   flex-shrink: 0;
   background: transparent;
