@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "generated": "2026-03-01T20:00:00.000Z",
+  "window_hours": 24,
+  "sampled_since": "2026-02-28T20:00:00.000Z",
+  "active": [
+    {
+      "path": "environment.depth.belowTransducer",
+      "state": "alarm",
+      "level": "alert",
+      "message": "Shallow water: 2.1 m under the transducer",
+      "method": [
+        "visual",
+        "sound"
+      ],
+      "timestamp": "2026-03-01T19:54:00Z",
+      "since": "2026-03-01T19:30:00.000Z"
+    },
+    {
+      "path": "tanks.blackwater.bow.currentLevel",
+      "state": "warn",
+      "level": "warn",
+      "message": "Holding tank above 50%",
+      "method": [
+        "visual"
+      ],
+      "timestamp": "2026-03-01T17:42:00Z",
+      "since": "2026-03-01T09:00:00.000Z"
+    }
+  ],
+  "events": [
+    {
+      "path": "navigation.anchor",
+      "state": "alarm",
+      "level": "alert",
+      "message": "Dragging: 42 m from anchor",
+      "at": "2026-02-28T23:00:00.000Z"
+    },
+    {
+      "path": "tanks.blackwater.bow.currentLevel",
+      "state": "warn",
+      "level": "warn",
+      "message": "Holding tank above 50%",
+      "at": "2026-03-01T09:00:00.000Z"
+    },
+    {
+      "path": "environment.depth.belowTransducer",
+      "state": "warn",
+      "level": "warn",
+      "message": "Shallow water: 4.0 m under the transducer",
+      "at": "2026-03-01T12:00:00.000Z"
+    },
+    {
+      "path": "environment.depth.belowTransducer",
+      "state": "alarm",
+      "level": "alert",
+      "message": "Shallow water: 2.4 m under the transducer",
+      "at": "2026-03-01T18:00:00.000Z"
+    },
+    {
+      "path": "environment.depth.belowTransducer",
+      "state": "alarm",
+      "level": "alert",
+      "message": "Shallow water: 2.1 m under the transducer",
+      "at": "2026-03-01T19:30:00.000Z"
+    }
+  ]
+}

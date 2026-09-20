@@ -83,6 +83,16 @@ export interface PluginConfig {
     table: string;
   };
   buildDocsIndex: boolean;
+  /**
+   * Publish `data/telemetry/notifications.json`: the active notifications and
+   * the 24-hour firing log behind the site's Notifications panel.
+   *
+   * It has a switch and the rest of the telemetry does not, because a
+   * notification carries a free-text `message` written by whatever plugin
+   * raised it, and that message goes to a public website verbatim. Everything
+   * else the plugin publishes is a number off a known path.
+   */
+  publishNotifications: boolean;
   site: {
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
@@ -482,6 +492,16 @@ export const configSchema = {
       description:
         "Rebuild the ship's-docs manifest when the docs tree changes. Turn off if you " +
         'run the docs-index GitHub Action instead.',
+      default: true,
+    },
+    publishNotifications: {
+      type: 'boolean',
+      title: 'Publish notifications',
+      description:
+        'Publish active Signal K notifications and how often each one has fired over ' +
+        'the last 24 hours. Notification messages are free text from whichever plugin ' +
+        'raised them and are published verbatim — turn this off if yours say anything ' +
+        'you would not put on a public page.',
       default: true,
     },
     site: {
@@ -937,6 +957,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         ),
       },
       buildDocsIndex: input.buildDocsIndex !== false,
+      publishNotifications: input.publishNotifications !== false,
       site: {
         customLinks,
         overrideUscgNumber: bool(site.overrideUscgNumber),

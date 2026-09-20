@@ -9,6 +9,13 @@
  * or a network.
  */
 import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
+import {
+  parseNotificationLog,
+  readNotifications,
+  renderNotificationLog,
+  renderNotifications,
+  updateNotificationLog,
+} from './notifications';
 import type { HistoryResult } from './history';
 import {
   buildDocsIndex,
@@ -57,6 +64,7 @@ const TELEMETRY_DIR = 'data/telemetry';
 const LATEST_PATH = `${TELEMETRY_DIR}/signalk_latest.json`;
 const POSITIONS_PATH = `${TELEMETRY_DIR}/positions_index.json`;
 const INSTRUMENT_LOG_PATH = `${TELEMETRY_DIR}/instrument_log.json`;
+const NOTIFICATIONS_PATH = `${TELEMETRY_DIR}/notifications.json`;
 const TRACKS_INDEX_PATH = `${TELEMETRY_DIR}/tracks_index.json`;
 const INFO_PATH = 'data/vessel/info.yaml';
 
@@ -239,6 +247,7 @@ export class Publisher {
     }
 
     files.push(...(await this.instrumentLogFile(history)));
+    files.push(...(await this.notificationsFile(tree, now)));
 
     files.push(...(await this.vesselInfoFile(identity)));
     files.push(...(await this.polarsFile(polars)));
@@ -355,6 +364,48 @@ export class Publisher {
       );
     }
     return [{ path: INSTRUMENT_LOG_PATH, content: contents }];
+  }
+
+  /**
+   * Active notifications, and how many times each one has fired.
+   *
+   * This is the one telemetry file built from state rather than read from it:
+   * a notification's history is a series of edges, and an edge can only be
+   * seen by comparing this cycle with the last. The rolling log lives in the
+   * data directory beside the position index for exactly that reason.
+   *
+   * The write happens here and not in the console preview, which calls the
+   * same pure functions and throws the result away — a person refreshing the
+   * preview must not be able to advance the firing counts.
+   */
+  private async notificationsFile(tree: Tree, now: Date): Promise<PublishFile[]> {
+    const { store, config, log } = this.deps;
+    if (!config.publishNotifications) return [];
+
+    const observed = readNotifications(tree);
+    const previous = parseNotificationLog(
+      await store.readText('notifications_log.json'),
+      now,
+    );
+    const { log: updated, fired } = updateNotificationLog(previous, observed, now);
+    await store.writeText('notifications_log.json', renderNotificationLog(updated));
+
+    const active = observed.filter((item) => item.level !== 'ok');
+    if (fired.length) {
+      log(
+        `Notifications: ${fired.length} fired this cycle ` +
+          `(${fired.map((event) => `${event.path} ${event.state}`).join(', ')}).`,
+      );
+    }
+    if (active.length) {
+      log(
+        `Notifications: ${active.length} active — ` +
+          `${active.map((item) => `${item.path} ${item.state}`).join(', ')}.`,
+      );
+    }
+    return [
+      { path: NOTIFICATIONS_PATH, content: renderNotifications(updated, observed, now) },
+    ];
   }
 
   /** Every published voyage, newest first, for the webapp's list. */
