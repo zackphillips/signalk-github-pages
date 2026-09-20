@@ -16,6 +16,7 @@ import {
   renderNotificationLog,
   renderNotifications,
   updateNotificationLog,
+  type NotificationEvent,
 } from './notifications';
 import type { HistoryResult } from './history';
 import {
@@ -105,6 +106,14 @@ export interface CycleInput {
    * sampling this replaced, and more wherever the track actually bends.
    */
   fixes?: PositionFix[];
+  /**
+   * Notification firings the recorder saw between publishes. When these are
+   * supplied the cycle-to-cycle comparison stops counting edges of its own,
+   * so a firing that straddled a publish is not counted twice.
+   */
+  notificationEdges?: NotificationEvent[];
+  /** True while a recorder is running, which is what makes the counts real. */
+  recordingNotifications?: boolean;
 }
 
 export interface CycleResult {
@@ -285,7 +294,7 @@ export class Publisher {
     }
 
     files.push(...(await this.instrumentLogFile(history)));
-    files.push(...(await this.notificationsFile(tree, now)));
+    files.push(...(await this.notificationsFile(tree, now, input)));
 
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
@@ -423,16 +432,28 @@ export class Publisher {
    * same pure functions and throws the result away — a person refreshing the
    * preview must not be able to advance the firing counts.
    */
-  private async notificationsFile(tree: Tree, now: Date): Promise<PublishFile[]> {
+  private async notificationsFile(
+    tree: Tree,
+    now: Date,
+    input: CycleInput,
+  ): Promise<PublishFile[]> {
     const { store, config, log } = this.deps;
     if (!config.publishNotifications) return [];
 
-    const observed = readNotifications(tree);
+    const exclude = config.notificationExclude;
+    const observed = readNotifications(tree, exclude);
     const previous = parseNotificationLog(
       await store.readText('notifications_log.json'),
       now,
     );
-    const { log: updated, fired } = updateNotificationLog(previous, observed, now);
+    const recorded = input.notificationEdges ?? [];
+    const { log: updated, fired } = updateNotificationLog(previous, observed, now, {
+      exclude,
+      recorded,
+      // The recorder sees every edge as it happens, so the comparison below
+      // must not find the same ones again.
+      countEdges: !input.recordingNotifications,
+    });
     await store.writeText('notifications_log.json', renderNotificationLog(updated));
 
     const active = observed.filter((item) => item.level !== 'ok');
@@ -449,7 +470,12 @@ export class Publisher {
       );
     }
     return [
-      { path: NOTIFICATIONS_PATH, content: renderNotifications(updated, observed, now) },
+      {
+        path: NOTIFICATIONS_PATH,
+        content: renderNotifications(updated, observed, now, {
+          continuous: input.recordingNotifications === true,
+        }),
+      },
     ];
   }
 

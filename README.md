@@ -149,6 +149,7 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
+| `notificationExclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
@@ -420,6 +421,28 @@ configured — not a second set of numbers here that can disagree with it
 silently.
 
 ### Notifications
+
+Not every notification belongs on a public page. `notificationExclude` is a
+list of paths — without the `notifications.` prefix — that are never
+published: `*` matches one segment, and naming a parent drops its whole
+subtree, so `server` silences every server notification at once.
+
+`server.history.defaultProvider` is excluded by default. It is the server
+telling its own admin UI that no default history provider is configured:
+true, useful on the Pi, and meaningless in a banner above a map, where it
+would sit indefinitely saying nothing about the boat.
+
+Adding a path takes it off the site on the next cycle, including the firing
+counts it had already collected. An empty list publishes everything.
+
+**Firings are counted from deltas, not from snapshots.** The plugin
+subscribes to the notification stream, so one that comes on and clears
+between two publishes is still counted — a bilge pump that runs for three
+seconds every ten minutes used to be invisible, because the tree was only
+read once a cycle and at the dock that is once an hour. The panel says which
+way its numbers were collected: a real count while the plugin has been
+running, or a floor on a server that offers no delta stream.
+
 
 `data/telemetry/notifications.json` carries two things. **Active** is the
 current set straight off `notifications.*`, raised in a banner above the tabs

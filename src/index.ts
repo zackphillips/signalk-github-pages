@@ -28,6 +28,7 @@ import { StateStore } from './state';
 import { activePolarId, readActivePolar } from './polars';
 import { extractPositionFix, isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
+import { NotificationRecorder } from './notificationRecorder';
 import { PositionRecorder } from './track';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
@@ -158,6 +159,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Subscribed on start, unsubscribed on stop. Null while the plugin is not
   // running, and left null on a server that cannot provide the streams.
   let recorder: PositionRecorder | null = null;
+  // Subscribed on start when the plugin publishes notifications at all.
+  let notifications: NotificationRecorder | null = null;
   // Unsubscribe for the navigation.state watch, or undefined when not watching.
   let stateUnsubscribe: (() => void) | undefined;
 
@@ -386,6 +389,20 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       });
       if (!recorder.start()) recorder = null;
 
+      // Notification firings are edges, and sampling the tree once a cycle
+      // misses any that fire and clear in between — at the stationary
+      // cadence, an hour of them. Subscribing catches the bilge pump that
+      // runs for three seconds every ten minutes, which is exactly the one
+      // worth counting.
+      if (config.publishNotifications) {
+        notifications = new NotificationRecorder({
+          app,
+          exclude: config.notificationExclude,
+          log: (message) => app.debug(message),
+        });
+        if (!notifications.start()) notifications = null;
+      }
+
       const identity = readIdentity(app);
       const publisher = new Publisher({
         client,
@@ -458,6 +475,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           history: await history.read(new Date()),
           passage,
           fixes: recorder?.drain(),
+          notificationEdges: notifications?.drain(),
+          recordingNotifications: notifications?.available() === true,
         });
         return {
           published: result.published,
@@ -539,6 +558,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             history: await history.read(new Date()),
             passage,
             fixes: recorder?.drain(),
+            notificationEdges: notifications?.drain(),
+            recordingNotifications: notifications?.available() === true,
           });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
@@ -643,6 +664,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       passage = null;
       recorder?.stop();
       recorder = null;
+      notifications?.stop();
+      notifications = null;
       try {
         stateUnsubscribe?.();
       } catch {

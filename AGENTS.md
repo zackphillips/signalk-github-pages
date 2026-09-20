@@ -20,6 +20,8 @@ src/
   instrumentLog.ts  instrument_log.json: its shape and the path matcher
   notifications.ts  notifications.json: the notification tree flattened, and
                     the firing log that turns states into edges
+  notificationRecorder.ts
+                    Notification deltas, so a firing between publishes counts
   history.ts        The Signal K History API: the instrument log, read back
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
@@ -225,6 +227,24 @@ Run `npm test` and `npm run typecheck` before committing.
   because it is where the alarm that sounds the buzzer is already configured,
   and a second copy here can only disagree with it silently. If a panel needs
   a level, set the zone in Signal K.
+- **Firings are recorded from deltas; the tree sample is the fallback.**
+  Sampling the tree once a cycle answers "what is wrong now" perfectly and
+  "how often has this been going off" badly: at the stationary cadence the
+  gap is an hour, so a bilge pump that runs three seconds every ten minutes
+  was not undercounted, it was absent. `NotificationRecorder` subscribes to
+  the self bus and applies the same edge rule between deltas.
+  Exactly one of the two counts, ever. With a recorder running the publisher
+  passes `countEdges: false`, so the cycle-to-cycle comparison only refreshes
+  `seen` and `active`; counting in both places would double every firing that
+  straddled a publish. Without a recorder — an older server, or one whose bus
+  this plugin could not subscribe to — nothing changes and the comparison
+  counts as it always did. The published `continuous` flag says which
+  happened, and the panel's own copy changes with it rather than always
+  claiming the worse one.
+  The pending list is capped (`MAX_PENDING_EDGES`) because the drain
+  interval is the publish interval and a wedged float switch can fire on
+  every delta; the published log's cap cannot help there, because nothing
+  has published yet.
 - **A notification firing is an edge, not a sample.** The publish cadence
   swings 30x with `navigation.state`, so counting cycles in which an alarm was
   up would score the same six-hour alarm at 180 underway and 6 at anchor.
@@ -236,6 +256,16 @@ Run `npm test` and `npm run typecheck` before committing.
   anything firing and clearing between two publishes is invisible, so the
   counts are a floor; the panel says so, and `sampled_since` bounds them to
   what the log has actually watched.
+- **A notification the adopter excludes leaves no trace.**
+  `notificationExclude` filters at three points: `readNotifications` never
+  observes it, `NotificationRecorder` never records it, and
+  `updateNotificationLog` drops it from both `seen` and the retained
+  `events`. Adding a pattern has to take the path off the site on the next
+  cycle *including the counts it had already collected* — leaving a day of
+  firings attributed to a path the page no longer lists is worse than
+  either publishing it or not. Unlike the captured instrument paths, an
+  empty list is a real answer and must not fall back to the default:
+  a blacklist that cannot be emptied is a bug.
 - **Notifications are not stale-filtered, on purpose.** `STALE_FILTER_KEYS`
   covers `environment`, `navigation` and `entertainment`, where an old value
   presented as current is a lie. A notification is a *state*: it stays up

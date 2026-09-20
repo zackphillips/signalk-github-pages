@@ -20,6 +20,7 @@
  * stand-in.
  */
 
+import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
 
 /** One extra button in the site's link row. */
@@ -100,6 +101,12 @@ export interface PluginConfig {
    * else the plugin publishes is a number off a known path.
    */
   publishNotifications: boolean;
+  /**
+   * Notification paths never published. Empty means publish every one —
+   * unlike the captured instrument paths, an empty blacklist is a real
+   * answer and must not fall back to the default.
+   */
+  notificationExclude: string[];
   site: {
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
@@ -570,6 +577,17 @@ export const configSchema = {
         'you would not put on a public page.',
       default: true,
     },
+    notificationExclude: {
+      type: 'string',
+      title: 'Notifications never published',
+      description:
+        'One notification path per line, without the "notifications." prefix. ' +
+        '"*" matches one segment and a parent excludes its whole subtree, so "server" ' +
+        'drops every server notification. Adding a path removes it from the site on the ' +
+        'next cycle, including the firing counts it had already collected. Empty ' +
+        'publishes every notification.',
+      default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
+    },
     site: {
       type: 'object',
       title: 'Site details',
@@ -1010,6 +1028,14 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       ),
       buildDocsIndex: input.buildDocsIndex !== false,
       publishNotifications: input.publishNotifications !== false,
+      // No fallback to the default when the box is empty. For the captured
+      // instrument paths an empty list means "nothing would be logged", so
+      // the default stands in; for a blacklist it means "publish all of
+      // them", which is a choice the adopter is allowed to make.
+      notificationExclude:
+        input.notificationExclude === undefined
+          ? [...DEFAULT_NOTIFICATION_EXCLUDE]
+          : parsePathList(input.notificationExclude),
       site: {
         customLinks,
         overrideUscgNumber: bool(site.overrideUscgNumber),

@@ -119,9 +119,10 @@ export async function renderPreviewData(
   // it. Writing here would let a phone left on the preview page roll the
   // counts forward and then lose the edge the real cycle needed to see.
   if (config.publishNotifications) {
-    const observed = readNotifications(tree);
+    const exclude = config.notificationExclude;
+    const observed = readNotifications(tree, exclude);
     const stored = parseNotificationLog(await store.readText('notifications_log.json'), now);
-    const { log } = updateNotificationLog(stored, observed, now);
+    const { log } = updateNotificationLog(stored, observed, now, { exclude });
     files.set(`${TELEMETRY_DIR}/notifications.json`, renderNotifications(log, observed, now));
   }
 

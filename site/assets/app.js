@@ -287,6 +287,10 @@ function countNotificationFirings(payload) {
   return {
     reference,
     sampledSince: Number.isFinite(sampledSince) ? sampledSince : null,
+    // True when the plugin subscribed to notification deltas rather than
+    // sampling the tree once a publish. It changes what the counts mean, so
+    // the panel says which it is instead of always claiming the worse one.
+    continuous: payload?.continuous === true,
     windows,
     partial,
     rows: [...byPath.values()].sort((a, b) => (b.last ?? 0) - (a.last ?? 0)),
@@ -364,15 +368,25 @@ function renderNotificationsPanel(payload) {
     }
   }
 
+  // What the counts mean depends on how they were collected. Subscribed to
+  // the deltas, every firing is seen and the number is real; sampling the
+  // tree once a publish misses anything that fires and clears in between,
+  // which at the stationary cadence is an hour of them.
+  const completeness = summary.continuous
+    ? `A notification that comes on and stays on counts once. Firings are recorded
+       as they happen, so one that fires and clears between two publishes is
+       still counted — but only while the plugin has been running.`
+    : `A notification that comes on and stays on counts once; one that fires and
+       clears between two publishes is not seen at all, so these are a floor
+       rather than a total.`;
+
   const head = `
     <div class="notif-meta">
       Firings counted as of ${asOfAge} ago${
         summary.sampledSince
           ? `, from a log reaching back ${relativeAge(summary.sampledSince, summary.reference)}`
           : ''
-      }. A notification that comes on and stays on counts once; one that
-      fires and clears between two publishes is not seen at all, so these are
-      a floor rather than a total.
+      }. ${completeness}
     </div>`;
 
   if (!paths.length) {
