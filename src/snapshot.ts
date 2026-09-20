@@ -8,20 +8,27 @@
  */
 import type { PrivacyZone } from './config';
 import { privacyZoneCentre, type ZoneCentre } from './privacy';
+import type { SignalKApp } from './signalk';
 
 export type Tree = Record<string, any>;
 
 /** Sections whose values go stale in a way the UI must not present as live. */
 export const STALE_FILTER_KEYS = ['environment', 'navigation', 'entertainment'] as const;
 
-/** Anything with a `getSelfPath` is enough to read a snapshot. */
-export interface SelfTreeSource {
-  getSelfPath?: (path: string) => any;
-  getPath?: (path: string) => any;
-  signalk?: { retrieve?: () => any };
+/**
+ * What reading a snapshot needs of the server.
+ *
+ * `getSelfPath` and `getPath` are the server's published accessors, taken
+ * from its own type so a rename shows up here at build time. The other two
+ * are not in that contract: `signalk.retrieve()` is the internal full-model
+ * accessor older servers exposed, kept as a last resort and typed as the
+ * reach-past-the-contract that it is.
+ */
+export type SelfTreeSource = Partial<Pick<SignalKApp, 'getSelfPath' | 'getPath'>> & {
+  signalk?: { retrieve?: () => unknown };
   selfId?: string;
   selfContext?: string;
-}
+};
 
 /**
  * Best-effort read of the whole self tree.
@@ -34,7 +41,9 @@ export function readSelfTree(app: SelfTreeSource): Tree {
     () => app.getSelfPath?.(''),
     () => app.getPath?.('vessels.self'),
     () => {
-      const full = app.signalk?.retrieve?.();
+      const full = app.signalk?.retrieve?.() as
+        | { vessels?: Record<string, unknown> }
+        | undefined;
       const id = app.selfId ?? (app.selfContext ?? '').replace(/^vessels\./, '');
       return id ? full?.vessels?.[id] : undefined;
     },

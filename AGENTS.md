@@ -32,6 +32,7 @@ src/
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
+  signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
 sample/             Fixture telemetry for `npm run dev`
@@ -75,6 +76,20 @@ Run `npm test` and `npm run typecheck` before committing.
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
   that anyone with write access can edit. One check is a config validation;
   two is a policy.
+- **The server's types come from the server.** `@signalk/server-api` is a
+  devDependency and `src/signalk.ts` is the only file that imports it. Every
+  module that touches the app object takes its slice from `SignalKApp`
+  (`Pick`/`Partial<Pick<...>>`) rather than describing the method again
+  locally: a structural interface of one's own compiles against a server that
+  no longer has the method, and fails on the boat instead. Two members are
+  narrowed to optional there — `notifications` and `getCourse` — because the
+  server declares them present and this plugin runs on releases where they
+  are not; that list is the honest inventory of what it assumes about the
+  server's age. `app.config.settings` is the one thing used that the
+  published contract does not describe, so it is declared beside them and
+  read defensively. Provider *responses* stay loosely typed on purpose: a
+  history provider is another package's output, and parsing it tolerantly is
+  the difference between a missing sparkline and a failed cycle.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.

@@ -22,11 +22,12 @@ import {
   type PolarStatus,
 } from './config';
 import { GitHubClient, tokenHint } from './github';
-import { HistoryReader, type HistoryHost } from './history';
+import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
-import { activePolarId, readActivePolar, type PolarResourceSource } from './polars';
-import { extractPositionFix, readSelfTree, type SelfTreeSource } from './snapshot';
+import { activePolarId, readActivePolar } from './polars';
+import { extractPositionFix, readSelfTree } from './snapshot';
+import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
 import { readVesselDetails, type VesselIdentity } from './vesselInfo';
@@ -34,30 +35,19 @@ import { readVesselDetails, type VesselIdentity } from './vesselInfo';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
 
-interface SignalKApp extends SelfTreeSource, PolarResourceSource, HistoryHost {
-  debug: (message: string) => void;
-  error: (message: string) => void;
-  setPluginStatus: (message: string) => void;
-  setPluginError: (message: string) => void;
-  getDataDirPath: () => string;
-  /** Write the config back, for the "set to the current position" checkbox. */
-  savePluginOptions?: (options: unknown, callback: (error: unknown) => void) => void;
-  /** The saved config, for the derived fields the schema shows read-only. */
-  readPluginOptions?: () => unknown;
-  config?: { settings?: { port?: number; ssl?: boolean } };
-}
-
-interface Plugin {
-  id: string;
-  name: string;
-  description: string;
-  schema: unknown;
-  uiSchema: unknown;
-  start: (options: unknown) => void;
-  stop: () => void;
-  /** Signal K mounts this at /plugins/signalk-github-pages. */
+/**
+ * What this plugin returns to the server.
+ *
+ * `Plugin` is the server's own interface; the two narrowings are ours.
+ * `schema` is a function because the config page shows values derived from
+ * the running server, and `registerWithRouter` takes the structural router
+ * `webapp.ts` declares rather than the full Express one — the console needs
+ * four methods, and nothing here should depend on an Express release.
+ */
+type TrackerPlugin = Omit<ServerPlugin, 'schema' | 'registerWithRouter'> & {
+  schema: () => object;
   registerWithRouter: (router: Router) => void;
-}
+};
 
 /** First non-internal IPv4 address — the one a browser on the boat LAN uses. */
 function lanAddress(): string | undefined {
@@ -76,8 +66,11 @@ function lanAddress(): string | undefined {
  * arrives after the plugin has already started.
  */
 function readIdentity(app: SignalKApp): VesselIdentity {
-  const name = typeof app.getSelfPath?.('name') === 'string' ? app.getSelfPath!('name') : '';
-  const rawMmsi = app.getSelfPath?.('mmsi');
+  // Read once and narrow the result. These used to be two calls each, with
+  // the `typeof` testing one and the value taken from the other.
+  const rawName: unknown = app.getSelfPath?.('name');
+  const name = typeof rawName === 'string' ? rawName : '';
+  const rawMmsi: unknown = app.getSelfPath?.('mmsi');
   const mmsi =
     typeof rawMmsi === 'string' && rawMmsi
       ? rawMmsi
@@ -121,7 +114,7 @@ function historySetting(app: SignalKApp, config: PluginConfig): string {
   );
 }
 
-module.exports = function (app: SignalKApp): Plugin {
+module.exports = function (app: SignalKApp): TrackerPlugin {
   let timer: NodeJS.Timeout | undefined;
   let stopped = true;
   // What the last cycle found for the polar table. Kept out here so it
@@ -235,7 +228,7 @@ module.exports = function (app: SignalKApp): Plugin {
     });
   };
 
-  const plugin: Plugin = {
+  const plugin: TrackerPlugin = {
     id: 'signalk-github-pages',
     name: 'GitHub Pages Vessel Tracker',
     description:
