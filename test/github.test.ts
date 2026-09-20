@@ -33,6 +33,57 @@ describe('publishFiles', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
+  it('deletes paths in the same commit as the writes', async () => {
+    const fake = new FakeGitHub({
+      repo: 'owner/site',
+      branch: 'main',
+      files: {
+        'data/telemetry/tracks/2026-01-02.gpx': '<gpx/>',
+        'data/telemetry/tracks/2026-03-01.gpx': '<gpx/>',
+        'docs/notes.md': '# Notes',
+      },
+    });
+    const before = fake.commits.length;
+    const result = await publishFiles(
+      makeClient(fake),
+      [{ path: 'data/telemetry/tracks_index.json', content: '{}\n' }],
+      'Remove 1 voyage (2026-01-02)',
+      { deletions: ['data/telemetry/tracks/2026-01-02.gpx'] },
+    );
+    expect(result?.files).toBe(2);
+    expect(fake.commits.length).toBe(before + 1);
+    expect(fake.files.has('data/telemetry/tracks/2026-01-02.gpx')).toBe(false);
+    expect(fake.files.get('data/telemetry/tracks/2026-03-01.gpx')).toBe('<gpx/>');
+    expect(fake.files.get('docs/notes.md')).toBe('# Notes');
+  });
+
+  it('sends a deletion as a complete entry with a null sha', async () => {
+    // The API wants mode and type on every entry; the null sha is the only
+    // thing that makes it a deletion rather than a write.
+    const fake = new FakeGitHub({ repo: 'owner/site', branch: 'main', files: { 'a.gpx': 'x' } });
+    let tree: any;
+    const client = new GitHubClient({
+      repo: 'owner/site',
+      branch: 'main',
+      token: 'token',
+      fetchImpl: (async (input: any, init: any) => {
+        if (String(input).endsWith('/git/trees') && init?.method === 'POST') {
+          tree = JSON.parse(init.body).tree;
+        }
+        return fake.fetch(input, init);
+      }) as typeof fetch,
+    });
+    await publishFiles(client, [], 'Remove', { deletions: ['a.gpx'] });
+    expect(tree).toEqual([{ path: 'a.gpx', mode: '100644', type: 'blob', sha: null }]);
+  });
+
+  it('commits a deletion even with no file to write', async () => {
+    const fake = new FakeGitHub({ repo: 'owner/site', branch: 'main', files: { 'a.gpx': 'x' } });
+    const result = await publishFiles(makeClient(fake), [], 'Remove', { deletions: ['a.gpx'] });
+    expect(result?.files).toBe(1);
+    expect(fake.files.has('a.gpx')).toBe(false);
+  });
+
   it('re-reads HEAD and retries once when the ref update loses a race', async () => {
     const fake = new FakeGitHub({ repo: 'owner/site', branch: 'main', failRefUpdates: 1 });
     const result = await publishFiles(

@@ -1,7 +1,7 @@
 /**
  * The site frontend, shipped inside the plugin package.
  *
- * `public/` holds the HTML, CSS, JS and icons that GitHub Pages serves. They
+ * `site/` holds the HTML, CSS, JS and icons that GitHub Pages serves. They
  * are written into the repository on first run and after a plugin upgrade,
  * never on a normal telemetry cycle — they do not change between releases,
  * and republishing 700 KB every two minutes over a hotspot would be absurd.
@@ -109,14 +109,14 @@ function template(repoPath: string, text: string, options: FrontendOptions): str
 
 /** Read the bundled frontend, ready to hand to the publisher. */
 export async function loadFrontend(
-  publicDir: string,
+  siteDir: string,
   options: FrontendOptions,
 ): Promise<FrontendFile[]> {
-  const relatives = (await walk(publicDir)).sort();
+  const relatives = (await walk(siteDir)).sort();
   const files: FrontendFile[] = [];
   for (const relative of relatives) {
     const repoPath = relative.split(path.sep).join('/');
-    const buffer = await fs.readFile(path.join(publicDir, relative));
+    const buffer = await fs.readFile(path.join(siteDir, relative));
     if (TEXT_EXTENSIONS.has(path.extname(relative).toLowerCase())) {
       const text = buffer.toString('utf-8');
       files.push({ path: repoPath, content: template(repoPath, text, options) });

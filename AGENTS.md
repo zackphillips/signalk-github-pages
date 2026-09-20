@@ -8,9 +8,12 @@ before changing it.
 
 ```
 src/
-  index.ts          Plugin entry: schema, start/stop, tick scheduling
+  index.ts          Plugin entry: schema, start/stop, tick scheduling, router
   config.ts         Config schema, defaults, normalisation, validation
   publisher.ts      One cycle end to end — the only module that orchestrates
+  webapp.ts         The console's routes: status, preview, prune
+  preview.ts        The site's data files rendered live, never published
+  prune.ts          Which voyages a prune takes, decided without doing it
   snapshot.ts       Reading the self tree, stale filter, position redaction
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
@@ -21,13 +24,14 @@ src/
   docsIndex.ts      docs/index.json (port of the old Python builder)
   vesselInfo.ts     data/vessel/info.yaml, the boat read off the self tree,
                     and the user's passage block preserved
-  polars.ts         data/vessel/polars.csv from the table pasted into config
+  polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
-  frontend.ts       Reading public/ and templating constants.js
+  frontend.ts       Reading site/ and templating constants.js
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
-public/             The site itself, shipped in the npm package
+site/               The published site, shipped in the npm package
+public/             The console webapp; Signal K mounts it at /signalk-github-pages/
 sample/             Fixture telemetry for `npm run dev`
 test/               vitest, including an in-memory GitHub fake
 ```
@@ -38,7 +42,7 @@ test/               vitest, including an in-memory GitHub fake
 npm test          # vitest
 npm run typecheck # tsc --noEmit
 npm run build     # tsc → dist/
-npm run dev       # public/ + sample/ on http://localhost:8000
+npm run dev       # site/ + sample/ on http://localhost:8000
 ```
 
 Run `npm test` and `npm run typecheck` before committing.
@@ -46,9 +50,29 @@ Run `npm test` and `npm run typecheck` before committing.
 ## Rules that are not obvious
 
 - **`publisher.ts` takes a tree and returns a result.** It never calls the
-  Signal K server, the history provider included: `index.ts` fetches the
-  history snapshot and hands it to `runCycle`. Keep it that way: it is what
-  makes a full cycle testable without a server or a network.
+  Signal K server. Keep it that way: it is what makes a full cycle testable
+  without a server or a network. Anything that needs an async server call —
+  the active polar and the history snapshot — is read in `index.ts` and
+  passed in as `CycleInput`.
+- **No free-form config.** `site.extraYaml` was YAML merged over everything
+  the plugin wrote: an override with no schema, no validation and no way to
+  tell from the config page what `info.yaml` would end up saying. A new key is
+  a typed field and a line in `renderVesselInfo`, not a blob. `grep
+  vesselData\. site/assets/app.js` lists every key the frontend reads; each
+  one needs a source before a field is removed.
+- **Unknown renders as unknown.** The frontend carried three invented
+  fallbacks: a San Francisco Bay tide location, a privacy zone at one
+  particular dock, and a whole vessel identity — name, MMSI, documentation
+  number — used when `info.yaml` failed to load. Each one turned a missing
+  value into a confident wrong one on somebody else's boat. `resolveTidePosition`
+  returns null and the panels say what is missing; `getPrivacyZones` returns
+  an empty list, which is safe because the plugin already redacts before it
+  publishes; `vesselData` is `{}`. Do not add a fourth.
+- **A published URL is an `href` on someone else's browser.** `customLinks`
+  entries are checked for an http/https scheme in `resolveConfig` *and* again
+  in `renderCustomLinks`, because `info.yaml` is a file in a public repository
+  that anyone with write access can edit. One check is a config validation;
+  two is a policy.
 - **Every cycle is wrapped in `index.ts`.** An exception skips one update.
   It must never reach the server's event loop — this plugin runs in the
   navigation data hub's process.
@@ -96,10 +120,39 @@ Run `npm test` and `npm run typecheck` before committing.
   "Vessel" until the next restart. Round anything numeric that goes into
   `info.yaml` — the file is rewritten whenever its content changes, and a
   draft that wobbles in the last decimal place would commit every two minutes.
-- **The polar table is only ours while the config field has one in it.**
-  `publishPolars` gates `data/vessel/polars.csv` in the manifest. Clearing the
-  field stops publishing it and stops claiming it; it never deletes the file,
-  because a polar table someone committed by hand is years of measurement.
+- **`site/` is published; `public/` is not.** Two directories with different
+  jobs, and the split is load-bearing: Signal K mounts a package's `public/`
+  as its webapp, so anything put there is served to the boat, and everything
+  in `site/` is walked by `loadFrontend` and committed to the repository. A
+  file in the wrong one either fails to appear in the admin UI or turns up on
+  a public website.
+- **The console never writes plugin state.** `preview.ts` assembles the data
+  files from the store and the tree and returns them; it does not call
+  `runCycle`. Someone holding the preview open on a phone must not be able to
+  roll the publisher's state forward, or to make the boat fetch anything.
+- **Pruning is the only thing that deletes.** It runs when a person asks for
+  it in the console, never on a timer — there is deliberately no retention
+  setting for tracks. Deletions go through `partitionOwned` like every write,
+  today is always kept, and pruned days come out of `publishedDays` so they
+  can return.
+- **The polar table belongs to the Polar Management plugin.** It stores polars
+  as Signal K `polars` resources and publishes `{ href }` to the selected one
+  at `polars.activePolar`. This plugin reads that href off the self tree,
+  fetches the resource through `app.resourcesApi.getResource` and renders the
+  CSV; it never has a copy of its own. The resource is canonical polar-format
+  — m/s, radians, matrix `[tws][twa]` — so converting and transposing it is
+  the whole of `polars.ts`. Round to two decimals on the way out: the file is
+  rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
+  comes back as 5.999999999999999.
+- **The config polar table is a fallback, not an override.** The server wins
+  whenever it has a polar that converts; the pasted table is used when it has
+  none, and when what it has will not convert. `plugin.schema` is a function
+  so the field's description can say which of the two is live — that note is
+  the only way a user can tell which plugin the chart is coming from.
+- **The polar table is only ours while we have one.** `publishPolars` gates
+  `data/vessel/polars.csv` in the manifest. Losing both sources stops
+  publishing it and stops claiming it; it never deletes the file, because a
+  polar table someone committed by hand is years of measurement.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
@@ -109,14 +162,15 @@ Run `npm test` and `npm run typecheck` before committing.
   warning.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
-  nothing is fatal; a polar table that will not parse, or a token that is not
-  shaped like one, is a warning. The test is whether publishing anyway would
-  mislead someone about where the boat is.
+  nothing is fatal; a token that is not shaped like one is a warning. The test
+  is whether publishing anyway would mislead someone about where the boat is.
+  A polar that will not convert is neither: it is reported from `index.ts` on
+  the cycle that read it, and only when the report changes.
 - **The timezone field is a list, not a text box.** `timezones.ts` builds it
   from `Intl.supportedValuesOf('timeZone')`, so every name offered is one
   `localDay()` can group by. "PST" used to be accepted, silently fall back to
   UTC, and split every track at 4pm.
-- **`SITE_THEMES` must match the themes in `public/assets/styles.css`.** It
+- **`SITE_THEMES` must match the themes in `site/assets/styles.css`.** It
   once carried names from a stale comment in one boat's `info.yaml`; picking
   one of those left the page unstyled. Today: `marine`, `mermug`, `bright`,
   `dark`.
@@ -136,7 +190,7 @@ Run `npm test` and `npm run typecheck` before committing.
   through `paintPanel`, which isolates a missing element or a throwing section
   to that panel. They used to be nine bare `getElementById(...).innerHTML`
   writes in one `try`, where anything missing wiped the whole page.
-- **`public/assets/constants.js` must use `var`.** `const` at the top level of
+- **`site/assets/constants.js` must use `var`.** `const` at the top level of
   a classic script does not create `window.VESSEL_CONSTANTS`, and the page goes
   blank.
 - **Never write `assets/custom.css`.** It is the user's override hook, loaded
@@ -159,4 +213,4 @@ the plugin. Do not "fix" that by committing `dist/`.
 `data/telemetry/*.json` carry a `schema_version` so a plugin and a frontend of
 different versions can detect a mismatch. The shapes otherwise match what the
 Python daemon wrote, because the frontend reads them unchanged — check
-`public/assets/app.js` before altering any of them.
+`site/assets/app.js` before altering any of them.

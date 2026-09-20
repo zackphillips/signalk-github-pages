@@ -19,13 +19,18 @@
   },
   "keywords": [
     "signalk-node-server-plugin",
+    "signalk-webapp",
     "signalk-category-utility",
     "github-pages",
     "vessel-tracker",
     "gpx"
   ],
+  "signalk": {
+    "displayName": "GitHub Pages tracker"
+  },
   "files": [
     "dist",
+    "site",
     "public",
     "README.md",
     "LICENSE"

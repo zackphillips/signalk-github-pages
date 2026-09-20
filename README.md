@@ -52,6 +52,7 @@ the live `HEAD`.
 | **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
 | **History from your database** | With a Signal K history provider installed, the track and the sparklines are read back from it — full resolution, no gap across a restart |
 | **Ownership manifest** | The plugin writes only the paths it declares; the rest of the repo is yours |
+| **On-boat console** | A Signal K webapp that renders the site from live data and prunes old voyages |
 | **Honest accounting** | Every cycle logs what it cost: bytes on the wire, API calls, rate limit left |
 
 ## Quick start
@@ -135,9 +136,10 @@ only. Give Pages a minute, then open the URL.
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
 | `timezone` | UTC | Chosen from a list of IANA zones, for grouping tracks by local day |
-| `polars` | *empty* | Polar table pasted in — [see below](#polars) |
+| `polars` | *empty* | Fallback polar table — only used when the server has none, [see below](#polars) |
 | `site.theme` | `marine` | `marine`, `mermug`, `bright`, `dark` |
-| `site.extraYaml` | *empty* | Free-form YAML merged into `info.yaml` |
+| `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
+| `site.defaultLocation` | *empty* | Home waters `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishFrontend` | on | Write the bundled site on install and upgrade |
 
@@ -318,12 +320,31 @@ does not commit `info.yaml` every two minutes.
 server that carries neither. Fill one in and it wins; if Signal K reports
 something different, the log says so rather than quietly picking one.
 
+The polar table comes from the server the same way — see below.
+
+### Home waters
+
+The tide and forecast panels use the boat's position. Before there is a fix
+they use `site.defaultLocation`, and if that is not set either they say so and
+wait.
+
+Nothing stands in for it. The frontend used to carry a hardcoded San Francisco
+Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
+under a heading that read like its own — a wrong number presented as a right
+one. The same went for a fallback privacy zone at one particular dock, and for
+a whole fallback vessel identity (name, MMSI, documentation number) used when
+`info.yaml` failed to load, which made every such site introduce itself as
+somebody else's boat. All three are gone: unknown renders as unknown.
+
 ## Polars
 
-Paste the boat's polar table into the `polars` field and the plugin publishes
-`data/vessel/polars.csv`, which is what the target-speed chart draws. The
-format is the one every VPP and ORC export already produces — first line the
-true wind speeds in knots, then a line per true wind angle in degrees:
+The polar table is not configured here. Install
+[Polar Management](https://www.npmjs.com/package/signalk-polar-management),
+import the boat's polar there — it will pull an ORC certificate by boat name
+or sail number — and mark one active. Every cycle this plugin reads
+`polars.activePolar` off the self tree, fetches that `polars` resource through
+the server's Resources API, and writes `data/vessel/polars.csv`, which is what
+the target-speed chart draws:
 
 ```
 twa/tws;6;8;10;12;14;16;20
@@ -332,17 +353,37 @@ twa/tws;6;8;10;12;14;16;20
 150;4.0;5.0;6.0;6.7;7.2;7.6;8.5
 ```
 
-Semicolons, commas, tabs or spaces all work, `#` starts a comment, and a
-comma decimal separator is understood; the plugin re-renders whatever it reads
-into the semicolon form the frontend parses. A short row is padded with zeros
-rather than shifted onto the wrong wind speed, and anything it could not read
-is named in the log — a polar table is a chart, not a position, so a typo in
-one never stops a publish.
+The resource is stored in SI units — true wind speed and boat speed in m/s,
+true wind angle in radians, the matrix indexed `[tws][twa]` — so it is
+converted to knots and degrees and transposed on the way out, rounded to two
+decimals so a polar that has not moved produces a byte-identical file and no
+commit. Anything unreadable is named in the log: a polar table is a chart, not
+a position, so it never stops a publish.
 
-Leaving the field empty means the plugin publishes no polars and does not
-claim the path: a `polars.csv` you committed by hand stays yours, and clearing
-the field later leaves the last published file in place rather than deleting
-the boat's performance data because a text box was emptied.
+The read is in-process, so there is no HTTP call and no token. Re-import a
+polar or switch which one is active and the change reaches the site on the
+next cycle, with nothing to restart.
+
+### When the server has no polar
+
+The `polars` field on the config page is the fallback, for a boat whose polar
+is on a sailmaker's PDF and which is not about to install a second plugin to
+type it in. Paste the table in any shape it arrives — semicolons, commas, tabs
+or spaces, `#` comments, a European decimal comma — and the plugin re-renders
+it into the form the chart parses.
+
+The server wins whenever it has something. The config table is used when
+Polar Management has nothing active, and also when what it *does* have will
+not convert, so a misconfigured polar elsewhere does not blank the chart. The
+config page says which of the two is in use every time you open it:
+
+> In use: `"mermug-orc"` from Polar Management, 18 angle(s) x 7 wind speed(s).
+> This box is ignored while that holds.
+
+No polar from either source means the plugin publishes none and does not claim
+the path: a `polars.csv` you committed by hand stays yours, and clearing the
+active polar later leaves the last published file in place rather than
+deleting the boat's performance data because a dropdown was emptied.
 
 ## What the plugin writes
 
@@ -356,7 +397,7 @@ into a commit.
 | `data/vessel/info.yaml` | Plugin, when the config changes — your `passage:` block is preserved |
 | `docs/index.json` | Plugin, when the docs tree changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
-| `data/vessel/polars.csv` | Plugin, but only while the `polars` config field has a table in it |
+| `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
 | `docs/*.md` | **You** |
 | `data/vessel/logo.png` | **You** |
 | `assets/custom.css` | **You** — loaded last by both pages, never written here |
@@ -368,22 +409,38 @@ boat interleave cleanly in either order. The only race is the ref update
 landing behind someone else's push: re-read, rebuild, retry once. The ref is
 never force-updated, so a concurrent edit is never lost.
 
-### Extra site fields
+## The console
 
-`site.extraYaml` is free-form YAML merged into `data/vessel/info.yaml`, for
-anything the frontend reads that the config page does not cover:
+Signal K serves a page for the plugin at **`http://<your-pi>:3000/signalk-github-pages/`**,
+linked from the server's Webapps list. It does two things the config page
+cannot.
 
-```yaml
-default_location:
-  lat: 37.806
-  lon: -122.465
-  label: San Francisco Bay
-```
+**The preview** renders the published site from the plugin's own data, on the
+boat, with no round trip to GitHub — the same HTML, CSS and JavaScript that
+Pages serves, reading live telemetry instead of committed JSON. It works at
+anchor with the hotspot off, and it is the fastest way to see what a theme or
+a privacy zone actually does before it is committed. It shows what the Pi
+holds: past days whose GPX lives only in the repository are not in it.
 
-A key here overrides what the plugin would have written, and every override is
-named in the log. `passage:` is refused — it lives in the published file,
-edited from the web UI, and is preserved on every rewrite. Invalid YAML is
-logged and skipped; it never stops a publish.
+**Pruning** removes old voyages. A year of two-minute cycles is a lot of GPX,
+and nothing else this plugin does ever takes anything away.
+
+| | |
+|---|---|
+| *Remove voyages older than N days* | Keeps the last N local days |
+| *Remove all* | Keeps today only |
+
+Both name the days before they do anything: the page asks the plugin what
+would go, shows you the count and the range, and only then asks for
+confirmation. What is removed is the per-day GPX file and its row in
+`tracks_index.json`, in one commit — the data is still in the repository's git
+history; what goes is the copy the site serves. Today is never removed: the
+position index still holds its points and the next cycle would write the file
+straight back.
+
+Nothing prunes on a schedule. There is no retention setting for tracks, on
+purpose — a passage nobody meant to lose should not disappear because a number
+in a form was too small.
 
 ## Ship's docs
 
@@ -489,7 +546,7 @@ npm install
 npm test          # vitest
 npm run typecheck # tsc --noEmit
 npm run build     # tsc → dist/
-npm run dev       # public/ + sample/ on http://localhost:8000
+npm run dev       # site/ + sample/ on http://localhost:8000
 ```
 
 `npm run dev` serves the real frontend against fixture telemetry: a day's
@@ -507,9 +564,12 @@ race.
 
 ```
 src/
-  index.ts          Plugin entry: schema, start/stop, tick scheduling
+  index.ts          Plugin entry: schema, start/stop, tick scheduling, router
   config.ts         Config schema, parsing, validation
-  publisher.ts      One cycle end to end
+  publisher.ts      One cycle end to end, and the voyage prune
+  webapp.ts         The console's routes: status, preview, prune
+  preview.ts        The site's data files, rendered live and never published
+  prune.ts          Which voyages a prune would take
   snapshot.ts       Self-tree read, stale filter, position redaction
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
@@ -517,20 +577,21 @@ src/
   gpx.ts            Per-day GPX and tracks_index.json
   docsIndex.ts      docs/index.json
   vesselInfo.ts     data/vessel/info.yaml, and reading the boat off the tree
-  polars.ts         data/vessel/polars.csv from the pasted table
+  polars.ts         data/vessel/polars.csv, from the server or the config
   timezones.ts      The IANA list behind the timezone dropdown
-  frontend.ts       Reading public/, templating constants.js
+  frontend.ts       Reading site/, templating constants.js
   github.ts         Git Data API client, publish-with-retry
   manifest.ts       Ownership allowlist
   state.ts          Rolling state, atomic writes
-public/             The site, shipped in the package
+site/               The published site, shipped in the package
+public/             The console webapp Signal K mounts
 sample/             Fixture telemetry for the dev server
 ```
 
 </details>
 
 > [!IMPORTANT]
-> `public/assets/constants.js` must keep declaring `var VESSEL_CONSTANTS`.
+> `site/assets/constants.js` must keep declaring `var VESSEL_CONSTANTS`.
 > `const` at the top level of a classic script does not create
 > `window.VESSEL_CONSTANTS`, `app.js` throws on the missing global, and the
 > entire page goes blank.

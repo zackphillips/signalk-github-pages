@@ -23,11 +23,18 @@
  * The vessel's own details — name, MMSI, callsign, registrations, dimensions —
  * are not on this page at all: they are read from the Signal K tree, which is
  * where the server already keeps them. The fields here are fallbacks for what
- * a server does not carry.
+ * a server does not carry. The polar table is not here either: it belongs to
+ * the Polar Management plugin, and this one publishes whichever polar that
+ * plugin has made active.
  */
 
-import { renderPolars } from './polars';
 import { availableTimezones, serverTimezone } from './timezones';
+
+/** One extra button in the site's link row. */
+export interface CustomLink {
+  label: string;
+  url: string;
+}
 
 export interface PrivacyZone {
   name: string;
@@ -74,9 +81,8 @@ export interface PluginConfig {
     timeoutMs: number;
   };
   /**
-   * The polar table as `data/vessel/polars.csv` is published, already in the
-   * frontend's semicolon format. Empty means the plugin publishes no polars
-   * and leaves a hand-committed file alone.
+   * The fallback polar table, exactly as it was typed on the config page.
+   * Used only when the server has no polar to give; see `polars.ts`.
    */
   polars: string;
   buildDocsIndex: boolean;
@@ -84,10 +90,16 @@ export interface PluginConfig {
   site: {
     theme: string;
     marinetrafficShipId: string;
-    postgsailLogsUrl: string;
+    /** Extra buttons in the site's link row, in the order they appear. */
+    customLinks: CustomLink[];
     uscgNumber: string;
     hullNumber: string;
-    extraYaml: string;
+    /**
+     * Where the site looks before it has a fix: the tide station it picks and
+     * the map it opens on. Null means it waits for one — the tide and forecast
+     * panels say so rather than showing some other coast's numbers.
+     */
+    defaultLocation: { lat: number; lon: number; label: string } | null;
   };
 }
 
@@ -180,6 +192,61 @@ export const PAT_GUIDANCE =
   'token is readable by anyone with a shell on the server: scope it to the one ' +
   'repository and nothing else.';
 
+/**
+ * The polar field's help text when the plugin has not yet looked.
+ *
+ * `buildConfigSchema` replaces it with what the last cycle actually found, so
+ * the page tells you whether this box is in use rather than leaving you to
+ * guess which of two plugins the chart is coming from.
+ */
+export const POLARS_FIELD_DESCRIPTION =
+  'Used only when the server has no polar of its own. Manage polars in the ' +
+  'Polar Management plugin where you can: it imports from ORC by boat name or ' +
+  'sail number, and this plugin publishes whichever one you make active. ' +
+  'Paste a table here for a boat whose polar is on paper: first line the true ' +
+  'wind speeds in knots, then one line per true wind angle in degrees ' +
+  'followed by the target boat speeds. Semicolons, commas, tabs or spaces all ' +
+  'work, and # starts a comment.';
+
+/** What the last cycle found, for the note under the polar field. */
+export interface PolarStatus {
+  source: 'resource' | 'config' | 'none';
+  /** Human summary, e.g. `"mermug-orc" from Polar Management, 18 angle(s)...`. */
+  summary: string;
+  problems: string[];
+}
+
+/**
+ * The config schema, with the polar field's description rewritten to say what
+ * the plugin is actually publishing.
+ *
+ * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
+ * not at install: open the page after changing the active polar and the note
+ * is current.
+ */
+export function buildConfigSchema(polar?: PolarStatus | null): typeof configSchema {
+  if (!polar) return configSchema;
+  const note =
+    polar.source === 'resource'
+      ? `In use: ${polar.summary}. This box is ignored while that holds — clear ` +
+        'the active polar in Polar Management to fall back to it.'
+      : polar.source === 'config'
+        ? `In use: ${polar.summary}. No polar is active on the server, so this ` +
+          'box is what the chart draws.'
+        : `Nothing is being published: ${polar.summary}.`;
+  const problems = polar.problems.length ? ` Last cycle reported: ${polar.problems.join(' ')}` : '';
+  return {
+    ...configSchema,
+    properties: {
+      ...configSchema.properties,
+      polars: {
+        ...configSchema.properties.polars,
+        description: `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`,
+      },
+    },
+  };
+}
+
 export const configSchema = {
   type: 'object',
   required: ['github'],
@@ -214,14 +281,6 @@ export const configSchema = {
           type: 'string',
           title: 'Personal access token',
           description: PAT_GUIDANCE,
-        },
-        repo: {
-          type: 'string',
-          title: 'Repository (owner/name) — replaced by the two fields above',
-          description:
-            'Left over from an earlier version. It is still honoured when the ' +
-            'owner and name above are blank; fill those in and this can be ' +
-            'cleared.',
         },
       },
     },
@@ -366,15 +425,8 @@ export const configSchema = {
     },
     polars: {
       type: 'string',
-      title: 'Polar table (CSV)',
-      description:
-        'The boat\'s polars, for the target-speed chart. Paste the table as it ' +
-        'comes out of ORC, a VPP or a sailmaker: first line the true wind ' +
-        'speeds in knots, then one line per true wind angle in degrees ' +
-        'followed by the target boat speeds in knots. Semicolons, commas, tabs ' +
-        'or spaces all work, and lines starting with # are comments. Leave ' +
-        'blank to keep managing data/vessel/polars.csv by hand — blank never ' +
-        'deletes or overwrites a file already in the repository.',
+      title: 'Polar table (fallback)',
+      description: POLARS_FIELD_DESCRIPTION,
       default: '',
     },
     buildDocsIndex: {
@@ -414,10 +466,23 @@ export const configSchema = {
           title: 'MarineTraffic ship ID',
           default: '',
         },
-        postgsailLogsUrl: {
-          type: 'string',
-          title: 'PostgSail logs URL',
-          default: '',
+        customLinks: {
+          type: 'array',
+          title: 'Custom buttons',
+          description:
+            'Buttons added to the link row at the top of the site, in this ' +
+            'order — a PostgSail log, a Starlink status page, a crew ' +
+            'handbook, anything with a URL. Only http:// and https:// links ' +
+            'are published.',
+          items: {
+            type: 'object',
+            required: ['label', 'url'],
+            properties: {
+              label: { type: 'string', title: 'Button label' },
+              url: { type: 'string', title: 'URL' },
+            },
+          },
+          default: [],
         },
         uscgNumber: {
           type: 'string',
@@ -436,37 +501,30 @@ export const configSchema = {
             'a hull identification number, and only typed here when it is not.',
           default: '',
         },
-        extraYaml: {
-          type: 'string',
-          title: 'Extra site fields (YAML)',
+        defaultLocation: {
+          type: 'object',
+          title: 'Home waters',
           description:
-            'Free-form YAML merged into data/vessel/info.yaml, for anything the ' +
-            'frontend reads that this page does not cover. A key here overrides ' +
-            'the value the plugin would have written, which is logged when it ' +
-            'happens. Your passage: block is never touched — it stays in the ' +
-            'published file and is preserved on every rewrite. Invalid YAML is ' +
-            'logged and skipped; it never stops a publish.',
-          default: '',
+            'Where the site looks before the boat has reported a position: the ' +
+            'tide station it picks and the map it opens on. Leave the ' +
+            'coordinates blank and the tide and forecast panels wait for a GPS ' +
+            'fix instead — they will not stand in some other coast for yours.',
+          properties: {
+            lat: { type: 'number', title: 'Latitude' },
+            lon: { type: 'number', title: 'Longitude' },
+            label: { type: 'string', title: 'Label', default: '' },
+          },
         },
       },
     },
   },
 };
 
-/**
- * Admin-UI hints. The legacy `github.repo` field stays in the schema so an
- * upgraded installation keeps publishing before anyone opens this page, but it
- * is hidden: a form showing three repository boxes invites filling in the
- * wrong one. A server that ignores uiSchema shows it, labelled for what it is.
- */
+/** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
-  github: {
-    repo: { 'ui:widget': 'hidden' },
-    token: { 'ui:widget': 'password' },
-  },
+  github: { token: { 'ui:widget': 'password' } },
   polars: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
-  site: { extraYaml: { 'ui:widget': 'textarea', 'ui:options': { rows: 6 } } },
 };
 
 function str(value: unknown, fallback = ''): string {
@@ -528,28 +586,19 @@ export interface OwnerAndName {
 }
 
 /**
- * Resolve the two repository fields, and the one they replaced.
+ * Resolve the two repository fields.
  *
- * Splitting the old `owner/name` box into two is mostly a usability change,
- * but it also removes the most common setup mistake: a value with no slash, or
- * with a whole GitHub URL in it, that failed only on the first publish. Here a
- * pasted URL or an `owner/name` in the owner box is split rather than
- * rejected, and the legacy single field still resolves an installation that
- * has not been through this page since the upgrade.
+ * Two boxes rather than one `owner/name` box is mostly a usability change, but
+ * it also removes the most common setup mistake: a value with no slash, or
+ * with a whole GitHub URL in it, that failed only on the first publish. A
+ * pasted URL or an `owner/name` in the owner box is split here rather than
+ * rejected.
  */
-export function resolveOwnerAndName(
-  rawOwner: unknown,
-  rawName: unknown,
-  legacyRepo: unknown,
-): OwnerAndName {
+export function resolveOwnerAndName(rawOwner: unknown, rawName: unknown): OwnerAndName {
   const problems: string[] = [];
   let owner = stripRepoUrl(str(rawOwner));
   let name = stripRepoUrl(str(rawName));
 
-  if (!owner && !name) {
-    const legacy = stripRepoUrl(str(legacyRepo));
-    if (legacy) [owner = '', name = ''] = legacy.split('/');
-  }
   // "owner/name" pasted into either box.
   if (owner.includes('/')) {
     const [first, ...rest] = owner.split('/');
@@ -614,6 +663,62 @@ export interface UnresolvedConfig {
  * told about the next one is a miserable way to configure a plugin over a
  * boat's wifi.
  */
+/**
+ * Keep the custom buttons that are actually buttons.
+ *
+ * The scheme check is not tidiness: the label and URL are published into
+ * `info.yaml` and the frontend assigns the URL straight to `href`, so a
+ * `javascript:` entry here would be a script running on every visitor's
+ * browser. http and https only, and the frontend checks again on the way in.
+ */
+export function resolveCustomLinks(value: unknown): {
+  links: CustomLink[];
+  warnings: string[];
+} {
+  const links: CustomLink[] = [];
+  const warnings: string[] = [];
+  if (!Array.isArray(value)) return { links, warnings };
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const label = str((entry as any).label);
+    const url = str((entry as any).url);
+    if (!label && !url) continue;
+    if (!label || !url) {
+      warnings.push(
+        `Custom button "${label || url}" needs both a label and a URL; it was skipped.`,
+      );
+      continue;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      warnings.push(
+        `Custom button "${label}" has a URL that is not http:// or https://; it was skipped.`,
+      );
+      continue;
+    }
+    links.push({ label, url });
+  }
+  return { links, warnings };
+}
+
+/**
+ * The home-waters coordinates, or null.
+ *
+ * Both halves or neither: a latitude with no longitude is not a place, and
+ * sending half a fix to the tide-station lookup would land the panel somewhere
+ * in the ocean rather than falling back to the frontend's default.
+ */
+export function resolveDefaultLocation(
+  value: unknown,
+): { lat: number; lon: number; label: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const { lat, lon, label } = value as Record<string, unknown>;
+  const latitude = Number(lat);
+  const longitude = Number(lon);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { lat: latitude, lon: longitude, label: str(label) };
+}
+
 export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
@@ -628,7 +733,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const { owner, name, problems: repoProblems } = resolveOwnerAndName(
     github.owner,
     github.name,
-    github.repo,
   );
   problems.push(...repoProblems);
 
@@ -639,10 +743,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     if (warning) warnings.push(warning);
   }
 
-  const polars = renderPolars(input.polars);
-  // A polar table is decoration on a chart, not a position: a typo in it is
-  // reported and the file is skipped, never a reason to stop publishing.
-  warnings.push(...polars.problems.map((problem) => `Polar table: ${problem}`));
+  const customLinkResult = resolveCustomLinks(site.customLinks);
+  const customLinks = customLinkResult.links;
+  warnings.push(...customLinkResult.warnings);
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
@@ -713,6 +816,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
         ),
       },
+      polars: typeof input.polars === 'string' ? input.polars : '',
       positionRetentionHours:
         num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
@@ -725,16 +829,15 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
         ),
       },
-      polars: polars.csv,
       buildDocsIndex: input.buildDocsIndex !== false,
       publishFrontend: input.publishFrontend !== false,
       site: {
         theme: SITE_THEMES.includes(str(site.theme)) ? str(site.theme) : DEFAULT_THEME,
         marinetrafficShipId: str(site.marinetrafficShipId),
-        postgsailLogsUrl: str(site.postgsailLogsUrl),
+        customLinks,
         uscgNumber: str(site.uscgNumber),
         hullNumber: str(site.hullNumber),
-        extraYaml: typeof site.extraYaml === 'string' ? site.extraYaml : '',
+        defaultLocation: resolveDefaultLocation(site.defaultLocation),
       },
     },
   };

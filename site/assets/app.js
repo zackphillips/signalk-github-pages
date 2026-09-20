@@ -53,11 +53,6 @@ function setCached(key, data) {
   try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch { /* quota */ }
 }
 let tideStations = null; // Global tide stations data
-const DEFAULT_TIDE_LOCATION = {
-  lat:   C.DEFAULT_TIDE_LAT,
-  lon:   C.DEFAULT_TIDE_LON,
-  label: C.DEFAULT_TIDE_LABEL,
-};
 
 const PANEL_SKELETONS = {
   'navigation-grid': 6,
@@ -329,16 +324,18 @@ const DAY_TRACK_COLORS = [
   '#009688', '#2196f3', '#ff4081', '#76ff03', '#40c4ff', '#ea80fc',
 ];
 
-// Privacy zones — populated from vesselData.privacy_zones after YAML loads.
-// Falls back to the South Beach Harbor constant when vesselData is unavailable.
+// Privacy zones for display, from vesselData.privacy_zones. No zones means no
+// zones: an empty list is the configured answer "hide nothing", and this used
+// to read it as "hide South Beach Harbor" — one particular boat's dock,
+// applied to everybody else's map.
+//
+// This is the second layer. The plugin redacts before it publishes: a position
+// inside a zone is replaced with the zone centre in the snapshot and the point
+// is left out of the GPX entirely, so nothing that reaches this file needs
+// hiding again. That is what makes an empty list safe here.
 function getPrivacyZones() {
   const zones = vesselData?.privacy_zones;
-  if (Array.isArray(zones) && zones.length) return zones;
-  return [{
-    lat:      C.FALLBACK_PRIVACY_ZONE_LAT,
-    lon:      C.FALLBACK_PRIVACY_ZONE_LON,
-    radius_m: C.FALLBACK_PRIVACY_ZONE_RADIUS_M,
-  }];
+  return Array.isArray(zones) ? zones.filter((z) => z && Number.isFinite(z.lat) && Number.isFinite(z.lon)) : [];
 }
 
 function isInPrivacyZone(lat, lon) {
@@ -1027,6 +1024,14 @@ const fmtUnit = (group, rawSI) => {
 const hasValidCoordinates = (latitude, longitude) =>
   Number.isFinite(latitude) && Number.isFinite(longitude);
 
+// Where to look up tides: the boat's position, or the home waters set on the
+// plugin config page, or nowhere.
+//
+// Nowhere is a real answer and the panels say so. There used to be a third
+// step here, a hardcoded San Francisco Bay, which meant a boat in the
+// Chesapeake with no fix yet was shown Golden Gate tides under a heading that
+// read like its own — a wrong number presented as a right one. An empty panel
+// is worse to look at and better to trust.
 function resolveTidePosition(currentLat, currentLon) {
   if (hasValidCoordinates(currentLat, currentLon)) {
     return {
@@ -1037,24 +1042,17 @@ function resolveTidePosition(currentLat, currentLon) {
     };
   }
 
-  const fallbackFromVessel = vesselData?.default_location;
-  if (
-    fallbackFromVessel &&
-    hasValidCoordinates(fallbackFromVessel.lat, fallbackFromVessel.lon)
-  ) {
+  const home = vesselData?.default_location;
+  if (home && hasValidCoordinates(home.lat, home.lon)) {
     return {
-      lat: fallbackFromVessel.lat,
-      lon: fallbackFromVessel.lon,
+      lat: home.lat,
+      lon: home.lon,
       usingFallback: true,
-      label: fallbackFromVessel.label || 'default vessel location',
+      label: home.label || 'home waters',
     };
   }
 
-  return {
-    ...DEFAULT_TIDE_LOCATION,
-    usingFallback: true,
-    label: DEFAULT_TIDE_LOCATION.label,
-  };
+  return null;
 }
 
 // ── Voyage statistics ────────────────────────────────────────────────────────
@@ -1115,33 +1113,18 @@ async function loadVesselData() {
     if (typeof jsyaml === 'undefined') {
       throw new Error('js-yaml library not loaded');
     }
-    vesselData = jsyaml.load(yamlText);
-
-    // Add default_location if not present
-    if (!vesselData.default_location) {
-      vesselData.default_location = {
-        lat:   C.DEFAULT_TIDE_LAT,
-        lon:   C.DEFAULT_TIDE_LON,
-        label: C.DEFAULT_TIDE_LABEL,
-      };
-    }
+    const parsed = jsyaml.load(yamlText);
+    vesselData = parsed && typeof parsed === 'object' ? parsed : {};
 
     console.log('Vessel data loaded:', vesselData);
     updateVesselLinks();
   } catch (error) {
+    // Empty, not invented. This used to fall back to one particular boat's
+    // name, MMSI, documentation number and home waters, so a site whose
+    // info.yaml had not published yet introduced itself as somebody else's
+    // vessel. Every consumer of vesselData already handles a missing key.
     console.error('Error loading vessel data:', error);
-    // Set default values if loading fails
-    vesselData = {
-      name: "S.V.Mermug",
-      mmsi: "338543654",
-      uscg_number: "1024168",
-      hull_number: "BEY57004E494",
-      default_location: {
-        lat:   C.DEFAULT_TIDE_LAT,
-        lon:   C.DEFAULT_TIDE_LON,
-        label: C.DEFAULT_TIDE_LABEL,
-      },
-    };
+    vesselData = {};
     updateVesselLinks();
   }
 }
@@ -1229,9 +1212,6 @@ function updateVesselLinks() {
   if (vesselData.marinetraffic_ship_id) {
     vesselData.links.marinetraffic = `https://www.marinetraffic.com/en/ais/details/ships/shipid:${vesselData.marinetraffic_ship_id}`;
   }
-  if (vesselData.postgsail_logs_url) {
-    vesselData.links.postgsail = vesselData.postgsail_logs_url;
-  }
 
   // Update the link cluster in the tab bar
   const marinetrafficLink = document.getElementById('marinetraffic-link');
@@ -1239,10 +1219,33 @@ function updateVesselLinks() {
     marinetrafficLink.href = vesselData.links.marinetraffic;
   }
 
-  const postgsailLink = document.getElementById('postgsail-link');
-  if (postgsailLink && vesselData.links?.postgsail) {
-    postgsailLink.href = vesselData.links.postgsail;
-    postgsailLink.style.display = '';
+  renderCustomLinks(vesselData.custom_links);
+}
+
+// Buttons the owner configured: a ship's log, a Starlink status page, anything
+// with a URL. Built here rather than written into index.html so the set can
+// change without republishing the frontend.
+//
+// Rebuilt from scratch on each call so a second load does not double them up,
+// and the scheme is checked again on this side: info.yaml is a file in a
+// public repository, and `href = "javascript:..."` would run in every
+// visitor's browser. The plugin filters the same way on the way out.
+function renderCustomLinks(links) {
+  const host = document.getElementById('custom-links');
+  if (!host) return;
+  host.textContent = '';
+  if (!Array.isArray(links)) return;
+  for (const link of links) {
+    const label = typeof link?.label === 'string' ? link.label.trim() : '';
+    const url = typeof link?.url === 'string' ? link.url.trim() : '';
+    if (!label || !/^https?:\/\//i.test(url)) continue;
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener';
+    anchor.className = 'tab-link';
+    anchor.textContent = label;
+    host.appendChild(anchor);
   }
 }
 let themeChangeTimeout = null; // Timeout for theme change debouncing
@@ -2150,7 +2153,15 @@ async function loadData() {
     }
 
     const tidePosition = resolveTidePosition(lat, lon);
-    drawTideGraph(tidePosition.lat, tidePosition.lon, tidePosition);
+    if (tidePosition) {
+      drawTideGraph(tidePosition.lat, tidePosition.lon, tidePosition);
+    } else {
+      const tideHeader = document.getElementById('tideHeader');
+      if (tideHeader) {
+        tideHeader.textContent =
+          'Tides unavailable — waiting for a GPS fix, or set home waters on the plugin config page';
+      }
+    }
 
 
     // Update navigation data
@@ -2665,8 +2676,11 @@ async function loadConditionsForecast() {
   const loading = document.getElementById('conditions-loading');
 
   const tidePos = resolveTidePosition(lat, lon);
-  if (!hasValidCoordinates(tidePos.lat, tidePos.lon)) {
-    if (loading) loading.textContent = 'Waiting for GPS position…';
+  if (!tidePos) {
+    if (loading) {
+      loading.textContent =
+        'Waiting for a GPS fix — or set home waters on the plugin config page.';
+    }
     return;
   }
 
