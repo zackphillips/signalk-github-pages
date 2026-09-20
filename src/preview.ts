@@ -28,7 +28,7 @@ import {
 } from './notifications';
 import { parsePositionIndex } from './positions';
 import { TRACKS_DIR } from './prune';
-import { filterStaleData, redactPosition, type Tree } from './snapshot';
+import { filterStaleData, redactPositions, type Tree } from './snapshot';
 import type { StateStore } from './state';
 import { localDay } from './time';
 import { mergeVesselIdentity, readVesselDetails, renderSiteConfig, type VesselIdentity } from './siteConfig';
@@ -77,7 +77,7 @@ export async function renderPreviewData(
     referenceTime: now,
   });
   const merged = mergeVesselIdentity(identity, readVesselDetails(tree));
-  redactPosition(tree, config.privacyZones);
+  redactPositions(tree, config.privacyZones);
 
   files.set(
     `${TELEMETRY_DIR}/signalk_latest.json`,
@@ -119,9 +119,10 @@ export async function renderPreviewData(
   // it. Writing here would let a phone left on the preview page roll the
   // counts forward and then lose the edge the real cycle needed to see.
   if (config.publishNotifications) {
-    const observed = readNotifications(tree);
+    const exclude = config.notificationExclude;
+    const observed = readNotifications(tree, exclude);
     const stored = parseNotificationLog(await store.readText('notifications_log.json'), now);
-    const { log } = updateNotificationLog(stored, observed, now);
+    const { log } = updateNotificationLog(stored, observed, now, { exclude });
     files.set(`${TELEMETRY_DIR}/notifications.json`, renderNotifications(log, observed, now));
   }
 

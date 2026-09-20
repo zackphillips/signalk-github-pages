@@ -349,6 +349,14 @@ body.map-fills .footer {
 
 #alert-summary {
   margin-top: 20px;
+  /* `.info-panel` carries `flex: 1` for the horizontal rows it normally sits
+     in, where equal widths are the point. This one is pinned above the tabs
+     as a direct child of `.container`, which `body.map-fills` turns into a
+     flex *column* — and there `flex: 1` means grow *vertically*, so two small
+     alert chips stretched into a panel as tall as the map beside them and
+     took the height the map was meant to fill. It is as tall as its
+     contents, on every tab. */
+  flex: 0 0 auto;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

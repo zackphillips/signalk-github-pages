@@ -21,6 +21,7 @@
  */
 
 import { parseLogo, type VesselLogo } from './logo';
+import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
 
 /** One extra button in the site's link row. */
@@ -101,6 +102,12 @@ export interface PluginConfig {
    * else the plugin publishes is a number off a known path.
    */
   publishNotifications: boolean;
+  /**
+   * Notification paths never published. Empty means publish every one —
+   * unlike the captured instrument paths, an empty blacklist is a real
+   * answer and must not fall back to the default.
+   */
+  notificationExclude: string[];
   site: {
     /**
      * The site's own address, with a trailing slash.
@@ -155,6 +162,14 @@ export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'environment.inside.humidity',
   'electrical.batteries.*.voltage',
   'electrical.batteries.*.current',
+  // Both spellings. The Signal K spec puts state of charge under
+  // `capacity`, which is what the frontend's battery panel reads and what a
+  // spec-compliant producer publishes; the short form is what some others
+  // use. Asking for a path no instrument produces costs nothing — it comes
+  // back as a column of nulls and never reaches the file — and asking for
+  // only the short one meant the battery sparkline never drew on a
+  // spec-compliant boat.
+  'electrical.batteries.*.capacity.stateOfCharge',
   'electrical.batteries.*.stateOfCharge',
   'electrical.batteries.*.capacity.timeRemaining',
   'electrical.solar.*.panelPower',
@@ -576,6 +591,17 @@ export const configSchema = {
         'raised them and are published verbatim — turn this off if yours say anything ' +
         'you would not put on a public page.',
       default: true,
+    },
+    notificationExclude: {
+      type: 'string',
+      title: 'Notifications never published',
+      description:
+        'One notification path per line, without the "notifications." prefix. ' +
+        '"*" matches one segment and a parent excludes its whole subtree, so "server" ' +
+        'drops every server notification. Adding a path removes it from the site on the ' +
+        'next cycle, including the firing counts it had already collected. Empty ' +
+        'publishes every notification.',
+      default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
     },
     site: {
       type: 'object',
@@ -1145,6 +1171,14 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       ),
       buildDocsIndex: input.buildDocsIndex !== false,
       publishNotifications: input.publishNotifications !== false,
+      // No fallback to the default when the box is empty. For the captured
+      // instrument paths an empty list means "nothing would be logged", so
+      // the default stands in; for a blacklist it means "publish all of
+      // them", which is a choice the adopter is allowed to make.
+      notificationExclude:
+        input.notificationExclude === undefined
+          ? [...DEFAULT_NOTIFICATION_EXCLUDE]
+          : parsePathList(input.notificationExclude),
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,

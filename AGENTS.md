@@ -20,6 +20,8 @@ src/
   instrumentLog.ts  instrument_log.json: its shape and the path matcher
   notifications.ts  notifications.json: the notification tree flattened, and
                     the firing log that turns states into edges
+  notificationRecorder.ts
+                    Notification deltas, so a firing between publishes counts
   history.ts        The Signal K History API: the instrument log, read back
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
@@ -198,6 +200,36 @@ Run `npm test` and `npm run typecheck` before committing.
   so a wildcard in the captured-path list cannot put a raw position into a
   published file that nothing redacts. The privacy zones guard the track's
   path, not this one.
+- **Units, names and descriptions come from `meta`, like the zones do.**
+  The published snapshot is the whole self tree, so every path's `units`,
+  `displayName` and `description` are already there; the page used to read
+  only `meta.zones` and hardcode the rest. `unitGroupForPath` consults the
+  explicit `PATH_TO_UNIT_GROUP` table first and falls back to `meta.units`,
+  because the table encodes intent the units cannot — `navigation.log` and
+  `navigation.anchor.currentRadius` are both metres and want nautical miles
+  and feet respectively — and metadata covers everything the table has never
+  heard of. `withUpdated` prefers `meta.description` over the string written
+  here. Tooltips naming one boat's hardware ("from BNO055 IMU", "BME280
+  sensor") are gone: this plugin runs on other people's boats, and the server
+  knows what the sensor is.
+- **A logged path that no panel draws still gets drawn.**
+  `instrumentLog.paths` is configurable, so a boat can capture something this
+  release has never seen; those paths were fetched from the provider,
+  uploaded in full on every publish, and then rendered by nothing.
+  `paintOtherInstruments` renders them into `#other-grid` from metadata
+  alone, and `initInlineSparklines` picks them up like any other
+  `.info-item[data-path]`. It runs from two places — the dashboard paint and
+  the moment the instrument log finishes loading, which is what says which
+  paths exist — and returns early until `navigation-grid` has painted,
+  because the dashboard is what decides which paths are already covered.
+  When this panel lists something you expected to see elsewhere, the bug is
+  the missing `data-path` or the wrong default, not this panel: that is how
+  both of the ones below were found.
+- **`electrical.batteries.*.capacity.stateOfCharge` is the spec path.** The
+  default captured list asked only for `electrical.batteries.*.stateOfCharge`
+  while the battery panel reads the `capacity.` form, so on a
+  spec-compliant boat the state-of-charge sparkline never drew. Both are
+  asked for now; a path nothing produces costs nothing.
 - **The frontend has no thresholds, and must not grow one back.** Twelve
   constants in `constants.js` used to decide what a low battery, a low tank, a
   dragging anchor and a lossy link were for every boat that publishes this
@@ -208,6 +240,24 @@ Run `npm test` and `npm run typecheck` before committing.
   because it is where the alarm that sounds the buzzer is already configured,
   and a second copy here can only disagree with it silently. If a panel needs
   a level, set the zone in Signal K.
+- **Firings are recorded from deltas; the tree sample is the fallback.**
+  Sampling the tree once a cycle answers "what is wrong now" perfectly and
+  "how often has this been going off" badly: at the stationary cadence the
+  gap is an hour, so a bilge pump that runs three seconds every ten minutes
+  was not undercounted, it was absent. `NotificationRecorder` subscribes to
+  the self bus and applies the same edge rule between deltas.
+  Exactly one of the two counts, ever. With a recorder running the publisher
+  passes `countEdges: false`, so the cycle-to-cycle comparison only refreshes
+  `seen` and `active`; counting in both places would double every firing that
+  straddled a publish. Without a recorder — an older server, or one whose bus
+  this plugin could not subscribe to — nothing changes and the comparison
+  counts as it always did. The published `continuous` flag says which
+  happened, and the panel's own copy changes with it rather than always
+  claiming the worse one.
+  The pending list is capped (`MAX_PENDING_EDGES`) because the drain
+  interval is the publish interval and a wedged float switch can fire on
+  every delta; the published log's cap cannot help there, because nothing
+  has published yet.
 - **A notification firing is an edge, not a sample.** The publish cadence
   swings 30x with `navigation.state`, so counting cycles in which an alarm was
   up would score the same six-hour alarm at 180 underway and 6 at anchor.
@@ -219,6 +269,16 @@ Run `npm test` and `npm run typecheck` before committing.
   anything firing and clearing between two publishes is invisible, so the
   counts are a floor; the panel says so, and `sampled_since` bounds them to
   what the log has actually watched.
+- **A notification the adopter excludes leaves no trace.**
+  `notificationExclude` filters at three points: `readNotifications` never
+  observes it, `NotificationRecorder` never records it, and
+  `updateNotificationLog` drops it from both `seen` and the retained
+  `events`. Adding a pattern has to take the path off the site on the next
+  cycle *including the counts it had already collected* — leaving a day of
+  firings attributed to a path the page no longer lists is worse than
+  either publishing it or not. Unlike the captured instrument paths, an
+  empty list is a real answer and must not fall back to the default:
+  a blacklist that cannot be emptied is a bug.
 - **Notifications are not stale-filtered, on purpose.** `STALE_FILTER_KEYS`
   covers `environment`, `navigation` and `entertainment`, where an old value
   presented as current is a lie. A notification is a *state*: it stays up
@@ -267,6 +327,28 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
+- **Redact every position in the tree, not just `navigation.position`.** The
+  same bug one level up, and it survived longer: the rule was "if the vessel
+  is inside a zone, rewrite `navigation.position`", which guarded one path
+  out of a tree that has several. Anchor inside a privacy zone and the site
+  showed the zone centre for the boat while publishing the true anchor drop
+  coordinates a few keys away in the same file — and the frontend reads
+  `navigation.anchor.position` to draw the marker. `redactPositions` walks
+  the tree and moves *any* position that falls inside a zone to that zone's
+  centre, so a path the spec or a plugin grows later is covered without
+  anyone remembering to add it to a list.
+  The rule is per-position, not per-vessel, and that matters twice: an
+  anchor position left over from the slip the boat left this morning is
+  still redacted while it is out sailing, and a destination in
+  `navigation.course.nextPoint` is *not* redacted merely because the boat is
+  home — where it is going is not where it is, and snapping that to the home
+  dock would corrupt the data while protecting nothing.
+  What this does not cover, deliberately: the snapshot still publishes
+  speed, course and anchor radius inside a zone. Those reveal that the boat
+  is moving, not where it is. The track is stricter — `buildPositionEntry`
+  drops a point inside a zone rather than snapping it, and withholds speed
+  and course — because a night at the dock would otherwise be a pile of
+  identical points saying exactly where you sleep.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.

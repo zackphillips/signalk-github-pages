@@ -48,7 +48,7 @@ live `HEAD`.
 |---|---|
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
 | **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
-| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
+| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else. A path no panel knows about still gets drawn, labelled from the server's own metadata |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
@@ -152,6 +152,7 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
+| `notificationExclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
@@ -281,7 +282,13 @@ One Signal K path per line — this is what the plugin asks the history provider
 for. `*` matches one segment, so `electrical.batteries.*.voltage` covers every
 bank the provider has stored. Lines starting with `#` are comments. A path no
 instrument produces costs nothing — it comes back as a column of nulls and
-never appears in the file.
+never appears in the file, which is why state of charge is asked for under
+both the spec's `capacity.stateOfCharge` and the short form some producers
+use.
+
+A path you add that no panel draws is not lost: it appears under **Other
+Instruments** on the Data tab, named, converted and coloured from the
+metadata the server publishes for it.
 
 This list is the entire bandwidth cost of a cycle. Trim it to what you look at.
 
@@ -307,6 +314,7 @@ environment.inside.temperature
 environment.inside.humidity
 electrical.batteries.*.voltage
 electrical.batteries.*.current
+electrical.batteries.*.capacity.stateOfCharge
 electrical.batteries.*.stateOfCharge
 electrical.batteries.*.capacity.timeRemaining
 electrical.solar.*.panelPower
@@ -337,16 +345,43 @@ sparklines go](#how-far-back-the-sparklines-go).
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
 
+## Units, names and thresholds come from the server
+
+Signal K carries `meta` on every path — `units`, `displayName`, `description`
+and the `zones` that say what counts as normal, warn and alarm — and the site
+reads all of it off the published snapshot rather than hardcoding a second
+copy.
+
+That is what lets a path this release has never heard of be rendered
+properly: `propulsion.port.coolantTemperature` shows as "Port Coolant" in
+your preferred temperature unit, coloured by the zones you set on the
+server's Data Fiddler page, with the server's description as its tooltip. Set
+the zone in Signal K and the site follows; there is nowhere here to set a
+threshold, on purpose, because the server is where the alarm that sounds the
+buzzer is already configured.
+
 ## Privacy zones
 
 A position inside a zone is published as the zone's **centre**, and that point
 is left out of the GPX track **entirely** rather than snapped to the middle —
 a night at the dock would otherwise be a pile of identical points saying
-exactly where you sleep. Speed and course are withheld too, so the site cannot
-show you manoeuvring in the harbour.
+exactly where you sleep. Speed and course are withheld from the track too, so
+it cannot show you manoeuvring in the harbour.
 
-Every check walks the whole list. Zones start empty: nothing is hidden until
-you say what to hide.
+**Every** position in the published snapshot is checked, not just
+`navigation.position`. That matters most for `navigation.anchor.position`:
+anchoring inside a zone used to show the zone centre for the boat while
+publishing the true anchor drop coordinates a few keys away in the same file.
+Anything position-shaped anywhere in the tree is covered, including paths a
+plugin added that this one has never heard of.
+
+The check is per position rather than per boat. An anchor position left over
+from the slip you left this morning is still redacted while you are out
+sailing. A destination in `navigation.course.nextPoint` is *not* redacted
+because you happen to be at home — where you are going is not where you are.
+
+Every check walks the whole zone list. Zones start empty: nothing is hidden
+until you say what to hide.
 
 The map draws the zones it is redacting against, as dashed rings. It used to
 draw one fixed ring at the Python daemon's old dock in San Francisco, on every
@@ -395,6 +430,28 @@ configured — not a second set of numbers here that can disagree with it
 silently.
 
 ### Notifications
+
+Not every notification belongs on a public page. `notificationExclude` is a
+list of paths — without the `notifications.` prefix — that are never
+published: `*` matches one segment, and naming a parent drops its whole
+subtree, so `server` silences every server notification at once.
+
+`server.history.defaultProvider` is excluded by default. It is the server
+telling its own admin UI that no default history provider is configured:
+true, useful on the Pi, and meaningless in a banner above a map, where it
+would sit indefinitely saying nothing about the boat.
+
+Adding a path takes it off the site on the next cycle, including the firing
+counts it had already collected. An empty list publishes everything.
+
+**Firings are counted from deltas, not from snapshots.** The plugin
+subscribes to the notification stream, so one that comes on and clears
+between two publishes is still counted — a bilge pump that runs for three
+seconds every ten minutes used to be invisible, because the tree was only
+read once a cycle and at the dock that is once an hour. The panel says which
+way its numbers were collected: a real count while the plugin has been
+running, or a floor on a server that offers no delta stream.
+
 
 `data/telemetry/notifications.json` carries two things. **Active** is the
 current set straight off `notifications.*`, raised in a banner above the tabs

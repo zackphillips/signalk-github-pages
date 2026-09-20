@@ -211,5 +211,35 @@
         }
       }
     }
+  },
+  "propulsion": {
+    "port": {
+      "coolantTemperature": {
+        "value": 358.15,
+        "timestamp": "2026-03-01T20:00:00Z",
+        "meta": {
+          "units": "K",
+          "displayName": "Port Coolant",
+          "description": "Engine coolant temperature, port",
+          "zones": [
+            {
+              "upper": 363.15,
+              "state": "normal"
+            },
+            {
+              "lower": 363.15,
+              "upper": 373.15,
+              "state": "warn",
+              "message": "Coolant running hot"
+            },
+            {
+              "lower": 373.15,
+              "state": "alarm",
+              "message": "Coolant overheating"
+            }
+          ]
+        }
+      }
+    }
   }
 }

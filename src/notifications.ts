@@ -30,6 +30,7 @@
  * dock that gap is the stationary interval — an hour by default. These counts
  * are a floor, not a total.
  */
+import { pathMatches } from './instrumentLog';
 import { parseTimestamp } from './time';
 
 export const NOTIFICATIONS_SCHEMA_VERSION = 1;
@@ -46,6 +47,34 @@ export const NOTIFICATION_RETENTION_HOURS = 24;
  * count shown is then a floor, which it already was.
  */
 export const MAX_NOTIFICATION_EVENTS = 500;
+
+/**
+ * Notification paths never published, unless the adopter says otherwise.
+ *
+ * `server.history.defaultProvider` is the server telling its own admin UI
+ * that no default history provider is configured. It is true, it is useful
+ * on the Pi, and it is meaningless on a public tracker — where it sits in
+ * the banner above the map, indefinitely, saying nothing about the boat.
+ * Housekeeping about the server is not a condition of the vessel.
+ */
+export const DEFAULT_NOTIFICATION_EXCLUDE = ['server.history.defaultProvider'];
+
+/**
+ * Does a notification path match any exclusion pattern?
+ *
+ * Three ways to match, because a blacklist is worth being generous about:
+ * the exact path; a `*` wildcard for one segment, the same rule the captured
+ * instrument paths use; and a prefix, so `server` excludes the whole
+ * `server.*` subtree without anyone enumerating it.
+ */
+export function isExcludedNotification(path: string, patterns: string[]): boolean {
+  return patterns.some(
+    (pattern) =>
+      pathMatches(pattern, path) ||
+      path.startsWith(`${pattern}.`) ||
+      pathMatches(`${pattern}.*`, path),
+  );
+}
 
 export type NotificationLevel = 'ok' | 'warn' | 'alert';
 
@@ -144,7 +173,10 @@ const asStringArray = (value: unknown): string[] =>
  * children — `notifications.navigation` may be a notification in its own right
  * and the parent of `notifications.navigation.anchor` — so both are walked.
  */
-export function readNotifications(tree: unknown): ObservedNotification[] {
+export function readNotifications(
+  tree: unknown,
+  exclude: string[] = [],
+): ObservedNotification[] {
   const root = (tree as any)?.notifications;
   if (!root || typeof root !== 'object') return [];
 
@@ -170,7 +202,9 @@ export function readNotifications(tree: unknown): ObservedNotification[] {
   };
   walk(root, []);
   found.sort((a, b) => a.path.localeCompare(b.path));
-  return found;
+  return exclude.length
+    ? found.filter((item) => !isExcludedNotification(item.path, exclude))
+    : found;
 }
 
 /** Read a log this plugin wrote, or start a fresh one. */
@@ -224,10 +258,28 @@ export function updateNotificationLog(
   previous: NotificationLog,
   observed: ObservedNotification[],
   now: Date,
-  options: { retentionHours?: number; maxEvents?: number } = {},
+  options: {
+    retentionHours?: number;
+    maxEvents?: number;
+    exclude?: string[];
+    /**
+     * Whether comparing this cycle with the last counts as detecting a
+     * firing. False when a `NotificationRecorder` is running: it sees every
+     * edge as it happens, and counting here as well would double every
+     * firing that straddled a publish.
+     */
+    countEdges?: boolean;
+    /** Edges the recorder saw between publishes, already de-duplicated. */
+    recorded?: NotificationEvent[];
+  } = {},
 ): NotificationUpdate {
   const retentionHours = options.retentionHours ?? NOTIFICATION_RETENTION_HOURS;
   const maxEvents = options.maxEvents ?? MAX_NOTIFICATION_EVENTS;
+  const exclude = options.exclude ?? [];
+  const countEdges = options.countEdges !== false;
+  const recorded = (options.recorded ?? []).filter(
+    (event) => !isExcludedNotification(event.path, exclude),
+  );
   const at = now.toISOString();
   const cutoff = now.getTime() - retentionHours * 3_600_000;
 
@@ -241,7 +293,7 @@ export function updateNotificationLog(
     // put is not an edge however often the producer re-sends it, and neither
     // is falling back — a clear is the end of a firing, not a new one.
     const escalated = LEVEL_RANK[item.level] > LEVEL_RANK[wasLevel];
-    if (escalated && (item.level === 'warn' || item.level === 'alert')) {
+    if (countEdges && escalated && (item.level === 'warn' || item.level === 'alert')) {
       fired.push({
         path: item.path,
         state: item.state,
@@ -261,14 +313,23 @@ export function updateNotificationLog(
   // A path that has dropped out of the tree entirely is remembered until it
   // falls out of the retention window, so a notification that disappears and
   // comes back within the hour is not counted as a second firing.
+  //
+  // An excluded path is dropped here rather than carried: adding a pattern
+  // has to take the path off the site now, history included, not leave its
+  // last state and its firing counts sitting in the published file until the
+  // retention window rolls past them.
   for (const [path, before] of Object.entries(previous.seen)) {
-    if (seen[path]) continue;
+    if (seen[path] || isExcludedNotification(path, exclude)) continue;
     const lastAt = parseTimestamp(before.at);
     if (lastAt && lastAt.getTime() >= cutoff) seen[path] = before;
   }
 
-  const events = [...previous.events, ...fired]
+  const events = [...previous.events, ...recorded, ...fired]
     .filter((event) => {
+      // Excluded here too, so adding a pattern clears the firing counts a
+      // path had already accumulated instead of leaving them on the site
+      // for a day with nothing to attribute them to.
+      if (isExcludedNotification(event.path, exclude)) return false;
       const ts = parseTimestamp(event.at);
       return ts !== null && ts.getTime() >= cutoff;
     })
@@ -281,7 +342,10 @@ export function updateNotificationLog(
       events: events.length > maxEvents ? events.slice(events.length - maxEvents) : events,
       seen,
     },
-    fired,
+    // What this cycle newly learned, whichever way it learned it: the log
+    // line should report a firing the recorder caught between publishes as
+    // readily as one the comparison found.
+    fired: [...recorded, ...fired],
   };
 }
 
@@ -302,12 +366,19 @@ export interface ActiveNotification extends ObservedNotification {
  * `sampled_since` is the honest bound on the counts. A plugin restarted ten
  * minutes ago cannot say what fired overnight, and a UI that showed "0 in 24h"
  * for it would be inventing a quiet night.
+ *
+ * `continuous` says whether the counts are complete over that window or a
+ * floor. With a `NotificationRecorder` running every edge is seen as it
+ * happens, so they are the real number; sampling the tree once a cycle misses
+ * anything that fires and clears in between, and at the stationary cadence
+ * that gap is an hour. The frontend says which it is rather than making the
+ * reader guess.
  */
 export function renderNotifications(
   log: NotificationLog,
   observed: ObservedNotification[],
   now: Date,
-  options: { retentionHours?: number } = {},
+  options: { retentionHours?: number; continuous?: boolean } = {},
 ): string {
   const retentionHours = options.retentionHours ?? NOTIFICATION_RETENTION_HOURS;
   const windowStart = new Date(now.getTime() - retentionHours * 3_600_000);
@@ -325,6 +396,7 @@ export function renderNotifications(
       generated: now.toISOString(),
       window_hours: retentionHours,
       sampled_since: (started > windowStart ? started : windowStart).toISOString(),
+      continuous: options.continuous === true,
       active,
       events: log.events,
     },

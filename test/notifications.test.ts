@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_NOTIFICATION_EXCLUDE,
   MAX_NOTIFICATION_EVENTS,
   isActiveState,
+  isExcludedNotification,
   notificationLevel,
   parseNotificationLog,
   readNotifications,
@@ -277,5 +279,65 @@ describe('renderNotifications', () => {
     const cleared = JSON.parse(renderNotifications(log, [observe('a', 'normal')], NOW));
     expect(cleared.active).toEqual([]);
     expect(cleared.events.length).toBeGreaterThan(0);
+  });
+});
+
+describe('the exclusion list', () => {
+  const tree = {
+    notifications: {
+      server: {
+        history: {
+          defaultProvider: { value: { state: 'warn', message: 'No default history provider' } },
+        },
+        newVersion: { value: { state: 'normal', message: 'Update available' } },
+      },
+      environment: {
+        depth: { belowTransducer: { value: { state: 'alarm', message: 'Shallow' } } },
+      },
+    },
+  };
+
+  it('drops the server housekeeping the default excludes', () => {
+    // True, useful on the Pi, and meaningless in a banner above a map on a
+    // public tracker — where it would sit indefinitely.
+    const paths = readNotifications(tree, DEFAULT_NOTIFICATION_EXCLUDE).map((n) => n.path);
+    expect(paths).not.toContain('server.history.defaultProvider');
+    expect(paths).toContain('environment.depth.belowTransducer');
+  });
+
+  it('publishes everything when the list is empty', () => {
+    const paths = readNotifications(tree, []).map((n) => n.path);
+    expect(paths).toContain('server.history.defaultProvider');
+  });
+
+  it('matches a parent as the whole subtree, and a * as one segment', () => {
+    expect(isExcludedNotification('server.history.defaultProvider', ['server'])).toBe(true);
+    expect(isExcludedNotification('server.history.defaultProvider', ['server.*.defaultProvider']))
+      .toBe(true);
+    expect(isExcludedNotification('server.history.defaultProvider', ['server.history'])).toBe(true);
+    expect(isExcludedNotification('serverRoom.temperature', ['server'])).toBe(false);
+    expect(isExcludedNotification('environment.depth.belowTransducer', ['server'])).toBe(false);
+  });
+
+  it('takes an excluded path off the site immediately, history included', () => {
+    // Adding a pattern has to clear the counts the path already collected,
+    // not leave them on the page for a day with nothing to attribute them to.
+    const now = new Date('2026-03-01T20:00:00Z');
+    const earlier = new Date('2026-03-01T19:00:00Z');
+    const fresh = parseNotificationLog(null, earlier);
+    const first = updateNotificationLog(fresh, readNotifications(tree), earlier);
+    expect(first.log.events.some((e) => e.path === 'server.history.defaultProvider')).toBe(true);
+    expect(first.log.seen['server.history.defaultProvider']).toBeDefined();
+
+    const after = updateNotificationLog(
+      first.log,
+      readNotifications(tree, DEFAULT_NOTIFICATION_EXCLUDE),
+      now,
+      { exclude: DEFAULT_NOTIFICATION_EXCLUDE },
+    );
+    expect(after.log.events.some((e) => e.path === 'server.history.defaultProvider')).toBe(false);
+    expect(after.log.seen['server.history.defaultProvider']).toBeUndefined();
+    // ...and leaves the real alarm alone.
+    expect(after.log.seen['environment.depth.belowTransducer']).toBeDefined();
   });
 });

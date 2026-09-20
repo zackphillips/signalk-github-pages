@@ -150,20 +150,82 @@ export function extractPositionFix(blob: Tree): PositionFix | null {
   };
 }
 
+/** A node that looks like a Signal K position: numeric lat and lon. */
+function isPositionValue(node: unknown): node is { latitude: number; longitude: number } {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return false;
+  const { latitude, longitude } = node as Record<string, unknown>;
+  return (
+    typeof latitude === 'number' &&
+    typeof longitude === 'number' &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude)
+  );
+}
+
+export interface RedactionResult {
+  /** The zone the vessel itself is in, for the log line and the cadence. */
+  vesselZone: ZoneCentre | null;
+  /** Every path that was moved to a zone centre, for the log. */
+  redacted: string[];
+}
+
 /**
- * Replace the position in the snapshot with the zone centre when the boat is
- * inside a privacy zone. Mutates and returns the blob, and reports which zone
- * matched so the caller can log it and pace itself.
+ * Move every position inside a privacy zone to that zone's centre.
+ *
+ * The rule used to be "if the vessel is inside a zone, rewrite
+ * `navigation.position`", which guarded exactly one path out of a tree that
+ * has several. `navigation.anchor.position` is the one that mattered: anchor
+ * inside a privacy zone and the site showed the zone centre for the boat
+ * while publishing the true anchor drop coordinates a few keys away in the
+ * same file — the frontend even reads it, to draw the anchor marker. An
+ * allowlist of known paths would need extending every time the spec or a
+ * plugin grew another one, so this walks the tree instead.
+ *
+ * The rule is now per-position rather than per-vessel: *any* published
+ * position that falls inside a privacy zone becomes that zone's centre,
+ * wherever it sits in the tree. That generalises the old behaviour rather
+ * than special-casing, and it is deliberately not "redact everything while
+ * the vessel is home" — a destination in `navigation.course.nextPoint` is
+ * where the boat is going, not where it is, and snapping it to the home dock
+ * would corrupt the data without protecting anything. A destination that
+ * happens to be inside a zone is redacted, which is correct.
+ *
+ * Mutates the blob. Returns the zone the vessel is in, if any, because that
+ * is what the status line and the log mean by "in <zone>".
  */
-export function redactPosition(blob: Tree, zones: PrivacyZone[]): ZoneCentre | null {
+export function redactPositions(blob: Tree, zones: PrivacyZone[]): RedactionResult {
+  const redacted: string[] = [];
+  if (!zones.length) return { vesselZone: null, redacted };
+
+  const visit = (node: unknown, path: string): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => visit(item, `${path}[${index}]`));
+      return;
+    }
+    if (isPositionValue(node)) {
+      const centre = privacyZoneCentre(zones, node.latitude, node.longitude);
+      if (centre) {
+        node.latitude = centre.lat;
+        node.longitude = centre.lon;
+        redacted.push(path);
+      }
+      // A position has no children worth walking, and `altitude` is not one
+      // this plugin publishes.
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      visit(value, path ? `${path}.${key}` : key);
+    }
+  };
+  visit(blob, '');
+
+  // Read after the walk: the vessel's own position has been moved to the
+  // centre by now, and asking which zone that centre is in gives the same
+  // answer as asking before.
   const fix = extractPositionFix(blob);
-  if (!fix) return null;
-  const centre = privacyZoneCentre(zones, fix.latitude, fix.longitude);
-  if (!centre) return null;
-  const value = blob.navigation.position.value;
-  value.latitude = centre.lat;
-  value.longitude = centre.lon;
-  return centre;
+  const vesselZone = fix ? privacyZoneCentre(zones, fix.latitude, fix.longitude) : null;
+  return { vesselZone, redacted };
 }
 
 /** `navigation.state` as the server reports it, lowercased, or null. */
