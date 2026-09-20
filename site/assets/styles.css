@@ -1712,6 +1712,18 @@ body.map-fills .footer {
 
 .docs-error__hint { color: var(--text-muted); font-size: 0.9em; }
 
+/* The page with nothing on it yet: instructions, not an apology. Styled as
+   prose rather than as a grey note, because it is the first thing a new site
+   shows and it is asking the reader to do something. */
+.docs-empty { max-width: 68ch; }
+.docs-empty h2 { margin-top: 0; }
+.docs-empty__example {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Rendered Markdown
    ───────────────────────────────────────────────────────────────────────── */

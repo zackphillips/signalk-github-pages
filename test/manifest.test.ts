@@ -127,4 +127,22 @@ describe('renderManifest', () => {
     expect(manifest.user_owned_exceptions).toEqual(['assets/custom.css']);
     expect(manifest.version).toBe('0.1.0');
   });
+
+  it('publishes the seeded paths, and never claims to own one', () => {
+    // Seeded is not owned: the console writes these once, on request, and
+    // they belong to the boat's owner from that moment. A manifest that
+    // listed them under "owned" would be telling the reader the plugin will
+    // overwrite their maintenance log.
+    const manifest = JSON.parse(
+      renderManifest({ ...FULL, version: '0.1.0', generated: '2026-03-01T12:00:00Z' }),
+    );
+    expect(manifest.seeded).toEqual([
+      'docs/AGENTS.md',
+      'docs/ships-docs.md',
+      'docs/maintenance/log.md',
+    ]);
+    for (const seeded of manifest.seeded) {
+      expect(isOwnedPath(seeded, FULL), seeded).toBe(false);
+    }
+  });
 });
