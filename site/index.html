@@ -66,7 +66,7 @@
       </div>
     </div>
 
-    <!-- PASSAGE BANNER (shown only when passage is set in info.yaml; pinned above tabs) -->
+    <!-- PASSAGE BANNER (from the Course API via site.json; pinned above tabs) -->
     <div id="passage-banner" class="passage-banner" style="display:none;"></div>
 
     <!-- NOTIFICATIONS (active Signal K notifications; pinned above the tabs and
@@ -105,7 +105,7 @@
       </nav>
       <div class="tab-links">
         <a href="docs.html" class="tab-link">Ship's Docs</a>
-        <!-- Buttons from info.yaml's custom_links go here. -->
+        <!-- Buttons from site.json's custom_links go here. -->
         <span id="custom-links"></span>
       </div>
     </div>
@@ -390,7 +390,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
   <script src="assets/utils.js"></script>
   <script src="assets/constants.js"></script>
   <script src="assets/tabs.js?v=2"></script>

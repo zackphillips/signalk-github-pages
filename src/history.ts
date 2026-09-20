@@ -22,6 +22,7 @@
  */
 import { Temporal } from '@js-temporal/polyfill';
 import { pathMatches, type InstrumentLogEntry } from './instrumentLog';
+import type { SignalKApp } from './signalk';
 import { parseTimestamp } from './time';
 
 /** One row: the bucket timestamp, then one value per entry in `values`. */
@@ -41,21 +42,29 @@ export interface HistoryValuesResponse {
 }
 
 /**
- * The provider side of the History API, as the server hands it to a plugin.
+ * The provider side of the History API, as this module is willing to use it.
  *
- * Typed structurally rather than imported from `@signalk/server-api`: the
- * plugin supports servers older than that module's history export, and a
- * missing type there must not stop this one compiling.
+ * Deliberately looser than the server's `HistoryApi`, and the looseness is on
+ * the *response* side only. A history provider is a third-party plugin —
+ * signalk-to-influxdb2 and friends — so what comes back is another package's
+ * output, not the server's, and parsing it tolerantly is the difference
+ * between one missing sparkline and a failed cycle. The request side is
+ * checked against the server's own types where it is built.
  */
 export interface HistoryApiLike {
   getValues(query: Record<string, unknown>): Promise<HistoryValuesResponse>;
   getPaths(query: Record<string, unknown>): Promise<string[]>;
 }
 
-export interface HistoryHost {
-  /** Present from the server release that shipped the History API. */
-  getHistoryApi?: (providerId?: string) => Promise<HistoryApiLike>;
-}
+/**
+ * The server, as far as history is concerned.
+ *
+ * `getHistoryApi` is optional in the server's own type — it arrived in a
+ * specific release and is absent on anything older — so taking the member
+ * from there keeps this module honest about the servers it runs on without
+ * describing the method a second time.
+ */
+export type HistoryHost = Partial<Pick<SignalKApp, 'getHistoryApi'>>;
 
 export interface HistoryConfig {
   enabled: boolean;

@@ -36,22 +36,23 @@ does not go down when the hotspot does, and costs nothing.
    (rolling state)
 ```
 
-No `git` binary. No working copy to corrupt. No systemd unit. No YAML to
-hand-edit over SSH. The plugin reads the self tree in-process, keeps its
-rolling state in `app.getDataDirPath()`, and each cycle is one commit built on
-the live `HEAD`.
+No `git` binary. No working copy to corrupt. No systemd unit. Nothing to
+hand-edit: every setting is either on the plugin's config page or read from
+the server. The plugin reads the self tree in-process, keeps its rolling
+state in `app.getDataDirPath()`, and each cycle is one commit built on the
+live `HEAD`.
 
 ## What you get
 
 | | |
 |---|---|
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
-| **Per-day GPX tracks** | Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
+| **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
 | **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
-| **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` |
+| **Adaptive cadence** | Fast underway, slow at anchor, straight off `navigation.state` — and a publish the moment that changes, so a departure is not invisible for an hour |
 | **Sparklines from your database** | With a Signal K history provider installed, the instrument log is read back from it — full resolution, no gap across a restart, nothing accumulated on the Pi |
 | **Ownership manifest** | The plugin writes only the paths it declares; the rest of the repo is yours |
 | **On-boat console** | A Signal K webapp that renders the site from live data and prunes old voyages |
@@ -132,6 +133,7 @@ only. Give Pages a minute, then open the URL.
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
 | `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and the longest window the site's history dropdown will offer |
 | `positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `track.detailMetres` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
 | `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
 | `history.providerId` | *empty* | Blank uses the server's default provider |
 | `history.resolutionSeconds` | `60` | Bucket width asked of the provider, and the log's spacing |
@@ -149,28 +151,47 @@ only. Give Pages a minute, then open the URL.
 | `site.overrideUscgNumber` | off | Type a documentation number instead of reading it from Signal K |
 | `site.overrideHullNumber` | off | Likewise for the hull number |
 | `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
+| `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
-The defaults are the numbers this tracker has run on since it was a Python
-daemon on a Raspberry Pi. Five settings are derived rather than typed — the
-repository name from the owner, the site address from the repository, the
-timezone from the server, the polar table from Polar Management, and the USCG
-and hull numbers from the Signal K registrations — and each has an override
-checkbox beside it. What has no
+The defaults are the numbers this tracker has run on for years on a
+Raspberry Pi. Five settings are derived rather than typed — the repository
+name from the owner, the site address from the repository, the timezone from
+the server, the polar table from Polar Management, and the USCG and hull
+numbers from the Signal K registrations — and each has an override checkbox
+beside it. What has no
 default at all is what belongs to one particular boat: privacy zones start
 empty, and [the vessel's own details](#what-comes-from-signal-k) come from
 Signal K rather than from this page.
-
-Configs written against older field names still load: a `polars` string, a
-`timezone` string, and `interval.underway` / `interval.stationary` in seconds
-are all read and carried forward.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
 > `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
 > shell on the server. Scope it to the one repository, and rotate it if the Pi
 > ever leaves your hands.
+
+## The track
+
+The track is recorded from `navigation.position` deltas, which arrive several
+a second, and thinned by *shape*: a fix is kept when dropping it would move
+the drawn line by more than `track.detailMetres`, and at least once per
+publish cycle whatever the shape says.
+
+That is not the same as sampling more often. The Git Data API uploads whole
+files and the day's GPX is rewritten every cycle, so a point on a straight
+line is paid for again every two minutes until midnight. Thinning by shape
+spends points where the track bends and nothing where it does not:
+
+| An hour of… | Delta + shape | One fix per cycle |
+|---|---|---|
+| 60-second tacks | 60 points, track exactly right | 30 points, up to 128 m wrong |
+| A mark rounding | 9 points, 9 m | 5 points, 174 m |
+| Straight motoring | same as before | same |
+
+Lower `detailMetres` follows a tack more closely and uploads more; higher is
+cheaper on a hotspot. On a server that does not offer position deltas the
+plugin falls back to one fix per cycle, as before, and says so in the log.
 
 ## History provider
 
@@ -407,7 +428,8 @@ grow the file without bound.
 
 The site carries the boat's name and logo in places the page cannot fill in
 after it loads. `document.title` and the name in the status hero are patched
-from `info.yaml` at runtime, but a link pasted into a group chat is unfurled by
+from the published snapshot at runtime, but a link pasted into a group chat is
+unfurled by
 a crawler that never runs the JavaScript, and the browser tab has its icon
 before the first fetch. So the plugin substitutes them on the way into the
 repository: the OpenGraph and Twitter tags, the web app manifest's name, scope
@@ -436,25 +458,44 @@ lasted until the next release.
 by the plugin, for anything the config page does not reach.
 ## What comes from Signal K
 
-The boat's own details are not typed on the config page. Every cycle the
-plugin reads the self tree and writes what it found into
-`data/vessel/info.yaml`:
+The boat's own details are not typed on the config page and not published a
+second time: `data/telemetry/signalk_latest.json` is the whole self tree, so
+the name, MMSI, callsign, registrations and dimensions are already there and
+the site reads them from there.
 
-| `info.yaml` | Read from |
+`data/vessel/site.json` carries only what the snapshot cannot supply — the
+privacy zones, the custom links, the default position, the timezone, the
+address the site links back to — plus two numbers the plugin derives from the
+tree so the frontend does not have to:
+
+| Derived | Read from |
 |---|---|
-| `name`, `mmsi`, `uuid`, `flag`, `home_port` | `vessels.self` |
-| `callsign` | `communication.callsignVhf`, then `callsignHf` |
-| `imo`, `registrations` | `registrations.imo` / `.national` / `.local` / `.other` |
 | `uscg_number` | The registration whose key or description says USCG, coast guard, documentation or official number — or a national one flagged `US` |
 | `hull_number` | The registration whose key or description says HIN or hull |
-| `design` | `design.length`, `.beam`, `.draft`, `.airHeight`, `.displacement`, `.keel`, `.aisShipType`, in metres and kilograms |
 | `signalk.host`, `.port`, `.protocol` | The server's own settings and the Pi's LAN address |
 
 It is read on every cycle, not once at start: a cold boot runs the first cycle
 before the first product-information frame arrives, and an identity read once
-would leave the site saying "Vessel" until the next restart. Dimensions are
-rounded to the millimetre, so a float that wobbles in the last decimal place
-does not commit `info.yaml` every two minutes.
+would leave the GPX saying "Vessel" until the next restart.
+
+### The passage banner
+
+Activate a waypoint or a route on the plotter and the banner appears: where
+you are bound, where you departed from if the course names it, and when. It
+comes from the **Course API** — `startTime` is the departure, with no state
+for the plugin to keep — so clearing the destination on arrival takes the
+banner down by itself.
+
+This used to be a `passage:` block hand-edited into the published config from
+the GitHub web UI before departure and deleted on arrival, which meant it was
+wrong whenever anyone forgot. Nothing on the site is hand-edited now.
+
+No coordinates are published, only names: `previousPoint` is usually the
+vessel's own position at the moment you activated the waypoint, and falling
+back to its latitude and longitude would put the slip you just left on a
+public page through a path the privacy zones do not guard. The ETA is left
+out too — `targetArrivalTime` is recomputed continuously, and `site.json` is
+only rewritten when its content changes.
 
 The config page shows both numbers read-only. Tick `site.overrideUscgNumber`
 or `site.overrideHullNumber` to type one instead; if Signal K reports something
@@ -474,8 +515,11 @@ Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
 under a heading that read like its own — a wrong number presented as a right
 one. The same went for a fallback privacy zone at one particular dock, and for
 a whole fallback vessel identity (name, MMSI, documentation number) used when
-`info.yaml` failed to load, which made every such site introduce itself as
-somebody else's boat. All three are gone: unknown renders as unknown.
+the site configuration failed to load, which made every such site introduce
+itself as somebody else's boat. So was a fabricated telemetry snapshot shown
+when `signalk_latest.json` would not load, which told anyone following the
+boat it was sailing in ten knots off Ocean Beach when in fact publishing had
+broken. All of them are gone: unknown renders as unknown.
 
 ## Polars
 
@@ -533,7 +577,7 @@ into a commit.
 | Path | Owner |
 |---|---|
 | `data/telemetry/**` | Plugin, every cycle |
-| `data/vessel/info.yaml` | Plugin, when the config changes — your `passage:` block is preserved |
+| `data/vessel/site.json` | Plugin, when the configuration or the passage changes |
 | `docs/index.json` | Plugin, when the docs tree changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
@@ -561,6 +605,18 @@ anchor with the hotspot off, and it is the fastest way to see what a privacy
 zone or a custom button actually does before it is committed. It shows what the Pi
 holds: past days whose GPX lives only in the repository are not in it.
 
+**Publishing on request.** *Publish now* runs a cycle immediately rather than
+waiting for the next one, which at the stationary cadence can be an hour
+away — useful on departure, and after anything you want ashore to see at
+once. *Rewrite the whole site* republishes every HTML, CSS, JavaScript and
+icon file on top of that. A plugin upgrade already does that by itself, so
+the button is for what a version number cannot see: a file deleted by hand on
+GitHub, a commit that landed half-way, a repository rolled back.
+
+The same thing is a PUT to `tracker.publishNow` on `vessels.self`, so a KIP
+button, a Node-RED flow or a switch wired through another plugin can ask for
+a publish without opening this page.
+
 **Pruning** removes old voyages. A year of two-minute cycles is a lot of GPX,
 and nothing else this plugin does ever takes anything away.
 
@@ -570,8 +626,10 @@ and nothing else this plugin does ever takes anything away.
 | *Remove all* | Keeps today only |
 
 Both name the days before they do anything: the page asks the plugin what
-would go, shows you the count and the range, and only then asks for
-confirmation. What is removed is the per-day GPX file and its row in
+would go, shows you the count and the range in a confirmation panel, and
+removes nothing until you press *Yes, remove them*. The confirmation is part
+of the page rather than a browser dialog, because Signal K serves webapps
+inside a sandboxed iframe where `window.confirm` is ignored. What is removed is the per-day GPX file and its row in
 `tracks_index.json`, in one commit — the data is still in the repository's git
 history; what goes is the copy the site serves. Today is never removed: the
 position index still holds its points and the next cycle would write the file
@@ -621,8 +679,19 @@ Published a1b2c3d: 5 file(s), 142.8 kB of content in 191.2 kB of request
   bodies, 5 API call(s), 1840 ms. Rate limit: 4993 left until 2026-03-01T21:00Z
 ```
 
-Publish state deliberately stays out of the Signal K data tree: it is log
-output and the plugin status line, not paths in the model.
+Publish state deliberately stays out of the Signal K data tree: cost, commit
+SHAs and rate limits are log output and the plugin status line, not paths in
+the model.
+
+One thing is not. If publishing fails continuously for
+`notifyAfterFailureMinutes` — half an hour by default, which at the underway
+cadence is fifteen consecutive attempts — the plugin raises
+`notifications.tracker.publishFailed` and clears it on the next success. An
+expired token otherwise reaches nobody: the admin UI is a browser tab nobody
+has open at sea, and the first anyone ashore knows is that the boat appears
+to have stopped. The notification is `visual` only, so it shows up in KIP and
+on the chartplotter without sounding the boat's alarm at three in the
+morning.
 
 ## The site says "Data unavailable"
 
@@ -716,7 +785,8 @@ src/
   instrumentLog.ts  instrument_log.json + the path allowlist
   gpx.ts            Per-day GPX and tracks_index.json
   docsIndex.ts      docs/index.json
-  vesselInfo.ts     data/vessel/info.yaml, and reading the boat off the tree
+  siteConfig.ts     data/vessel/site.json, and reading the boat off the tree
+  course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv, from the server or the config
   timezones.ts      The IANA list behind the timezone dropdown
   frontend.ts       Reading site/, templating constants.js
@@ -736,21 +806,13 @@ sample/             Fixture telemetry for the dev server
 > `window.VESSEL_CONSTANTS`, `app.js` throws on the missing global, and the
 > entire page goes blank.
 
-## Migrating an existing tracker
-
-[MIGRATION.md](MIGRATION.md) is the cutover for a repository running the
-Python daemon: measure the instrument log first, run both publishers against a
-scratch repo for a sailing day and diff them, move the config across, then
-delete the backend.
-
 ## Trade-offs worth knowing
 
 **The plugin runs inside the server process.** A bug here can affect the
-navigation data hub, which a separate daemon could not. Every cycle is
-wrapped: an exception skips one update, is reported in the admin UI, and never
-reaches the server's event loop. That is the main cost of reading the tree
-in-process, and it buys away the HTTP poll that could freeze the site on stale
-data.
+navigation data hub. Every cycle is wrapped: an exception skips one update,
+is reported in the admin UI, and never reaches the server's event loop. That
+is the cost of reading the tree in-process, and it buys away an HTTP poll
+that could freeze the site on stale data.
 
 **The token sits in plain text**, as above.
 

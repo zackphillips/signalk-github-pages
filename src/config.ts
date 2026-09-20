@@ -3,7 +3,7 @@
  * TypeScript shape it produces, and the resolver that turns a filled-in form
  * into values the rest of the plugin can rely on.
  *
- * The config page is the only place any of this is set. `data/vessel/info.yaml`
+ * The config page is the only place any of this is set. `data/vessel/site.json`
  * in the published repo is an *output* of this file, written for the frontend
  * to read.
  *
@@ -14,8 +14,8 @@
  * the field from derived to typed. The derived value is what the plugin uses
  * whenever the box is unticked, whatever is sitting in the field.
  *
- * Defaults are the values this tracker has run on since it was a Python daemon
- * on a Raspberry Pi. What is *not* defaulted is anything that belongs to one
+ * Defaults are the values this tracker has run on for years on a Raspberry
+ * Pi. What is *not* defaulted is anything that belongs to one
  * particular boat: privacy zones start empty, and the repo and token have no
  * stand-in.
  */
@@ -83,6 +83,13 @@ export interface PluginConfig {
     override: boolean;
     table: string;
   };
+  /** How much detail the recorded track keeps. See `track.ts`. */
+  track: { detailMetres: number };
+  /**
+   * Minutes of continuous publish failure before raising a Signal K
+   * notification. Zero turns it off. See `alarm.ts`.
+   */
+  notifyAfterFailureMinutes: number;
   buildDocsIndex: boolean;
   /**
    * Publish `data/telemetry/notifications.json`: the active notifications and
@@ -177,6 +184,24 @@ export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES *
  * adopter's.
  */
 export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
+/**
+ * Default track detail, in metres.
+ *
+ * A fix is dropped when the line through its neighbours already passes
+ * within this of it. 15 m is finer than a GPS fix is repeatable, so the
+ * track follows every tack and gybe, while a straight leg costs almost
+ * nothing — the whole day's GPX is re-uploaded on every cycle, so points on
+ * a straight line are paid for again every two minutes until midnight.
+ */
+export const DEFAULT_TRACK_DETAIL_METRES = 15;
+/**
+ * Minutes of continuous failure before the plugin raises a notification.
+ *
+ * Long enough that a dropped hotspot or a 502 from GitHub passes unremarked
+ * — at the underway cadence this is fifteen consecutive failed attempts — and
+ * short enough to hear about an expired token on the same passage it expired.
+ */
+export const DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES = 30;
 /** How long raw positions stay in `positions_index.json`. */
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
@@ -507,6 +532,33 @@ export const configSchema = {
         },
       },
     },
+    track: {
+      type: 'object',
+      title: 'Track detail',
+      properties: {
+        detailMetres: {
+          type: 'number',
+          title: 'Track detail (metres)',
+          description:
+            'The track is recorded from position deltas and thinned by shape: a fix is ' +
+            'kept when dropping it would move the drawn track by more than this, and at ' +
+            'least once per publish cycle. Smaller follows a tack more closely and uploads ' +
+            'more; larger is cheaper on a hotspot. Ignored on a server that does not offer ' +
+            'position deltas, where the track is one fix per cycle as before.',
+          default: DEFAULT_TRACK_DETAIL_METRES,
+        },
+      },
+    },
+    notifyAfterFailureMinutes: {
+      type: 'number',
+      title: 'Warn after this many minutes of failure',
+      description:
+        'Raise a Signal K notification at notifications.tracker.publishFailed once ' +
+        'publishing has been failing continuously for this long, so an expired token ' +
+        'reaches KIP or the chartplotter rather than only the server log. Cleared on the ' +
+        'next successful publish. Zero turns it off.',
+      default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+    },
     buildDocsIndex: {
       type: 'boolean',
       title: 'Maintain docs/index.json',
@@ -530,7 +582,7 @@ export const configSchema = {
       title: 'Site details',
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
-        'tree every cycle and written into data/vessel/info.yaml.',
+        'tree every cycle and written into data/vessel/site.json.',
       dependencies: {
         ...readOnlyUnless('overrideUrl', 'url'),
         ...readOnlyUnless('overrideUscgNumber', 'uscgNumber'),
@@ -863,7 +915,7 @@ export interface UnresolvedConfig {
  * Keep the custom buttons that are actually buttons.
  *
  * The scheme check is not tidiness: the label and URL are published into
- * `info.yaml` and the frontend assigns the URL straight to `href`, so a
+ * `site.json` and the frontend assigns the URL straight to `href`, so a
  * `javascript:` entry here would be a script running on every visitor's
  * browser. http and https only, and the frontend checks again on the way in.
  */
@@ -915,14 +967,8 @@ export function resolveDefaultLocation(
   return { lat: latitude, lon: longitude, label: str(label) };
 }
 
-/**
- * The track timezone: the server's, unless the override is ticked.
- *
- * A plain string is accepted for a config written against the older form of
- * this field, where the box held the zone and empty meant UTC.
- */
+/** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(value: unknown): string {
-  if (typeof value === 'string') return value.trim() || serverTimezone();
   if (value && typeof value === 'object') {
     const { override, zone } = value as Record<string, unknown>;
     if (override === true) return str(zone) || serverTimezone();
@@ -930,12 +976,8 @@ export function resolveTimezone(value: unknown): string {
   return serverTimezone();
 }
 
-/**
- * The polar table setting, accepting the older form where this key was the
- * pasted table itself and served as a fallback rather than an override.
- */
+/** The polar table override: whether it is on, and what is in the box. */
 export function resolvePolars(value: unknown): { override: boolean; table: string } {
-  if (typeof value === 'string') return { override: value.trim() !== '', table: value };
   if (value && typeof value === 'object') {
     const { override, table } = value as Record<string, unknown>;
     return {
@@ -946,16 +988,10 @@ export function resolvePolars(value: unknown): { override: boolean; table: strin
   return { override: false, table: '' };
 }
 
-/** Cadence in seconds, from the minutes on the page or the legacy seconds. */
-function intervalSeconds(
-  minutes: unknown,
-  legacySeconds: unknown,
-  fallbackSeconds: number,
-): number {
+/** Cadence in seconds, from the minutes the config page asks for. */
+function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
   const fromMinutes = num(minutes);
   if (fromMinutes !== null) return Math.max(1, Math.round(fromMinutes * 60));
-  const fromSeconds = num(legacySeconds);
-  if (fromSeconds !== null) return Math.max(1, Math.round(fromSeconds));
   return fallbackSeconds;
 }
 
@@ -1044,11 +1080,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   const paths = parsePathList(instrumentLog.paths);
 
-  const underway = intervalSeconds(
-    interval.underwayMinutes,
-    interval.underway,
-    DEFAULT_INTERVAL_UNDERWAY,
-  );
+  const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
   const resolutionSeconds =
     num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
   const entries = Math.max(
@@ -1080,11 +1112,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       interval: {
         underway,
-        stationary: intervalSeconds(
-          interval.stationaryMinutes,
-          interval.stationary,
-          DEFAULT_INTERVAL_STATIONARY,
-        ),
+        stationary: intervalSeconds(interval.stationaryMinutes, DEFAULT_INTERVAL_STATIONARY),
       },
       privacyZones: zones,
       timezone: resolveTimezone(input.timezone),
@@ -1105,6 +1133,16 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
           Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
         ),
       },
+      track: {
+        detailMetres: Math.max(
+          1,
+          num((input.track ?? {}).detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES,
+        ),
+      },
+      notifyAfterFailureMinutes: Math.max(
+        0,
+        num(input.notifyAfterFailureMinutes) ?? DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+      ),
       buildDocsIndex: input.buildDocsIndex !== false,
       publishNotifications: input.publishNotifications !== false,
       site: {

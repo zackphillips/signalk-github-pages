@@ -30,7 +30,21 @@ export interface ManifestOptions {
 export const MANIFEST_PATH = '.tracker-manifest.json';
 
 /** Paths written every cycle, whatever the configuration. */
-const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/info.yaml'];
+const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/site.json'];
+
+/**
+ * Paths this plugin used to write and now only removes.
+ *
+ * `data/vessel/info.yaml` was the site's vessel configuration before
+ * `site.json` replaced it. It is not in `ownedPatterns`, so it does not
+ * appear in the published manifest claiming to be maintained — nothing
+ * writes it any more. It is here so the one-time deletion that retires it
+ * passes the same ownership check every other deletion does.
+ */
+const RETIRED_PATTERNS = ['data/vessel/info.yaml'];
+
+/** Retired paths, in the order they should be removed. */
+export const RETIRED_PATHS = [...RETIRED_PATTERNS];
 
 /** The polar table, owned only while the server has an active polar. */
 export const POLARS_PATTERN = 'data/vessel/polars.csv';
@@ -78,6 +92,19 @@ export function isOwnedPath(path: string, options: ManifestOptions): boolean {
 }
 
 /**
+ * May this plugin delete this path?
+ *
+ * Everything it owns, plus the paths it has retired. Writing and deleting are
+ * separated here because a retired path must be removable without the
+ * manifest telling the repository's owner that the plugin still maintains it.
+ */
+export function isRemovablePath(path: string, options: ManifestOptions): boolean {
+  if (isOwnedPath(path, options)) return true;
+  if (USER_OWNED_EXCEPTIONS.includes(path)) return false;
+  return RETIRED_PATTERNS.some((pattern) => matchesPattern(pattern, path));
+}
+
+/**
  * Drop (and report) any path the plugin does not own.
  *
  * Called on the way into every commit. A bug that starts generating a path
@@ -86,11 +113,13 @@ export function isOwnedPath(path: string, options: ManifestOptions): boolean {
 export function partitionOwned<T extends { path: string }>(
   files: T[],
   options: ManifestOptions,
+  { allowRetired = false }: { allowRetired?: boolean } = {},
 ): { owned: T[]; rejected: T[] } {
+  const permitted = allowRetired ? isRemovablePath : isOwnedPath;
   const owned: T[] = [];
   const rejected: T[] = [];
   for (const file of files) {
-    (isOwnedPath(file.path, options) ? owned : rejected).push(file);
+    (permitted(file.path, options) ? owned : rejected).push(file);
   }
   return { owned, rejected };
 }

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "signalk": {
+    "host": "192.168.8.50",
+    "port": "3000",
+    "protocol": "http"
+  },
+  "uscg_number": "1024168",
+  "custom_links": [
+    {
+      "label": "Ship's Log",
+      "url": "https://example.com/logs"
+    }
+  ],
+  "default_location": {
+    "lat": 37.806,
+    "lon": -122.465,
+    "label": "San Francisco Bay"
+  },
+  "timezone": "America/Los_Angeles",
+  "passage": {
+    "to": "Santa Cruz, CA",
+    "departed": "2026-03-01T16:00:00Z"
+  },
+  "privacy_zones": []
+}

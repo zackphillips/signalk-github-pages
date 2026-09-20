@@ -1,9 +1,9 @@
 /**
  * `positions_index.json` — the rolling position history behind the map track.
  *
- * The file format is unchanged from the Python daemon so the frontend does not
- * have to know which publisher wrote it: a list of
- * `{timestamp, values: [{path, value}]}` entries, oldest first.
+ * A list of `{timestamp, values: [{path, value}]}` entries, oldest first,
+ * carrying a `schema_version` so the frontend can tell a file it understands
+ * from one it does not.
  */
 import type { PrivacyZone } from './config';
 import { privacyZoneCentre } from './privacy';
@@ -27,7 +27,7 @@ export interface PositionIndex {
 
 export const POSITION_INDEX_SCHEMA_VERSION = 1;
 
-/** Read an index written by this plugin, by the old daemon, or by nothing. */
+/** Read back an index this plugin wrote, or nothing if there is not one. */
 export function parsePositionIndex(raw: string | null | undefined): PositionEntry[] {
   if (!raw) return [];
   let payload: any;
@@ -36,11 +36,7 @@ export function parsePositionIndex(raw: string | null | undefined): PositionEntr
   } catch {
     return [];
   }
-  const list = Array.isArray(payload)
-    ? payload
-    : Array.isArray(payload?.positions)
-      ? payload.positions
-      : [];
+  const list = Array.isArray(payload?.positions) ? payload.positions : [];
   return list.filter((item: any) => item && typeof item === 'object');
 }
 

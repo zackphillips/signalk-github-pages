@@ -1,16 +1,14 @@
 /**
  * signalk-github-pages — publish vessel telemetry to a GitHub Pages site.
  *
- * The plugin replaces a Python daemon that polled the server over HTTP, wrote
- * into a git checkout on the Pi and pushed every couple of minutes. It reads
- * the same data in-process, keeps its rolling state in the plugin data
- * directory, and publishes through the GitHub Git Data API — no checkout, no
- * `git` binary, nothing on disk to rebase.
+ * The plugin reads the self tree in-process, keeps its rolling state in the
+ * plugin data directory, and publishes through the GitHub Git Data API — no
+ * checkout, no `git` binary, nothing on disk to rebase.
  *
- * The cost of moving in-process is that a bug here can take down the server
- * that a separate process could not touch, so every tick is wrapped: an
- * exception skips one cycle and is reported in the admin UI, and never
- * reaches the server's event loop.
+ * The cost of running inside the server is that a bug here can take down the
+ * navigation data hub, so every tick is wrapped: an exception skips one
+ * cycle and is reported in the admin UI, and never reaches the server's
+ * event loop.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -23,43 +21,36 @@ import {
   type PluginConfig,
   type PolarStatus,
 } from './config';
+import { FailureAlarm, type AlarmAction } from './alarm';
+import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
-import { HistoryReader, type HistoryHost } from './history';
+import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
-import { activePolarId, readActivePolar, type PolarResourceSource } from './polars';
-import { extractPositionFix, readSelfTree, type SelfTreeSource } from './snapshot';
+import { activePolarId, readActivePolar } from './polars';
+import { extractPositionFix, isUnderway, readSelfTree } from './snapshot';
+import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
+import { PositionRecorder } from './track';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
-import { readVesselDetails, type VesselIdentity } from './vesselInfo';
+import { readVesselDetails, type VesselIdentity } from './siteConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
 
-interface SignalKApp extends SelfTreeSource, PolarResourceSource, HistoryHost {
-  debug: (message: string) => void;
-  error: (message: string) => void;
-  setPluginStatus: (message: string) => void;
-  setPluginError: (message: string) => void;
-  getDataDirPath: () => string;
-  /** Write the config back, for the "set to the current position" checkbox. */
-  savePluginOptions?: (options: unknown, callback: (error: unknown) => void) => void;
-  /** The saved config, for the derived fields the schema shows read-only. */
-  readPluginOptions?: () => unknown;
-  config?: { settings?: { port?: number; ssl?: boolean } };
-}
-
-interface Plugin {
-  id: string;
-  name: string;
-  description: string;
-  schema: unknown;
-  uiSchema: unknown;
-  start: (options: unknown) => void;
-  stop: () => void;
-  /** Signal K mounts this at /plugins/signalk-github-pages. */
+/**
+ * What this plugin returns to the server.
+ *
+ * `Plugin` is the server's own interface; the two narrowings are ours.
+ * `schema` is a function because the config page shows values derived from
+ * the running server, and `registerWithRouter` takes the structural router
+ * `webapp.ts` declares rather than the full Express one — the console needs
+ * four methods, and nothing here should depend on an Express release.
+ */
+type TrackerPlugin = Omit<ServerPlugin, 'schema' | 'registerWithRouter'> & {
+  schema: () => object;
   registerWithRouter: (router: Router) => void;
-}
+};
 
 /** First non-internal IPv4 address — the one a browser on the boat LAN uses. */
 function lanAddress(): string | undefined {
@@ -78,8 +69,11 @@ function lanAddress(): string | undefined {
  * arrives after the plugin has already started.
  */
 function readIdentity(app: SignalKApp): VesselIdentity {
-  const name = typeof app.getSelfPath?.('name') === 'string' ? app.getSelfPath!('name') : '';
-  const rawMmsi = app.getSelfPath?.('mmsi');
+  // Read once and narrow the result. These used to be two calls each, with
+  // the `typeof` testing one and the value taken from the other.
+  const rawName: unknown = app.getSelfPath?.('name');
+  const name = typeof rawName === 'string' ? rawName : '';
+  const rawMmsi: unknown = app.getSelfPath?.('mmsi');
   const mmsi =
     typeof rawMmsi === 'string' && rawMmsi
       ? rawMmsi
@@ -98,6 +92,30 @@ function readIdentity(app: SignalKApp): VesselIdentity {
 
 function formatClock(date: Date): string {
   return date.toISOString().slice(11, 16);
+}
+
+/** Where the publish-failure notification lives in the tree. */
+const NOTIFICATION_PATH = 'tracker.publishFailed';
+
+/**
+ * Raise or clear the notification the long way, for a server without the
+ * Notifications API. This is what that API writes underneath.
+ */
+function sendNotification(app: SignalKApp, state: 'warn' | 'normal', message: string): void {
+  app.handleMessage('signalk-github-pages', {
+    updates: [
+      {
+        values: [
+          {
+            path: `notifications.${NOTIFICATION_PATH}`,
+            // `visual` only: this plugin failing to reach GitHub is not a
+            // reason to sound the boat's alarm in the middle of the night.
+            value: { state, message, method: state === 'warn' ? ['visual'] : [] },
+          },
+        ],
+      },
+    ],
+  } as never);
 }
 
 /**
@@ -123,7 +141,7 @@ function historySetting(app: SignalKApp, config: PluginConfig): string {
   );
 }
 
-module.exports = function (app: SignalKApp): Plugin {
+module.exports = function (app: SignalKApp): TrackerPlugin {
   let timer: NodeJS.Timeout | undefined;
   let stopped = true;
   // What the last cycle found for the polar table. Kept out here so it
@@ -133,9 +151,17 @@ module.exports = function (app: SignalKApp): Plugin {
   // resource again on a preview request: a page open must not be able to make
   // the boat do work it would not otherwise do.
   let polarCsv = '';
+  // The passage the last cycle read, for the console's preview. Same rule as
+  // the polar CSV: a page open must not make the boat call the Course API.
+  let passage: Passage | null = null;
   // Set on start, cleared on stop: the console's routes are registered once,
   // when the server loads the plugin, and answer 503 while it is not running.
   let webapp: WebappDeps | null = null;
+  // Subscribed on start, unsubscribed on stop. Null while the plugin is not
+  // running, and left null on a server that cannot provide the streams.
+  let recorder: PositionRecorder | null = null;
+  // Unsubscribe for the navigation.state watch, or undefined when not watching.
+  let stateUnsubscribe: (() => void) | undefined;
 
   /**
    * What to tell the config page about the polar table.
@@ -248,7 +274,7 @@ module.exports = function (app: SignalKApp): Plugin {
     });
   };
 
-  const plugin: Plugin = {
+  const plugin: TrackerPlugin = {
     id: 'signalk-github-pages',
     name: 'GitHub Pages Vessel Tracker',
     description:
@@ -307,6 +333,46 @@ module.exports = function (app: SignalKApp): Plugin {
         app.debug('No privacy zones set: every position is published exactly as received.');
       }
 
+      /**
+       * The one thing this plugin puts into the data model.
+       *
+       * Two ways to say it, because the Notifications API arrived in a
+       * specific server release and this plugin runs on older ones. The
+       * fallback writes the same notification with `handleMessage`, which
+       * every server has had for years and which is what the API does
+       * underneath.
+       */
+      const alarm = new FailureAlarm({ afterMinutes: config.notifyAfterFailureMinutes });
+      let alarmId: string | null = null;
+      const applyAlarm = (action: AlarmAction) => {
+        try {
+          if (action.kind === 'raise') {
+            app.error(action.message);
+            if (app.notifications?.raise) {
+              alarmId = app.notifications.raise({
+                state: 'warn' as never,
+                message: action.message,
+                path: NOTIFICATION_PATH as never,
+              });
+            } else {
+              sendNotification(app, 'warn', action.message);
+            }
+          } else if (action.kind === 'clear') {
+            app.debug('Publishing recovered; clearing the failure notification.');
+            if (app.notifications?.clear && alarmId) {
+              app.notifications.clear(alarmId as never);
+              alarmId = null;
+            } else {
+              sendNotification(app, 'normal', 'Publishing has recovered.');
+            }
+          }
+        } catch (error: any) {
+          // A server that will not take the notification is not a reason to
+          // stop publishing; the log still carries the failure.
+          app.error(`Could not update the publish notification: ${error?.message ?? error}`);
+        }
+      };
+
       const store = new StateStore(app.getDataDirPath());
       const client = new GitHubClient({
         repo: config.github.repo,
@@ -321,6 +387,18 @@ module.exports = function (app: SignalKApp): Plugin {
         instrumentEntries: config.instrumentLog.entries,
         log: (message) => app.debug(message),
       });
+      // The track comes from navigation.position deltas rather than from one
+      // sample per cycle, so a tack is a tack rather than a corner. A server
+      // that will not hand over the streams falls back to the tree fix, which
+      // is what this plugin did before.
+      recorder = new PositionRecorder({
+        app,
+        detailMetres: config.track.detailMetres,
+        maxIntervalSeconds: config.interval.stationary,
+        log: (message) => app.debug(message),
+      });
+      if (!recorder.start()) recorder = null;
+
       const identity = readIdentity(app);
       const publisher = new Publisher({
         client,
@@ -371,6 +449,82 @@ module.exports = function (app: SignalKApp): Plugin {
         timer.unref?.();
       };
 
+      /**
+       * One publish cycle, on demand.
+       *
+       * The console's button and the `tracker.publishNow` PUT handler both
+       * land here rather than duplicating the reads a cycle needs. It does
+       * not touch the timer: a manual publish is an extra cycle, not a
+       * replacement for the next scheduled one, so pressing the button
+       * twice cannot leave the plugin without a timer running.
+       */
+      const publishNow = async (reason: string) => {
+        if (stopped) return { published: false, files: [], bytes: 0, skipped: 'not running' };
+        const tree = readSelfTree(app);
+        if (Object.keys(tree).length === 0) {
+          return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
+        }
+        app.debug(`Publishing on request (${reason}).`);
+        passage = await readPassage(app, (problem) => app.error(problem));
+        const result = await publisher.runCycle(tree, {
+          polars: await polarsCsv(tree),
+          history: await history.read(new Date()),
+          passage,
+          fixes: recorder?.drain(),
+        });
+        return {
+          published: result.published,
+          files: result.files,
+          bytes: result.bytes,
+          commitSha: result.commitSha,
+        };
+      };
+
+      /**
+       * Publish as soon as the boat starts or stops moving.
+       *
+       * Without this, leaving the dock is invisible for up to an hour: the
+       * stationary timer was set when the boat was still moored, and nothing
+       * shortens it. The cadence already keys off `navigation.state`, so the
+       * transition is exactly the moment worth publishing — someone ashore
+       * watching for a departure sees it within a cycle rather than within
+       * the interval that was appropriate before it happened.
+       *
+       * Only the transition fires, never the repeats: `navigation.state`
+       * arrives as a delta on every update from signalk-autostate, and
+       * publishing on each of those would ignore the cadence entirely.
+       */
+      let lastUnderway: boolean | null = null;
+      const watchState = () => {
+        const stream = app.streambundle?.getSelfStream?.('navigation.state' as never);
+        if (!stream || typeof stream.onValue !== 'function') return;
+        try {
+          const off = stream.onValue((value: unknown) => {
+            if (stopped) return;
+            const underway = isUnderway(typeof value === 'string' ? value.toLowerCase() : null);
+            if (lastUnderway === null) {
+              lastUnderway = underway;
+              return;
+            }
+            if (underway === lastUnderway) return;
+            lastUnderway = underway;
+            app.debug(
+              `navigation.state changed to ${underway ? 'underway' : 'not underway'}; ` +
+                'publishing now rather than waiting for the next tick.',
+            );
+            // Reschedule too: the pending timer was set for the cadence that
+            // applied before the transition, which is the wrong one now.
+            if (timer) clearTimeout(timer);
+            void publishNow(`navigation.state went ${underway ? 'underway' : 'stationary'}`)
+              .catch((error: any) => app.error(`Publish on state change failed: ${error?.message ?? error}`))
+              .finally(() => schedule(underway ? config.interval.underway : config.interval.stationary));
+          });
+          if (typeof off === 'function') stateUnsubscribe = off;
+        } catch (error: any) {
+          app.debug(`Not watching navigation.state (${error?.message ?? error}).`);
+        }
+      };
+
       const tick = async () => {
         if (stopped) return;
         let seconds = config.interval.stationary;
@@ -385,12 +539,19 @@ module.exports = function (app: SignalKApp): Plugin {
             return;
           }
           seconds = publisher.intervalSeconds(tree);
+          // The recorder's time floor is the publish cadence, so the track is
+          // never sparser than one fix per cycle and never denser than that
+          // when the boat is not moving.
+          recorder?.setPublishInterval(seconds);
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
+          passage = await readPassage(app, (problem) => app.error(problem));
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
             history: await history.read(new Date()),
+            passage,
+            fixes: recorder?.drain(),
           });
           const where = result.privacyZone
             ? `in ${result.privacyZone}`
@@ -402,6 +563,9 @@ module.exports = function (app: SignalKApp): Plugin {
                   `${where}, next in ${Math.round(seconds / 60)} min`
               : `Nothing to publish, ${where}, next in ${Math.round(seconds / 60)} min`,
           );
+          // A cycle that got as far as deciding there was nothing to publish
+          // reached GitHub and read HEAD, so it counts as working.
+          applyAlarm(alarm.recordSuccess());
         } catch (error: any) {
           // One bad cycle is a skipped update, not a dead plugin: a 502 from
           // GitHub, a truncated body or a wedged hotspot all retry next tick.
@@ -414,9 +578,50 @@ module.exports = function (app: SignalKApp): Plugin {
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
           );
+          applyAlarm(alarm.recordFailure(new Date(), message));
         }
         schedule(seconds);
       };
+
+      /**
+       * `tracker.publishNow` as a PUT, so anything on the boat can ask for a
+       * publish: a KIP button, a Node-RED flow, a physical switch wired
+       * through a plugin. Useful on departure, and after an MOB, when the
+       * next scheduled cycle could be an hour away at the stationary
+       * cadence.
+       *
+       * This is input, not state. Publish results stay in the log and the
+       * plugin status line — nothing here writes cost or commit SHAs into
+       * the data model.
+       */
+      if (typeof app.registerPutHandler === 'function') {
+        try {
+          app.registerPutHandler('vessels.self', 'tracker.publishNow', (_context, _path, _value, callback) => {
+            void publishNow('a PUT to tracker.publishNow')
+              .then((result) =>
+                callback({
+                  state: 'COMPLETED',
+                  statusCode: 200,
+                  message: result.published
+                    ? `Published ${result.files.length} file(s).`
+                    : (result.skipped ?? 'Nothing to publish.'),
+                }),
+              )
+              .catch((error: any) =>
+                callback({
+                  state: 'COMPLETED',
+                  statusCode: 502,
+                  message: `Publish failed: ${error?.message ?? error}`,
+                }),
+              );
+            // Asynchronous by nature: a cycle is several round trips to
+            // GitHub, and the server expects PENDING while that happens.
+            return { state: 'PENDING' };
+          });
+        } catch (error: any) {
+          app.error(`Could not register the publish-now PUT handler: ${error?.message ?? error}`);
+        }
+      }
 
       webapp = {
         config,
@@ -427,6 +632,8 @@ module.exports = function (app: SignalKApp): Plugin {
         version: PLUGIN_VERSION,
         readTree: () => readSelfTree(app),
         polars: () => ({ csv: polarCsv, status: polarStatus }),
+        passage: () => passage,
+        publishNow,
         log: (message) => app.debug(message),
       };
 
@@ -437,6 +644,7 @@ module.exports = function (app: SignalKApp): Plugin {
           app.error(`Could not seed state from the repository: ${error?.message ?? error}`);
         }
         await tick();
+        watchState();
       })();
     },
 
@@ -445,6 +653,15 @@ module.exports = function (app: SignalKApp): Plugin {
       if (timer) clearTimeout(timer);
       timer = undefined;
       webapp = null;
+      passage = null;
+      recorder?.stop();
+      recorder = null;
+      try {
+        stateUnsubscribe?.();
+      } catch {
+        // Unsubscribing a stream that is already gone is not a problem.
+      }
+      stateUnsubscribe = undefined;
       app.setPluginStatus('Stopped');
     },
 

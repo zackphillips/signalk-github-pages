@@ -2,26 +2,33 @@
  * The self tree: reading it out of the running server, dropping stale values,
  * and redacting the position before anything is written anywhere.
  *
- * The Python daemon polled `/signalk/v1/api/vessels/self` over HTTP. Inside
- * the server process the same tree is a function call, so a wedged HTTP
- * connection can no longer freeze the site on stale data.
+ * Reading the tree is a function call inside the server process, not an HTTP
+ * poll of `/signalk/v1/api/vessels/self`, so a wedged connection cannot
+ * freeze the site on stale data.
  */
 import type { PrivacyZone } from './config';
 import { privacyZoneCentre, type ZoneCentre } from './privacy';
+import type { SignalKApp } from './signalk';
 
 export type Tree = Record<string, any>;
 
 /** Sections whose values go stale in a way the UI must not present as live. */
 export const STALE_FILTER_KEYS = ['environment', 'navigation', 'entertainment'] as const;
 
-/** Anything with a `getSelfPath` is enough to read a snapshot. */
-export interface SelfTreeSource {
-  getSelfPath?: (path: string) => any;
-  getPath?: (path: string) => any;
-  signalk?: { retrieve?: () => any };
+/**
+ * What reading a snapshot needs of the server.
+ *
+ * `getSelfPath` and `getPath` are the server's published accessors, taken
+ * from its own type so a rename shows up here at build time. The other two
+ * are not in that contract: `signalk.retrieve()` is the internal full-model
+ * accessor older servers exposed, kept as a last resort and typed as the
+ * reach-past-the-contract that it is.
+ */
+export type SelfTreeSource = Partial<Pick<SignalKApp, 'getSelfPath' | 'getPath'>> & {
+  signalk?: { retrieve?: () => unknown };
   selfId?: string;
   selfContext?: string;
-}
+};
 
 /**
  * Best-effort read of the whole self tree.
@@ -34,7 +41,9 @@ export function readSelfTree(app: SelfTreeSource): Tree {
     () => app.getSelfPath?.(''),
     () => app.getPath?.('vessels.self'),
     () => {
-      const full = app.signalk?.retrieve?.();
+      const full = app.signalk?.retrieve?.() as
+        | { vessels?: Record<string, unknown> }
+        | undefined;
       const id = app.selfId ?? (app.selfContext ?? '').replace(/^vessels\./, '');
       return id ? full?.vessels?.[id] : undefined;
     },
@@ -134,8 +143,9 @@ export function extractPositionFix(blob: Tree): PositionFix | null {
         ? navigation.position.timestamp
         : null,
     speedOverGround: numeric(navigation.speedOverGround),
-    // The daemon recorded headingTrue here; keep that so existing GPX and the
-    // frontend's course arrow stay consistent across the cutover.
+    // headingTrue, not courseOverGroundTrue, despite the field name: it is
+    // what the published GPX has always carried and what the frontend's
+    // course arrow reads.
     courseOverGroundTrue: numeric(navigation.headingTrue),
   };
 }

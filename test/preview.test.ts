@@ -56,7 +56,7 @@ describe('renderPreviewData', () => {
       'data/telemetry/notifications.json',
       'data/telemetry/signalk_latest.json',
       'data/telemetry/tracks_index.json',
-      'data/vessel/info.yaml',
+      'data/vessel/site.json',
     ]);
   });
 
@@ -161,9 +161,9 @@ describe('renderPreviewData', () => {
     expect(withPolars.get('data/vessel/polars.csv')).toBe('twa/tws;6\n52;4.1\n');
   });
 
-  it('renders info.yaml from the live tree, not from a published copy', async () => {
-    const info = yaml.load((await render()).get('data/vessel/info.yaml')!) as any;
-    expect(info.name).toBe('S.V.Mermug');
-    expect(info.privacy_zones).toHaveLength(1);
+  it('renders site.json from the live tree, not from a published copy', async () => {
+    const site = JSON.parse((await render()).get('data/vessel/site.json')!);
+    expect(site.schema_version).toBe(1);
+    expect(site.privacy_zones).toHaveLength(1);
   });
 });

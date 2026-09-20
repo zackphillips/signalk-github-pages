@@ -20,9 +20,9 @@ const SHELL_CACHE   = `tracker-shell-${SITE_VERSION}`;
 const DATA_CACHE    = 'tracker-data-v1';
 
 // The shell: everything that changes only with a release. Nothing under
-// /data/ belongs here — info.yaml is rewritten whenever the boat's config
-// changes, and a cached copy of it is a stale vessel name and stale privacy
-// zones on every device that has visited before.
+// /data/ belongs here — site.json is rewritten whenever the configuration or
+// the passage changes, and a cached copy of it is stale privacy zones and a
+// stale banner on every device that has visited before.
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -70,7 +70,7 @@ self.addEventListener('fetch', (event) => {
   // Only handle same-origin GET requests and a small CDN allowlist.
   if (request.method !== 'GET') return;
 
-  // CDN (Leaflet, Chart.js, js-yaml) — stale-while-revalidate
+  // CDN (Leaflet, Chart.js) — stale-while-revalidate
   if (url.hostname.endsWith('jsdelivr.net') || url.hostname.endsWith('unpkg.com')) {
     event.respondWith(staleWhileRevalidate(request, SHELL_CACHE));
     return;
@@ -79,7 +79,7 @@ self.addEventListener('fetch', (event) => {
   // Only intercept same-origin requests from here on.
   if (url.origin !== self.location.origin) return;
 
-  // Anything the plugin publishes as data — telemetry, the vessel config, the
+  // Anything the plugin publishes as data — telemetry, the site config, the
   // polar table — is network-first with a cache fallback: current when there
   // is a signal, and the last known state when there is not.
   if (url.pathname.startsWith('/data/')) {

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isOwnedPath, matchesPattern, partitionOwned, renderManifest } from '../src/manifest';
+import {
+  isOwnedPath,
+  isRemovablePath,
+  matchesPattern,
+  ownedPatterns,
+  partitionOwned,
+  renderManifest,
+} from '../src/manifest';
 
 const FULL = { buildDocsIndex: true };
 
@@ -20,7 +27,7 @@ describe('ownership', () => {
     for (const path of [
       'data/telemetry/positions_index.json',
       'data/telemetry/tracks/2026-03-01.gpx',
-      'data/vessel/info.yaml',
+      'data/vessel/site.json',
       'docs/index.json',
       'assets/app.js',
       'index.html',
@@ -28,6 +35,19 @@ describe('ownership', () => {
     ]) {
       expect(isOwnedPath(path, FULL), path).toBe(true);
     }
+  });
+
+  it('does not own a path it has retired, but may still delete it', () => {
+    // info.yaml is the file site.json replaced. It must not appear in the
+    // published manifest claiming to be maintained — nothing writes it — but
+    // the one-time deletion that removes it goes through the same ownership
+    // check as every other deletion, so it has to pass that one.
+    expect(isOwnedPath('data/vessel/info.yaml', FULL)).toBe(false);
+    expect(ownedPatterns(FULL)).not.toContain('data/vessel/info.yaml');
+    expect(isRemovablePath('data/vessel/info.yaml', FULL)).toBe(true);
+    // A retirement is not a licence to delete the user's files.
+    expect(isRemovablePath('docs/mob-procedure.md', FULL)).toBe(false);
+    expect(isRemovablePath('assets/custom.css', FULL)).toBe(false);
   });
 
   it("never owns the user's own files", () => {

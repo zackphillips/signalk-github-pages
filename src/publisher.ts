@@ -8,7 +8,7 @@
  * what it did, which is what makes the whole cycle testable without a server
  * or a network.
  */
-import { createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';import type { Passage } from './course';
 import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
 import {
   parseNotificationLog,
@@ -31,6 +31,7 @@ import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from 
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
   MANIFEST_PATH,
+  RETIRED_PATHS,
   partitionOwned,
   renderManifest,
   type ManifestOptions,
@@ -48,6 +49,7 @@ import {
   isUnderway,
   navigationState,
   redactPosition,
+  type PositionFix,
   type Tree,
 } from './snapshot';
 import type { PluginConfig } from './config';
@@ -57,9 +59,9 @@ import { POLARS_PATH } from './polars';
 import {
   mergeVesselIdentity,
   readVesselDetails,
-  renderVesselInfo,
+  renderSiteConfig,
   type VesselIdentity,
-} from './vesselInfo';
+} from './siteConfig';
 
 const TELEMETRY_DIR = 'data/telemetry';
 const LATEST_PATH = `${TELEMETRY_DIR}/signalk_latest.json`;
@@ -67,7 +69,7 @@ const POSITIONS_PATH = `${TELEMETRY_DIR}/positions_index.json`;
 const INSTRUMENT_LOG_PATH = `${TELEMETRY_DIR}/instrument_log.json`;
 const NOTIFICATIONS_PATH = `${TELEMETRY_DIR}/notifications.json`;
 const TRACKS_INDEX_PATH = `${TELEMETRY_DIR}/tracks_index.json`;
-const INFO_PATH = 'data/vessel/info.yaml';
+const SITE_CONFIG_PATH = 'data/vessel/site.json';
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -89,6 +91,20 @@ export interface CycleInput {
    * what `unavailable` does too.
    */
   history?: HistoryResult;
+  /**
+   * The passage banner, read from the Course API in `index.ts` — async, like
+   * the other two, so this module stays a pure function of what it is given.
+   * Absent means no banner, which is the normal state of a boat that is not
+   * navigating to anything.
+   */
+  passage?: Passage | null;
+  /**
+   * Fixes recorded from `navigation.position` deltas since the last cycle,
+   * already decimated (see `track.ts`). The current tree fix is appended to
+   * these, so a cycle records at least as much as the one-fix-per-cycle
+   * sampling this replaced, and more wherever the track actually bends.
+   */
+  fixes?: PositionFix[];
 }
 
 export interface CycleResult {
@@ -230,14 +246,30 @@ export class Publisher {
     // the GPX archive is built from, it works on a server with no history
     // provider at all, and it is the only path a position takes to the
     // repository, which is the path the privacy zones guard.
+    // Every fix — recorded or current — goes through `buildPositionEntry`,
+    // which is the single place a position becomes a published value and the
+    // single place the privacy zones are applied. Recording more of them must
+    // not become a second route to the repository.
+    //
+    // The tree fix is the fallback, not an addition: the recorder already
+    // keeps one fix per publish interval, so appending the tree's as well
+    // would put a near-duplicate a metre away beside every recorded point.
+    // With no recorder — an older server, or one whose streams this plugin
+    // could not subscribe to — the tree fix is the whole track, exactly as
+    // it was before deltas.
+    const recorded = input.fixes ?? [];
+    const newFixes = recorded.length ? recorded : fix ? [fix] : [];
     const positions = pruneAndSort(
       [
         ...parsePositionIndex(await store.readText('positions_index.json')),
-        ...(fix ? [buildPositionEntry(fix, config.privacyZones, now)] : []),
+        ...newFixes.map((entry) => buildPositionEntry(entry, config.privacyZones, now)),
       ],
       now,
       config.positionRetentionHours,
     );
+    if (recorded.length > 1) {
+      log(`Track: ${recorded.length} fixes recorded from deltas since the last cycle.`);
+    }
     if (positions.length) {
       const rendered = renderPositionIndex(positions);
       await store.writeText('positions_index.json', rendered);
@@ -250,14 +282,17 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now)));
 
-    files.push(...(await this.vesselInfoFile(identity)));
+    files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
     files.push(...(await this.logoFile()));
-    files.push(
-      ...(await this.frontendFiles(siteDir, version, state.frontendVersion, identity)),
+    const frontend = await this.frontendFiles(
+      siteDir,
+      version,
+      state.frontendVersion,
+      identity,
     );
-    files.push(...(await this.docsIndexFiles()));
+    files.push(...frontend.files);    files.push(...(await this.docsIndexFiles()));
 
     const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
     for (const file of rejected) {
@@ -265,6 +300,8 @@ export class Publisher {
       // outside the manifest, which is exactly what the manifest is for.
       log(`Refusing to publish unowned path: ${file.path}`);
     }
+
+    const deletions = await this.retirementDeletions(state.retired ?? []);
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -280,13 +317,17 @@ export class Publisher {
     );
 
     const message = this.commitMessage(navState, now);
-    const result = await publishFiles(client, owned, message);
+    const result = await publishFiles(client, owned, message, { deletions });
     const requests = client.takeStats();
     const durationMs = Date.now() - startedAt;
 
     await store.mergeState({
       lastCommit: result?.commitSha,
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
+      // Only once the commit carrying them actually landed: a failed publish
+      // must leave the work to be retried, not recorded as done.
+      ...(result && deletions.length ? { retired: [...(state.retired ?? []), ...deletions] } : {}),
+      ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
     });
 
     if (result) {
@@ -532,39 +573,64 @@ export class Publisher {
   }
 
   /**
-   * Rewrite `info.yaml` only when the rendered content actually changes.
+   * Paths this plugin used to write, removed once and then left alone.
    *
-   * The passage banner lives in this file and is edited on GitHub, so the
-   * published copy is read back before every rewrite and its `passage:` block
-   * carried across.
+   * `data/vessel/info.yaml` is the only one so far: `site.json` replaced it,
+   * and an install upgrading across that change would otherwise keep a file
+   * in the repository that looks like live configuration, is not read by
+   * anything, and will never be updated again.
+   *
+   * Checked against what is actually in the repository, because the Git Data
+   * API rejects the whole tree with a 422 if an entry names a path the base
+   * tree does not have — the same reason the voyage prune checks. A path that
+   * is already gone is recorded as retired without a commit, so a fresh
+   * install pays one `getFile` on its first cycle and nothing afterwards.
    */
-  private async vesselInfoFile(identity: VesselIdentity): Promise<PublishFile[]> {
-    const { store, config, client } = this.deps;
-    const fingerprint = JSON.stringify({
-      // The logo's bytes are deliberately not in here: info.yaml carries only
-      // the path, and a Buffer stringifies to a JSON array of every byte in
-      // it, which would write half a megabyte of digits to the data directory
-      // on a file that had not changed.
-      site: { ...config.site, logo: config.site.logo?.path ?? null },
-      zones: config.privacyZones,
-      timezone: config.timezone,
-      identity,
-    });
-    const previous = await store.readText('info-fingerprint.txt');
-    if (previous === fingerprint) return [];
+  private async retirementDeletions(alreadyRetired: string[]): Promise<string[]> {
+    const { client, log } = this.deps;
+    const pending = RETIRED_PATHS.filter((path) => !alreadyRetired.includes(path));
+    if (!pending.length) return [];
+    const present: string[] = [];
+    for (const path of pending) {
+      const existing = await client.getFile(path).catch(() => null);
+      if (existing !== null) present.push(path);
+    }
+    const { owned, rejected } = partitionOwned(
+      present.map((path) => ({ path })),
+      this.manifestOptions(''),
+      { allowRetired: true },
+    );
+    for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
+    if (owned.length) {
+      log(`Removing ${owned.map((file) => file.path).join(', ')}: replaced by site.json.`);
+    }
+    return owned.map((file) => file.path);
+  }
 
-    const published = await client.getFile(INFO_PATH).catch(() => null);
-    const contents = renderVesselInfo(config, identity, published, (problem) =>
-      this.deps.log(problem),
-    );
-    await store.writeText('info-fingerprint.txt', fingerprint);
-    this.deps.log(
+  /**
+   * Rewrite `site.json` only when the rendered content actually changes.
+   *
+   * The fingerprint covers everything that goes into the file, the passage
+   * included: a leg activated on the plotter should reach the site on the
+   * next cycle, and nothing else should rewrite it. This is also why the
+   * passage carries no ETA — see `course.ts`.
+   */
+  private async siteConfigFile(
+    identity: VesselIdentity,
+    passage: Passage | null,
+  ): Promise<PublishFile[]> {
+    const { store, config, log } = this.deps;
+    const contents = renderSiteConfig(config, identity, passage, (problem) => log(problem));
+    const previous = await store.readText('site.json');
+    if (previous === contents) return [];
+
+    await store.writeText('site.json', contents);
+    log(
       previous === null
-        ? `Writing ${INFO_PATH} for the first time.`
-        : `Config changed; rewriting ${INFO_PATH}` +
-            (published?.includes('passage:') ? ' (preserving the passage block).' : '.'),
+        ? `Writing ${SITE_CONFIG_PATH} for the first time.`
+        : `Site configuration changed; rewriting ${SITE_CONFIG_PATH}.`,
     );
-    return [{ path: INFO_PATH, content: contents }];
+    return [{ path: SITE_CONFIG_PATH, content: contents }];
   }
 
   /**
@@ -645,20 +711,36 @@ export class Publisher {
     version: string,
     publishedVersion: string | undefined,
     identity: VesselIdentity,
-  ): Promise<PublishFile[]> {
-    const { config, store, log } = this.deps;
+  ): Promise<{ files: PublishFile[]; fingerprint: string | null }> {
+    const { config, log } = this.deps;
     const options = frontendOptions(config, identity.name, version);
-    // Everything substituted into the published files is in here, so a rename
-    // or a new logo republishes the pages that carry it. The name comes off
-    // the tree, which is why it is part of the fingerprint rather than read
-    // once at start.
+    // Everything substituted into the published pages is in here, so a rename
+    // or a new logo republishes the ones that carry it. The name comes off the
+    // tree, which is why it is part of the fingerprint rather than read once
+    // at start.
     const fingerprint = JSON.stringify({ ...options, version });
-    if (publishedVersion === fingerprint) return [];
+    if (publishedVersion === fingerprint) return { files: [], fingerprint: null };
 
     const files = await loadFrontend(siteDir, options);
-    await store.mergeState({ frontendVersion: fingerprint });
-    log(`Publishing frontend (${files.length} files, version ${version}).`);
-    return files;
+    // The fingerprint is returned rather than stored here: recording it
+    // before the commit lands means a publish that fails — a 502, a wedged
+    // hotspot — leaves the plugin believing it has already shipped this
+    // frontend, and the site keeps serving the previous release's JavaScript
+    // until the next version bump. `runCycle` stores it once the commit is in.    log(`Publishing frontend (${files.length} files, version ${version}).`);
+    return { files, fingerprint };
+  }
+
+  /**
+   * Make the next cycle republish every frontend file.
+   *
+   * The console's "rewrite the whole site" button. An upgrade already does
+   * this by itself — the fingerprint carries the plugin version — so this is
+   * for the cases version alone cannot see: a file deleted by hand on GitHub,
+   * a half-finished commit, a repository restored from an older state.
+   */
+  async forceFrontendRepublish(): Promise<void> {
+    await this.deps.store.mergeState({ frontendVersion: undefined });
+    this.deps.log('Frontend marked for republishing: the next cycle rewrites every site file.');
   }
 
   /**
