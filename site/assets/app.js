@@ -501,6 +501,92 @@ const paintedPanels = new Set();
  * is exactly how that happens in the wild, and it is not a reason to hide the
  * boat's position.
  */
+/**
+ * Paths the plugin logs that no panel above draws.
+ *
+ * `instrumentLog.paths` is configurable, so a boat can capture something this
+ * release has never heard of — a coolant temperature, a tank nobody
+ * anticipated, a sensor from a plugin written next year. Those were fetched
+ * from the history provider, uploaded in full on every publish, and then
+ * drawn by nothing at all.
+ *
+ * Everything here is labelled, formatted and coloured from the server's own
+ * metadata, and picks up a sparkline from initInlineSparklines like any other
+ * info-item. Called twice: once while painting the dashboard, and again when
+ * the instrument log finishes loading, because that is what says which paths
+ * exist and it arrives after the first paint.
+ */
+/** A Signal K timestamp as local text, or null when there is not one. */
+function formatTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+}
+
+function paintOtherInstruments() {
+  if (!document.getElementById('other-grid')) return;
+  // The dashboard decides what counts as already covered, so wait for it.
+  // This runs from two places and the sparkline one can win the race on a
+  // cold load, which would briefly list every logged path as "other".
+  if (!paintedPanels.has('navigation-grid')) return;
+
+  const covered = new Set(
+    [...document.querySelectorAll('.info-item[data-path]')]
+      .filter((item) => !item.closest('#other-grid') && !item.closest('#alert-summary'))
+      .map((item) => item.dataset.path)
+      .filter(Boolean),
+  );
+  const paths = [...(seriesByPath?.keys() ?? [])]
+    .filter((path) => !covered.has(path))
+    .sort();
+
+  const panel = document.getElementById('other-panel');
+  if (panel) panel.style.display = paths.length ? '' : 'none';
+  if (!paths.length) {
+    paintPanel('other-grid', () => '');
+    return;
+  }
+
+  paintPanel('other-grid', () =>
+    paths
+      .map((path) => {
+        const node = nodeAtPath(path);
+        const raw = typeof node?.value === 'number' ? node.value : null;
+        const group = unitGroupForPath(path);
+        const meta = metaAtPath(path);
+        const label = labelForPath(path);
+        const shown = group
+          ? fmtUnit(group, raw)
+          : raw === null
+            ? 'N/A'
+            : `${Number(raw.toFixed(3))}${meta.units ? '\u00a0' + meta.units : ''}`;
+        // The path is the tooltip: there is no hand-written description for
+        // a path nobody anticipated, and the server's own is used when it
+        // has one.
+        const described =
+          typeof meta.description === 'string' && meta.description.trim()
+            ? meta.description.trim()
+            : path;
+        const stamped = formatTimestamp(node?.timestamp);
+        const title = stamped ? `${described}\nLast updated: ${stamped}` : described;
+        const attrs = [
+          `data-path="${path}"`,
+          `data-label="${label}"`,
+          group ? `data-unit-group="${group}"` : '',
+          raw === null ? '' : `data-raw="${raw}"`,
+        ]
+          .filter(Boolean)
+          .join(' ');
+        return `
+          <div class="info-item" ${attrs} title="${title}">
+            <div class="label">${label}</div>
+            ${colorValue(shown, classifyByZones(raw, zonesOf(node)))}
+          </div>`;
+      })
+      .join(''),
+  );
+}
+
 function paintPanel(containerId, buildHtml) {
   const container = document.getElementById(containerId);
   if (!container) {
@@ -1267,6 +1353,73 @@ const UNIT_GROUPS = {
   ],
 };
 
+// ── Signal K metadata ──────────────────────────────────────────────────────
+// The published snapshot is the whole self tree, so it already carries each
+// path's `meta`: units, displayName, description, and the zones the panels
+// colour by. The page used to ignore all but the zones and hardcode the rest,
+// which meant a path this release had never heard of could be logged,
+// published and drawn by nothing — and two tooltips named one particular
+// boat's hardware.
+let currentTree = null;
+
+/** The node at a dot path in the published snapshot, or null. */
+function nodeAtPath(path) {
+  if (!currentTree || typeof path !== 'string' || !path) return null;
+  let node = currentTree;
+  for (const segment of path.split('.')) {
+    if (!node || typeof node !== 'object') return null;
+    node = node[segment];
+  }
+  return node && typeof node === 'object' ? node : null;
+}
+
+/** A path's Signal K metadata, or an empty object. */
+function metaAtPath(path) {
+  const meta = nodeAtPath(path)?.meta;
+  return meta && typeof meta === 'object' ? meta : {};
+}
+
+// Signal K publishes values in SI units and names the unit in meta. Mapping
+// those onto the page's unit groups is what lets a path nobody hardcoded be
+// formatted, converted and toggled like every other one.
+const SI_UNIT_TO_GROUP = {
+  'm/s': 'speed',
+  K: 'temperature',
+  Pa: 'pressure',
+  rad: 'angle',
+  'rad/s': 'angle',
+  Hz: 'rotation',
+  m3: 'volume',
+  m: 'length',
+};
+
+/**
+ * The unit group for a path.
+ *
+ * The explicit table wins, because it encodes intent the units cannot: both
+ * `navigation.log` and `navigation.anchor.currentRadius` are metres, and one
+ * wants nautical miles while the other wants feet. Metadata fills in
+ * everything else, which is every path the table has never heard of.
+ */
+function unitGroupForPath(path) {
+  return PATH_TO_UNIT_GROUP[path] || SI_UNIT_TO_GROUP[metaAtPath(path).units] || '';
+}
+
+/** A human label for a path: what the server calls it, else its own tail. */
+function labelForPath(path) {
+  const meta = metaAtPath(path);
+  if (typeof meta.displayName === 'string' && meta.displayName.trim()) {
+    return meta.displayName.trim();
+  }
+  if (typeof meta.shortName === 'string' && meta.shortName.trim()) {
+    return meta.shortName.trim();
+  }
+  // `electrical.batteries.house.voltage` -> `house voltage`, which beats the
+  // whole path in a grid cell and beats inventing a name.
+  const parts = String(path).split('.');
+  return parts.slice(-2).join(' ') || path;
+}
+
 // Maps SignalK paths to a UNIT_GROUPS key for sparkline display config.
 const PATH_TO_UNIT_GROUP = {
   'navigation.speedOverGround':      'speed',
@@ -1863,16 +2016,16 @@ async function loadData() {
     search(obj);
     return latest;
   }
-  const formatTimestamp = (value) => {
-    if (!value) return null;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return null;
-    return date.toLocaleString();
-  };
-
+  // The server's own description wins over the one written here: it is set
+  // by whoever owns the sensor, and it is right about boats this release has
+  // never seen. The hardcoded strings are the fallback for a server that
+  // publishes no metadata for the path.
   const withUpdated = (description, node) => {
+    const fromServer = node?.meta?.description;
+    const text =
+      typeof fromServer === 'string' && fromServer.trim() ? fromServer.trim() : description;
     const formatted = formatTimestamp(node?.timestamp);
-    return formatted ? `${description}\nLast updated: ${formatted}` : description;
+    return formatted ? `${text}\nLast updated: ${formatted}` : text;
   };
 
   const withUpdatedNodes = (description, ...nodes) => {
@@ -2294,6 +2447,9 @@ async function loadData() {
     const fallbackLine = isDark ? 'rgba(96, 165, 250, 0.95)' : 'rgba(37, 99, 235, 0.85)';
 
     const seriesMap = await loadSeries();
+    // The log is what says which paths exist, and it arrives after the first
+    // dashboard paint, so the "Other Instruments" grid is filled in here.
+    paintOtherInstruments();
     if (!seriesMap || !seriesMap.size) return;
 
     // Clamp a remembered window the current log cannot answer. A device that
@@ -2329,7 +2485,7 @@ async function loadData() {
       }
 
       const points = windowPoints(list, cutoff);
-      const grp = PATH_TO_UNIT_GROUP[path];
+      const grp = unitGroupForPath(path);
       const displayCfg = grp
         ? { transform: getUnitCfg(grp).transform, unit: getUnitCfg(grp).unit }
         : (PATH_DISPLAY_CONFIG[path] || {});
@@ -2462,7 +2618,9 @@ async function loadData() {
       updateVesselLinks();
     }
 
-    // Store globally for polar performance calculations
+    // Store globally for polar performance calculations, and for the
+    // metadata lookups that label and format paths nothing hardcodes.
+    currentTree = data;
     currentNav = nav;
     currentEnv = env;
     currentPropulsion = data.propulsion?.port || {};
@@ -2682,10 +2840,10 @@ async function loadData() {
       <div class="info-item" data-path="navigation.speedThroughWater" data-label="STW" data-unit-group="speed" data-raw="${nav.speedThroughWater?.value ?? ''}" title="${withUpdated('Speed Through Water - speed relative to the water', nav.speedThroughWater)}"><div class="label">STW</div><div class="value">${fmtUnit('speed', nav.speedThroughWater?.value)}</div></div>
       <div class="info-item" data-path="navigation.trip.log" data-label="Trip" data-unit-group="distance" data-raw="${nav.trip?.log?.value ?? ''}" title="${withUpdated('Trip distance - distance traveled on current trip', nav.trip?.log)}"><div class="label">Trip</div><div class="value">${fmtUnit('distance', nav.trip?.log?.value)}</div></div>
       <div class="info-item" data-path="navigation.log" data-label="Log" data-unit-group="distance" data-raw="${nav.log?.value ?? ''}" title="${withUpdated('Total log distance - cumulative distance traveled', nav.log)}"><div class="label">Log</div><div class="value">${fmtUnit('distance', nav.log?.value)}</div></div>
-      <div class="info-item" data-path="navigation.attitude.roll" data-label="Roll" data-unit-group="angle" data-raw="${data.navigation?.attitude?.value?.roll ?? ''}" title="${withUpdated('Vessel roll angle from BNO055 IMU', data.navigation?.attitude)}"><div class="label">Roll</div><div class="value">${fmtUnit('angle', data.navigation?.attitude?.value?.roll)}</div></div>
-      <div class="info-item" data-path="navigation.attitude.pitch" data-label="Pitch" data-unit-group="angle" data-raw="${data.navigation?.attitude?.value?.pitch ?? ''}" title="${withUpdated('Vessel pitch angle from BNO055 IMU', data.navigation?.attitude)}"><div class="label">Pitch</div><div class="value">${fmtUnit('angle', data.navigation?.attitude?.value?.pitch)}</div></div>
+      <div class="info-item" data-path="navigation.attitude.roll" data-label="Roll" data-unit-group="angle" data-raw="${data.navigation?.attitude?.value?.roll ?? ''}" title="${withUpdated('Vessel roll angle', data.navigation?.attitude)}"><div class="label">Roll</div><div class="value">${fmtUnit('angle', data.navigation?.attitude?.value?.roll)}</div></div>
+      <div class="info-item" data-path="navigation.attitude.pitch" data-label="Pitch" data-unit-group="angle" data-raw="${data.navigation?.attitude?.value?.pitch ?? ''}" title="${withUpdated('Vessel pitch angle', data.navigation?.attitude)}"><div class="label">Pitch</div><div class="value">${fmtUnit('angle', data.navigation?.attitude?.value?.pitch)}</div></div>
       <div class="info-item" data-path="navigation.courseOverGroundTrue" data-label="COG" data-unit-group="angle" data-raw="${nav.courseOverGroundTrue?.value ?? ''}" title="${withUpdated('Course Over Ground - true direction the vessel is moving', nav.courseOverGroundTrue)}"><div class="label">COG</div><div class="value">${fmtUnit('angle', nav.courseOverGroundTrue?.value)}</div></div>
-      <div class="info-item" data-path="navigation.headingMagnetic" data-label="Mag Heading" data-unit-group="angle" data-raw="${data.navigation?.headingMagnetic?.value ?? ''}" title="${withUpdated('Magnetic heading from MMC5603 magnetometer', data.navigation?.headingMagnetic)}"><div class="label">Mag Heading</div><div class="value">${fmtUnit('angle', data.navigation?.headingMagnetic?.value)}</div></div>
+      <div class="info-item" data-path="navigation.headingMagnetic" data-label="Mag Heading" data-unit-group="angle" data-raw="${data.navigation?.headingMagnetic?.value ?? ''}" title="${withUpdated('Magnetic heading', data.navigation?.headingMagnetic)}"><div class="label">Mag Heading</div><div class="value">${fmtUnit('angle', data.navigation?.headingMagnetic?.value)}</div></div>
       <div class="info-item" data-path="steering.rudderAngle" data-label="Rudder Angle" data-unit-group="angle" data-raw="${data.steering?.rudderAngle?.value ?? ''}" title="${withUpdated('Current rudder angle - positive is starboard, negative is port', data.steering?.rudderAngle)}"><div class="label">Rudder Angle</div><div class="value">${fmtUnit('angle', data.steering?.rudderAngle?.value)}</div></div>
       <div class="info-item" data-path="navigation.anchor.currentRadius" data-label="Anchor Distance" data-unit-group="length" data-raw="${nav.anchor?.currentRadius?.value ?? ''}" title="${withUpdated('Distance from anchor position - red if outside safe radius', nav.anchor?.currentRadius)}"><div class="label">Anchor Distance</div>${anchorValueHtml}</div>
       <div class="info-item" data-path="navigation.anchor.bearingTrue" data-label="Anchor Bearing" title="${withUpdated('Bearing to anchor position from current location', nav.anchor?.bearingTrue)}"><div class="label">Anchor Bearing</div><div class="value">${nav.anchor?.bearingTrue?.value ? (nav.anchor.bearingTrue.value * 180 / Math.PI).toFixed(0) + '°' : 'N/A'}</div></div>
@@ -2743,10 +2901,11 @@ async function loadData() {
     };
     // Update onboard sensor readings (water/inside temp, humidity, air quality, sun times)
     paintPanel('sensors-grid', () => `
+      <div class="info-item" data-path="environment.depth.belowTransducer" data-label="Depth" data-unit-group="length" data-raw="${data.environment?.depth?.belowTransducer?.value ?? ''}" title="${withUpdated('Water depth below the transducer', data.environment?.depth?.belowTransducer)}"><div class="label">Depth</div>${colorValue(fmtUnit('length', data.environment?.depth?.belowTransducer?.value), classifyByZones(data.environment?.depth?.belowTransducer?.value, zonesOf(data.environment?.depth?.belowTransducer)))}</div>
       <div class="info-item" data-path="environment.water.temperature" data-label="Water Temp" data-unit-group="temperature" data-raw="${env.water?.temperature?.value ?? ''}" title="${withUpdated('Water temperature at the surface', env.water?.temperature)}"><div class="label">Water Temp</div><div class="value">${fmtUnit('temperature', env.water?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.inside.temperature" data-label="Inside Temp" data-unit-group="temperature" data-raw="${data.environment?.inside?.temperature?.value ?? ''}" title="${withUpdated('Inside air temperature from BME280 sensor', data.environment?.inside?.temperature)}"><div class="label">Inside Temp</div><div class="value">${fmtUnit('temperature', data.environment?.inside?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.inside.humidity" data-label="Inside Humidity" title="${withUpdated('Inside humidity from BME280 sensor', data.environment?.inside?.humidity)}"><div class="label">Inside Humidity</div><div class="value">${data.environment?.inside?.humidity?.value ? (data.environment.inside.humidity.value * 100).toFixed(1) + '%' : 'N/A'}</div></div>
-      <div class="info-item" data-path="environment.inside.pressure" data-label="Barometric Pressure" data-unit-group="pressure" data-raw="${data.environment?.inside?.pressure?.value ?? ''}" title="${withUpdated('Inside barometric pressure from BME280 sensor', data.environment?.inside?.pressure)}"><div class="label">Barometric Pressure</div><div class="value">${fmtUnit('pressure', data.environment?.inside?.pressure?.value)}</div></div>
+      <div class="info-item" data-path="environment.inside.temperature" data-label="Inside Temp" data-unit-group="temperature" data-raw="${data.environment?.inside?.temperature?.value ?? ''}" title="${withUpdated('Inside air temperature', data.environment?.inside?.temperature)}"><div class="label">Inside Temp</div><div class="value">${fmtUnit('temperature', data.environment?.inside?.temperature?.value)}</div></div>
+      <div class="info-item" data-path="environment.inside.humidity" data-label="Inside Humidity" title="${withUpdated('Inside humidity', data.environment?.inside?.humidity)}"><div class="label">Inside Humidity</div><div class="value">${data.environment?.inside?.humidity?.value ? (data.environment.inside.humidity.value * 100).toFixed(1) + '%' : 'N/A'}</div></div>
+      <div class="info-item" data-path="environment.inside.pressure" data-label="Barometric Pressure" data-unit-group="pressure" data-raw="${data.environment?.inside?.pressure?.value ?? ''}" title="${withUpdated('Inside barometric pressure', data.environment?.inside?.pressure)}"><div class="label">Barometric Pressure</div><div class="value">${fmtUnit('pressure', data.environment?.inside?.pressure?.value)}</div></div>
       <div class="info-item" data-path="environment.inside.airQuality.tvoc" data-label="TVOC" title="${withUpdated('Indoor air quality - Total Volatile Organic Compounds', data.environment?.inside?.airQuality?.tvoc)}"><div class="label">TVOC</div><div class="value">${data.environment?.inside?.airQuality?.tvoc?.value ? data.environment.inside.airQuality.tvoc.value.toFixed(0) + ' ppb' : 'N/A'}</div></div>
       <div class="info-item" data-path="environment.inside.airQuality.eco2" data-label="CO₂" title="${withUpdated('Indoor air quality - Carbon Dioxide equivalent', data.environment?.inside?.airQuality?.eco2)}"><div class="label">CO₂</div><div class="value">${data.environment?.inside?.airQuality?.eco2?.value ? data.environment.inside.airQuality.eco2.value.toFixed(0) + ' ppm' : 'N/A'}</div></div>
       <div class="info-item" data-path="navigation.magneticVariation" data-label="Magnetic Variation" title="${withUpdated('Magnetic variation at current position - difference between true and magnetic north', data.navigation?.magneticVariation)}"><div class="label">Magnetic Variation</div><div class="value">${data.navigation?.magneticVariation?.value ? (data.navigation.magneticVariation.value * 180 / Math.PI).toFixed(1) + '°' : 'N/A'}</div></div>
@@ -2767,6 +2926,8 @@ async function loadData() {
     const rpi = env.rpi || {};
     const fmtCelsius = (k) => Number.isFinite(k) ? `${(k - 273.15).toFixed(1)} °C` : 'N/A';
     const fmtPercent = (v) => Number.isFinite(v) ? `${(v * 100).toFixed(0)}%` : 'N/A';
+    paintOtherInstruments();
+
     paintPanel('system-grid', () => `
       <div class="info-item" data-path="environment.rpi.cpu.temperature" data-label="CPU Temp" data-unit-group="temperature" data-raw="${rpi.cpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi CPU temperature', rpi.cpu?.temperature)}"><div class="label">CPU Temp</div><div class="value">${fmtCelsius(rpi.cpu?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.gpu.temperature" data-label="GPU Temp" data-unit-group="temperature" data-raw="${rpi.gpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi GPU temperature', rpi.gpu?.temperature)}"><div class="label">GPU Temp</div><div class="value">${fmtCelsius(rpi.gpu?.temperature?.value)}</div></div>

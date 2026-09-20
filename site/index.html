@@ -350,6 +350,16 @@
           <div class="data-grid" id="vessel-grid"></div>
         </div>
 
+        <!-- OTHER INSTRUMENTS -->
+        <!-- Any path in instrument_log.json that no panel above draws. The
+             plugin's captured-path list is configurable, so a boat can log
+             something this release has never heard of; without this it was
+             fetched, published and drawn by nothing. -->
+        <div class="info-panel" id="other-panel" style="display:none">
+          <div class="panel-title">Other Instruments</div>
+          <div class="data-grid" id="other-grid"></div>
+        </div>
+
         <!-- RAW DATA -->
         <div class="info-panel raw-data-panel">
           <div class="panel-title">Raw Data</div>

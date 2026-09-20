@@ -185,6 +185,36 @@ Run `npm test` and `npm run typecheck` before committing.
   so a wildcard in the captured-path list cannot put a raw position into a
   published file that nothing redacts. The privacy zones guard the track's
   path, not this one.
+- **Units, names and descriptions come from `meta`, like the zones do.**
+  The published snapshot is the whole self tree, so every path's `units`,
+  `displayName` and `description` are already there; the page used to read
+  only `meta.zones` and hardcode the rest. `unitGroupForPath` consults the
+  explicit `PATH_TO_UNIT_GROUP` table first and falls back to `meta.units`,
+  because the table encodes intent the units cannot — `navigation.log` and
+  `navigation.anchor.currentRadius` are both metres and want nautical miles
+  and feet respectively — and metadata covers everything the table has never
+  heard of. `withUpdated` prefers `meta.description` over the string written
+  here. Tooltips naming one boat's hardware ("from BNO055 IMU", "BME280
+  sensor") are gone: this plugin runs on other people's boats, and the server
+  knows what the sensor is.
+- **A logged path that no panel draws still gets drawn.**
+  `instrumentLog.paths` is configurable, so a boat can capture something this
+  release has never seen; those paths were fetched from the provider,
+  uploaded in full on every publish, and then rendered by nothing.
+  `paintOtherInstruments` renders them into `#other-grid` from metadata
+  alone, and `initInlineSparklines` picks them up like any other
+  `.info-item[data-path]`. It runs from two places — the dashboard paint and
+  the moment the instrument log finishes loading, which is what says which
+  paths exist — and returns early until `navigation-grid` has painted,
+  because the dashboard is what decides which paths are already covered.
+  When this panel lists something you expected to see elsewhere, the bug is
+  the missing `data-path` or the wrong default, not this panel: that is how
+  both of the ones below were found.
+- **`electrical.batteries.*.capacity.stateOfCharge` is the spec path.** The
+  default captured list asked only for `electrical.batteries.*.stateOfCharge`
+  while the battery panel reads the `capacity.` form, so on a
+  spec-compliant boat the state-of-charge sparkline never drew. Both are
+  asked for now; a path nothing produces costs nothing.
 - **The frontend has no thresholds, and must not grow one back.** Twelve
   constants in `constants.js` used to decide what a low battery, a low tank, a
   dragging anchor and a lossy link were for every boat that publishes this

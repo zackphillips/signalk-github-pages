@@ -48,7 +48,7 @@ live `HEAD`.
 |---|---|
 | **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
 | **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
-| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else |
+| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else. A path no panel knows about still gets drawn, labelled from the server's own metadata |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
@@ -277,7 +277,13 @@ One Signal K path per line — this is what the plugin asks the history provider
 for. `*` matches one segment, so `electrical.batteries.*.voltage` covers every
 bank the provider has stored. Lines starting with `#` are comments. A path no
 instrument produces costs nothing — it comes back as a column of nulls and
-never appears in the file.
+never appears in the file, which is why state of charge is asked for under
+both the spec's `capacity.stateOfCharge` and the short form some producers
+use.
+
+A path you add that no panel draws is not lost: it appears under **Other
+Instruments** on the Data tab, named, converted and coloured from the
+metadata the server publishes for it.
 
 This list is the entire bandwidth cost of a cycle. Trim it to what you look at.
 
@@ -303,6 +309,7 @@ environment.inside.temperature
 environment.inside.humidity
 electrical.batteries.*.voltage
 electrical.batteries.*.current
+electrical.batteries.*.capacity.stateOfCharge
 electrical.batteries.*.stateOfCharge
 electrical.batteries.*.capacity.timeRemaining
 electrical.solar.*.panelPower
@@ -332,6 +339,21 @@ sparklines go](#how-far-back-the-sparklines-go).
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
+
+## Units, names and thresholds come from the server
+
+Signal K carries `meta` on every path — `units`, `displayName`, `description`
+and the `zones` that say what counts as normal, warn and alarm — and the site
+reads all of it off the published snapshot rather than hardcoding a second
+copy.
+
+That is what lets a path this release has never heard of be rendered
+properly: `propulsion.port.coolantTemperature` shows as "Port Coolant" in
+your preferred temperature unit, coloured by the zones you set on the
+server's Data Fiddler page, with the server's description as its tooltip. Set
+the zone in Signal K and the site follows; there is nowhere here to set a
+threshold, on purpose, because the server is where the alarm that sounds the
+buzzer is already configured.
 
 ## Privacy zones
 

@@ -143,6 +143,14 @@ export const DEFAULT_INSTRUMENT_LOG_PATHS = [
   'environment.inside.humidity',
   'electrical.batteries.*.voltage',
   'electrical.batteries.*.current',
+  // Both spellings. The Signal K spec puts state of charge under
+  // `capacity`, which is what the frontend's battery panel reads and what a
+  // spec-compliant producer publishes; the short form is what some others
+  // use. Asking for a path no instrument produces costs nothing — it comes
+  // back as a column of nulls and never reaches the file — and asking for
+  // only the short one meant the battery sparkline never drew on a
+  // spec-compliant boat.
+  'electrical.batteries.*.capacity.stateOfCharge',
   'electrical.batteries.*.stateOfCharge',
   'electrical.batteries.*.capacity.timeRemaining',
   'electrical.solar.*.panelPower',
