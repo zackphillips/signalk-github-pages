@@ -1,10 +1,11 @@
 /**
  * Per-day GPX tracks and the index the frontend lists them from.
  *
- * Tracks are built straight from the position index in the same cycle. The
- * daemon used to write one snapshot file per cycle and rebuild tracks from
- * those; ~32k of them accumulated behind an off-by-one prune and grew the
- * repository past a gigabyte. Nothing else should ever be written per cycle.
+ * Tracks are built straight from the position index in the same cycle, never
+ * from per-cycle files on disk: an earlier design wrote one snapshot file per
+ * cycle and rebuilt tracks from those, ~32k of them accumulated behind an
+ * off-by-one prune, and the repository grew past a gigabyte. Nothing should
+ * ever be written per cycle.
  */
 import type { PrivacyZone } from './config';
 import { haversineMetres, isPositionPrivate } from './privacy';
@@ -255,7 +256,7 @@ export function parseTracksIndex(raw: string | null | undefined): TrackMeta[] {
   if (!raw) return [];
   try {
     const payload = JSON.parse(raw);
-    const list = Array.isArray(payload) ? payload : payload?.tracks;
+    const list = payload?.tracks;
     return Array.isArray(list) ? list.filter((t: any) => t && typeof t.date === 'string') : [];
   } catch {
     return [];

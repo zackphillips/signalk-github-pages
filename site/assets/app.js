@@ -1391,30 +1391,32 @@ async function loadVoyageStats() {
   }
 }
 
-// Load vessel information from YAML file
+// Site configuration: the handful of things signalk_latest.json cannot supply.
+//
+// This was info.yaml, parsed in the browser with a 30 KB js-yaml script from a
+// CDN, and it carried the boat as well — name, MMSI, callsign, registrations,
+// dimensions — every one of which is already in the snapshot this page loads
+// a moment later. The duplicate is gone: the boat comes from the snapshot
+// (see the merge in loadData), and this file is privacy zones, custom links,
+// the default position, the timezone, the link back to the boat's Signal K,
+// the two registration numbers the plugin derives, and the passage banner.
 async function loadVesselData() {
   try {
-    const response = await fetch('data/vessel/info.yaml');
+    const response = await fetch(C.SITE_CONFIG_URL);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
-    const yamlText = await response.text();
-
-    // Parse YAML using js-yaml library
-    if (typeof jsyaml === 'undefined') {
-      throw new Error('js-yaml library not loaded');
-    }
-    const parsed = jsyaml.load(yamlText);
+    const parsed = await response.json();
     vesselData = parsed && typeof parsed === 'object' ? parsed : {};
 
-    console.log('Vessel data loaded:', vesselData);
+    console.log('Site configuration loaded:', vesselData);
     updateVesselLinks();
   } catch (error) {
     // Empty, not invented. This used to fall back to one particular boat's
     // name, MMSI, documentation number and home waters, so a site whose
-    // info.yaml had not published yet introduced itself as somebody else's
+    // config had not published yet introduced itself as somebody else's
     // vessel. Every consumer of vesselData already handles a missing key.
-    console.error('Error loading vessel data:', error);
+    console.error('Error loading site configuration:', error);
     vesselData = {};
     updateVesselLinks();
   }
@@ -1430,13 +1432,12 @@ async function loadTideStations() {
     tideStations = await response.json();
     console.log('Tide stations data loaded:', tideStations);
   } catch (error) {
+    // No stand-in list. A single hardcoded San Francisco station used to sit
+    // here, which meant a boat anywhere else picked it as its "nearest" one
+    // and showed Golden Gate tides under its own heading. An empty list makes
+    // resolveTidePosition find nothing and the panel say so.
     console.error('Error loading tide stations data:', error);
-    // Set default values if loading fails
-    tideStations = {
-      stations: [
-        { id: "9414290", name: "San Francisco", lat: 37.806, lon: -122.465 }
-      ]
-    };
+    tideStations = { stations: [] };
   }
 }
 
@@ -1467,22 +1468,7 @@ function updateVesselLinks() {
 
   }
 
-  // Render passage banner if a current passage is configured
-  const passage = vesselData.passage;
-  const passageBanner = document.getElementById('passage-banner');
-  if (passageBanner) {
-    if (passage?.from && passage?.to) {
-      let text = `${passage.from} → ${passage.to}`;
-      if (passage.departed) {
-        const d = new Date(`${passage.departed}T12:00:00`);
-        text += ` · Departed ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
-      }
-      passageBanner.textContent = text;
-      passageBanner.style.display = 'block';
-    } else {
-      passageBanner.style.display = 'none';
-    }
-  }
+  renderPassageBanner(vesselData.passage);
 
   // Construct SignalK URLs from base configuration
   const signalk = vesselData.signalk;
@@ -1504,12 +1490,45 @@ function updateVesselLinks() {
   renderCustomLinks(vesselData.custom_links);
 }
 
+// The passage banner, from the plugin's reading of the Course API.
+//
+// It used to require both a from and a to, because both were typed into a
+// YAML block by hand. The Course API rarely has a "from": activate a waypoint
+// and previousPoint is the vessel's own position at that moment, which has no
+// name, and publishing its coordinates instead would put the slip the boat
+// left on a public page. So a destination alone is a banner.
+//
+// `departed` is a full ISO instant now, not a date. It used to be parsed as
+// `${departed}T12:00:00`, which against an instant produces Invalid Date.
+function renderPassageBanner(passage) {
+  const banner = document.getElementById('passage-banner');
+  if (!banner) return;
+
+  const to = typeof passage?.to === 'string' ? passage.to.trim() : '';
+  const from = typeof passage?.from === 'string' ? passage.from.trim() : '';
+  if (!to && !from) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  let text = from && to ? `${from} → ${to}` : to ? `Bound for ${to}` : `From ${from}`;
+  const departed = passage?.departed ? new Date(passage.departed) : null;
+  if (departed && !isNaN(departed.getTime())) {
+    const sameDay = departed.toDateString() === new Date().toDateString();
+    text += sameDay
+      ? ` · Departed ${departed.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+      : ` · Departed ${departed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+  }
+  banner.textContent = text;
+  banner.style.display = 'block';
+}
+
 // Buttons the owner configured: a ship's log, a Starlink status page, anything
 // with a URL. Built here rather than written into index.html so the set can
 // change without republishing the frontend.
 //
 // Rebuilt from scratch on each call so a second load does not double them up,
-// and the scheme is checked again on this side: info.yaml is a file in a
+// and the scheme is checked again on this side: site.json is a file in a
 // public repository, and `href = "javascript:..."` would run in every
 // visitor's browser. The plugin filters the same way on the way out.
 function renderCustomLinks(links) {
@@ -1623,10 +1642,12 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
     return `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?${params.toString()}`;
   };
 
-  let targetStation = nearest;
-  let url = buildUrl(targetStation.id);
-  const fallbackStation = { id: '9414290', name: 'San Francisco', lat: 37.806, lon: -122.465 };
-  let attemptedFallback = false;
+  // There is no fallback station. A failed fetch for the nearest station used
+  // to be retried against San Francisco "because it is known to work", which
+  // answered a question nobody asked: the panel then showed real tides for
+  // water 3000 miles away, labelled with this boat's heading.
+  const targetStation = nearest;
+  const url = buildUrl(targetStation.id);
   const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
   try {
@@ -1640,11 +1661,11 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
       lat: targetStation.lat, lon: targetStation.lon,
       url, begin_date: begin, end_date: end
     });
-    if (!json) try {
+    if (!json) {
       res = await fetch(url);
       if (res.ok) {
         json = await res.json();
-        // Check for NOAA API error in response (they sometimes return 200 with error object)
+        // NOAA sometimes returns 200 with an error object in the body.
         if (json.error) {
           throw new Error(json.error.message || JSON.stringify(json.error));
         }
@@ -1665,52 +1686,6 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
           // Ignore errors parsing error response
         }
         throw new Error(`HTTP ${res.status}: ${errorDetails}`);
-      }
-    } catch (error) {
-      // If primary station fails, try fallback (San Francisco is known to work)
-      if (!attemptedFallback && targetStation.id !== fallbackStation.id) {
-        console.warn('Primary station failed, retrying with fallback 9414290 (San Francisco)', error);
-        attemptedFallback = true;
-        targetStation = fallbackStation;
-        url = buildUrl(fallbackStation.id);
-        console.debug('Tide fetch: attempting fallback station', {
-          id: targetStation.id,
-          name: targetStation.name,
-          url
-        });
-
-        try {
-          res = await fetch(url);
-          if (res.ok) {
-            json = await res.json();
-            // Check for NOAA API error in response
-            if (json.error) {
-              throw new Error(json.error.message || JSON.stringify(json.error));
-            }
-          } else {
-            // Try to get error details from response body
-            let errorDetails = res.statusText;
-            try {
-              const errorBody = await res.text();
-              if (errorBody) {
-                try {
-                  const errorJson = JSON.parse(errorBody);
-                  errorDetails = errorJson.error?.message || errorJson.message || errorBody;
-                } catch {
-                  errorDetails = errorBody;
-                }
-              }
-            } catch {
-              // Ignore errors parsing error response
-            }
-            throw new Error(`NOAA API ${res.status}: ${errorDetails}`);
-          }
-        } catch (retryError) {
-          throw new Error(`Failed to fetch tide data: ${retryError.message || 'Network error'}`);
-        }
-      } else {
-        // Already tried fallback or it was the fallback, re-throw
-        throw error;
       }
     }
     const rawData = Array.isArray(json?.predictions) ? json.predictions : [];
@@ -2458,41 +2433,15 @@ async function loadData() {
         throw new Error(`Local file not available: ${res.status} ${res.statusText}`);
       }
     } catch (fileError) {
-      console.log('Local file fetch error:', fileError);
-      console.log('Local file unavailable, creating dummy data...');
-
-      // Create dummy data as fallback
-      console.log('Creating dummy data as fallback...');
-      data = {
-        navigation: {
-          position: { value: { latitude: 37.806, longitude: -122.465 } },
-          courseOverGroundTrue: { value: 0 },
-          speedOverGround: { value: 0 },
-          speedThroughWater: { value: 0 }
-        },
-        environment: {
-          wind: {
-            speedTrue: { value: 10 },
-            angleTrue: { value: 0 }
-          },
-          water: { temperature: { value: 288.15 } }
-        },
-        electrical: {
-          batteries: {
-            house: {
-              voltage: { value: 12.5 },
-              current: { value: 0 },
-              power: { value: 0 },
-              capacity: {
-                stateOfCharge: { value: 0.8 },
-                timeRemaining: { value: 36000 }
-              }
-            }
-          }
-        }
-      };
-      dataSource = 'dummy';
-      console.log('Dummy data created successfully');
+      // Nothing stands in for the snapshot. This used to build one: a
+      // position in San Francisco Bay, 10 knots of true wind, a house bank
+      // at 12.5V and 80%. A boat whose publish had failed showed a plausible
+      // afternoon's sailing to whoever was following it, which is the worst
+      // thing this page can do. Every panel already renders a missing value
+      // as missing, so hand them nothing and let them say so.
+      console.log('signalk_latest.json unavailable:', fileError);
+      data = {};
+      dataSource = 'unavailable';
     }
 
     console.log('Fetch response status:', res?.status);
@@ -2548,9 +2497,9 @@ async function loadData() {
     let timestampStr = data.navigation?.position?.timestamp;
     let modifiedDate = timestampStr ? new Date(timestampStr) : findLatestTimestamp(data);
 
-    if (dataSource === 'dummy') {
+    if (dataSource === 'unavailable') {
       bannerState = 'error';
-      if (ageEl) ageEl.textContent = 'Demo data';
+      if (ageEl) ageEl.textContent = 'Telemetry unavailable';
       if (statusHero) statusHero.classList.add('stale');
     } else if (modifiedDate && !isNaN(modifiedDate.getTime())) {
       const diffMs    = Date.now() - modifiedDate;
@@ -3946,7 +3895,9 @@ function initDarkMode() {
   const html = document.documentElement;
 
   // Check for saved theme preference, then vessel config, then fall back to light
-  const savedTheme = localStorage.getItem('theme') || vesselData?.theme || 'marine';
+  // No vessel-config fallback: there is no theme setting and never was a
+  // `theme:` key to read. The button cycles THEMES and localStorage remembers.
+  const savedTheme = localStorage.getItem('theme') || 'marine';
   html.setAttribute('data-theme', savedTheme);
   updateDarkModeButton(savedTheme);
 

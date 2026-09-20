@@ -3,11 +3,13 @@
  *
  * Signal K mounts `public/` — the console page — at `/signalk-github-pages/`,
  * and hands plugins an Express router at `/plugins/signalk-github-pages/`.
- * This is that router. It does three jobs:
+ * This is that router. It does four jobs:
  *
  *   GET  /status            what the last cycle did, and what is on the site
  *   GET  /preview/*         the published site, rendered from live plugin data
  *   POST /prune             remove old voyages from the repository
+ *   POST /publish           publish now, rather than waiting for the next tick
+ *   POST /publish/site      rewrite every frontend file, then publish
  *   GET  /docs              what docs/ holds, and what a maintenance form needs
  *   POST /docs/init         write the starter documents, if there are none
  *   POST /docs/maintenance  add one entry to the top of the maintenance log
@@ -23,6 +25,7 @@
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { Passage } from './course';
 import { MaintenanceInputError, parseMaintenanceEntry } from './docsSeed';
 import { renderPreviewData } from './preview';
 import { renderConstants } from './frontend';
@@ -31,7 +34,7 @@ import { DocsExistError, type Publisher } from './publisher';
 import { localDay } from './time';
 import type { PluginConfig } from './config';
 import type { Tree } from './snapshot';
-import type { VesselIdentity } from './vesselInfo';
+import type { VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
 
@@ -58,6 +61,15 @@ export interface Router {
   post: (path: string, handler: Handler) => void;
 }
 
+/** What the console reports back after a publish it asked for. */
+export interface PublishNowResult {
+  published: boolean;
+  files: string[];
+  bytes: number;
+  commitSha?: string;
+  skipped?: string;
+}
+
 export interface WebappDeps {
   config: PluginConfig;
   store: StateStore;
@@ -70,6 +82,14 @@ export interface WebappDeps {
   readTree: () => Tree;
   /** The polar CSV and status the last cycle resolved. */
   polars: () => { csv: string; status: PolarStatus | null };
+  /** The passage the last cycle read, for the preview's banner. */
+  passage: () => Passage | null;
+  /**
+   * Run a publish cycle now. Supplied by `index.ts`, which is where the
+   * async reads a cycle needs — the polar, the history, the course — happen,
+   * so this module still never calls the server itself.
+   */
+  publishNow: (reason: string) => Promise<PublishNowResult>;
   log: (message: string) => void;
 }
 
@@ -79,7 +99,6 @@ const TYPES: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.yaml': 'text/yaml; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8',
   '.gpx': 'application/gpx+xml',
   '.png': 'image/png',
@@ -207,6 +226,25 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
   });
 
   /**
+   * Publish now, rather than waiting for the next tick.
+   *
+   * A POST, and that matters: every GET route here is free of side effects,
+   * because a phone left on the preview page must not be able to roll the
+   * publisher's state forward or make the boat fetch anything. A button
+   * someone pressed is the opposite — a deliberate instruction — and this is
+   * the only thing on the page that spends the boat's bandwidth on request.
+   */
+  router.post('/publish', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.publishNow('the console'));
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
    * What `docs/` holds, and everything the maintenance form needs to open
    * with sensible values: the boat's local day and the engine hours Signal K
    * is reporting right now.
@@ -223,6 +261,25 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         repoUrl: `https://github.com/${current.config.github.repo}`,
         docsUrl: `${pagesUrl(current.config.github.owner, current.config.github.name)}docs.html`,
       });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * Rewrite every frontend file on the next publish, then publish.
+   *
+   * An upgrade already republishes the frontend by itself — the fingerprint
+   * that gates it carries the plugin version — so this is for what a version
+   * number cannot see: a file deleted by hand on GitHub, a commit that landed
+   * half-way, a repository rolled back to an older state.
+   */
+  router.post('/publish/site', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      await current.publisher.forceFrontendRepublish();
+      response.json(await current.publishNow('a full site rewrite from the console'));
     } catch (error) {
       fail(response, error);
     }
@@ -261,13 +318,15 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
   // Everything under /preview is the site itself. `data/**` is rendered from
   // the plugin's live state; every other path is a file out of `site/`, with
   // the same substitutions the publisher makes on the way to GitHub.
-  router.get('/preview', (_request, response) => {
-    // Without the trailing slash every relative URL in the page would resolve
-    // one level too high, so send the browser to the directory form.
-    response.set('Location', 'preview/');
-    response.status(302).send('');
-  });
-
+  // Registration order is load-bearing here, so the wildcard goes first and
+  // the bare `/preview` redirect is registered at the end of this function.
+  //
+  // Express does not run in strict-routing mode, so `/preview` also matches
+  // `/preview/` — the exact path that redirect sends the browser to. With
+  // the redirect registered first, a request for `/preview/` was answered
+  // with `Location: preview/`, which the browser resolved against
+  // `/preview/` to give `/preview/preview/`, and the console's iframe showed
+  // "Not found" instead of the site.
   router.get('/preview/*', async (request, response) => {
     // Taken from the URL rather than from the wildcard parameter: Express 4
     // and 5 disagree about what `*` binds to, and `req.url` inside a mounted
@@ -281,7 +340,11 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       if (requested.startsWith('data/')) {
         const files = await renderPreviewData(
           { config, store, identity: current.identity },
-          { tree: current.readTree(), polars: current.polars().csv },
+          {
+            tree: current.readTree(),
+            polars: current.polars().csv,
+            passage: current.passage(),
+          },
         );
         const contents = files.get(requested);
         if (contents === undefined) {
@@ -336,6 +399,18 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     } catch (error) {
       fail(response, error);
     }
+  });
+
+  /**
+   * The bare form, without the trailing slash.
+   *
+   * Only reached when the path really has no slash, because the wildcard
+   * above has already claimed `/preview/`. Every relative URL in the page
+   * would otherwise resolve one level too high.
+   */
+  router.get('/preview', (_request, response) => {
+    response.set('Location', 'preview/');
+    response.status(302).send('');
   });
 }
 

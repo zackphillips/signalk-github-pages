@@ -226,18 +226,20 @@ describe('resolveConfig', () => {
     expect(makeConfig({ polars: { table: 'twa/tws;6\n52;4.1\n' } }).polars.override).toBe(false);
   });
 
-  it('reads the older field shapes, so an upgraded install keeps working', () => {
-    // A config written before these fields moved: the polar was a bare string
-    // used as a fallback, the timezone was a bare string, and the cadence was
-    // in seconds.
+  it('ignores the field shapes an unreleased version once used', () => {
+    // A bare string for the polar or the timezone, and a cadence in seconds,
+    // are shapes only 0.1.x wrote. It was never published, so these fall back
+    // to the defaults rather than being carried forward forever.
     const config = makeConfig({
       polars: 'twa/tws;6\n52;4.1\n',
       timezone: 'Europe/Lisbon',
       interval: { underway: 300, stationary: 1800 },
     });
-    expect(config.polars).toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
-    expect(config.timezone).toBe('Europe/Lisbon');
-    expect(config.interval).toEqual({ underway: 300, stationary: 1800 });
+    expect(config.polars).toEqual({ override: false, table: '' });
+    expect(config.interval).toEqual({
+      underway: DEFAULT_INTERVAL_UNDERWAY,
+      stationary: DEFAULT_INTERVAL_STATIONARY,
+    });
   });
 
   it('still fails on a privacy zone that would hide nothing', () => {

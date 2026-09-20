@@ -109,7 +109,7 @@ describe('Publisher', () => {
       'data/telemetry/instrument_log.json',
       'data/telemetry/tracks_index.json',
       'data/telemetry/tracks/2026-03-01.gpx',
-      'data/vessel/info.yaml',
+      'data/vessel/site.json',
       'docs/index.json',
       'index.html',
       'assets/app.js',
@@ -131,7 +131,7 @@ describe('Publisher', () => {
     expect(second.files).not.toContain('assets/app.js');
     expect(second.files).toContain('data/telemetry/signalk_latest.json');
     // Nor the config, which only changes when the config page changes.
-    expect(second.files).not.toContain('data/vessel/info.yaml');
+    expect(second.files).not.toContain('data/vessel/site.json');
   });
 
   it('drops stale readings from the published snapshot', async () => {
@@ -217,27 +217,38 @@ describe('Publisher', () => {
     ]);
   });
 
-  it('writes info.yaml for the frontend and preserves a passage edited on GitHub', async () => {
+  it('writes site.json for the frontend, and rewrites it only when it changes', async () => {
     const publisher = makePublisher();
     await publisher.runCycle(tree());
-    const first = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
-    expect(first.name).toBe('S.V.Mermug');
+    const first = JSON.parse(fake.files.get('data/vessel/site.json')!);
+    expect(first.schema_version).toBe(1);
     expect(first.privacy_zones).toHaveLength(1);
 
-    fake.commitFile(
-      'data/vessel/info.yaml',
-      yaml.dump({ ...first, passage: { from: 'SF', to: 'Santa Cruz' } }),
-    );
     const changed = makePublisher({
       site: { customLinks: [{ label: 'Starlink', url: 'https://example.com/' }] },
     });
     await changed.runCycle(tree());
-    const second = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
+    const second = JSON.parse(fake.files.get('data/vessel/site.json')!);
     expect(second.custom_links).toEqual([{ label: 'Starlink', url: 'https://example.com/' }]);
-    expect(second.passage).toEqual({ from: 'SF', to: 'Santa Cruz' });
   });
 
-  it('fills info.yaml from the Signal K tree, not from the config page', async () => {
+  it('publishes the passage it is handed, and drops it when the course clears', async () => {
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), {
+      passage: { to: 'Santa Cruz', departed: '2026-03-01T16:00:00Z' },
+    });
+    expect(JSON.parse(fake.files.get('data/vessel/site.json')!).passage).toEqual({
+      to: 'Santa Cruz',
+      departed: '2026-03-01T16:00:00Z',
+    });
+
+    // Arriving and clearing the destination takes the banner down by itself:
+    // nobody has to remember to delete anything.
+    await publisher.runCycle(tree(), { passage: null });
+    expect(JSON.parse(fake.files.get('data/vessel/site.json')!).passage).toBeUndefined();
+  });
+
+  it('leaves the boat out of site.json, because the snapshot already carries it', async () => {
     const publisher = makePublisher();
     await publisher.runCycle({
       ...tree(),
@@ -249,15 +260,22 @@ describe('Publisher', () => {
       },
       design: { draft: { value: { maximum: 2.13 } }, beam: { value: 3.99 } },
     });
-    const info = yaml.load(fake.files.get('data/vessel/info.yaml')!) as any;
-    expect(info.callsign).toBe('WDL1234');
-    expect(info.uscg_number).toBe('1024168');
-    expect(info.design).toEqual({ draft_max_m: 2.13, beam_m: 3.99 });
+    const site = JSON.parse(fake.files.get('data/vessel/site.json')!);
+    // Derived from the registrations tree, so the frontend does not have to.
+    expect(site.uscg_number).toBe('1024168');
+    // In signalk_latest.json, every one of them.
+    expect(site.name).toBeUndefined();
+    expect(site.callsign).toBeUndefined();
+    expect(site.design).toBeUndefined();
+    const snapshot = JSON.parse(fake.files.get('data/telemetry/signalk_latest.json')!);
+    expect(snapshot.name).toBe('S.V.Mermug');
+    expect(snapshot.communication.callsignVhf).toBe('WDL1234');
   });
 
   it('picks up a vessel name that only arrives after the plugin started', async () => {
     // A cold boot runs the first cycle before the first product-information
     // frame; an identity read once at start would stay "Vessel" until restart.
+    // The GPX creator is where that name still lands.
     const publisher = new Publisher({
       client: new GitHubClient({
         repo: 'owner/site',
@@ -276,10 +294,11 @@ describe('Publisher', () => {
     });
     const { name: _dropped, ...anonymous } = tree();
     await publisher.runCycle(anonymous);
-    expect((yaml.load(fake.files.get('data/vessel/info.yaml')!) as any).name).toBe('Vessel');
+    const gpxPath = [...fake.files.keys()].find((key) => key.endsWith('.gpx'))!;
+    expect(fake.files.get(gpxPath)).toContain('Vessel');
 
     await publisher.runCycle(tree());
-    expect((yaml.load(fake.files.get('data/vessel/info.yaml')!) as any).name).toBe('S.V.Mermug');
+    expect(fake.files.get(gpxPath)).toContain('S.V.Mermug');
   });
 
   it('publishes the active polar once, and claims the path while it has one', async () => {

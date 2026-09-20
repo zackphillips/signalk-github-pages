@@ -1,17 +1,86 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MaintenanceInputError } from '../src/docsSeed';
 import { GitHubClient } from '../src/github';
 import { Publisher } from '../src/publisher';
 import { StateStore } from '../src/state';
-import { registerRoutes, type Router } from '../src/webapp';
+import {
+  pagesUrl,
+  parsePruneRequest,
+  readJsonBody,
+  registerRoutes,
+  resolveSitePath,
+  type Router,
+  type WebappDeps,
+} from '../src/webapp';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
-import { MaintenanceInputError } from '../src/docsSeed';
-import { pagesUrl, parsePruneRequest, readJsonBody, resolveSitePath } from '../src/webapp';
 
 const SITE = path.join(__dirname, '..', 'site');
+
+/**
+ * A router that records what was registered, in order, and can dispatch to it.
+ *
+ * Order matters for the preview routes — see the test below — so this keeps
+ * the registration sequence rather than a map keyed by path.
+ */
+function fakeRouter() {
+  const routes: Array<{ method: 'get' | 'post'; path: string; handler: any }> = [];
+  const router: Router = {
+    get: (routePath, handler) => void routes.push({ method: 'get', path: routePath, handler }),
+    post: (routePath, handler) => void routes.push({ method: 'post', path: routePath, handler }),
+  };
+
+  /** Match the way Express does: in registration order, non-strict slashes. */
+  const match = (method: 'get' | 'post', url: string) => {
+    const withoutQuery = url.split('?')[0] ?? '';
+    return routes.find((route) => {
+      if (route.method !== method) return false;
+      const pattern = route.path
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/:[A-Za-z]+/g, '[^/]+');
+      // Express is not in strict-routing mode: a route without a trailing
+      // slash also matches the path with one.
+      return new RegExp(`^${pattern}/?$`).test(withoutQuery);
+    });
+  };
+
+  const call = async (method: 'get' | 'post', url: string, body?: unknown) => {
+    const route = match(method, url);
+    const sent: any = { status: 200, headers: {} as Record<string, string> };
+    const response: any = {
+      status: (code: number) => ((sent.status = code), response),
+      json: (body: unknown) => void (sent.body = body),
+      type: (mime: string) => ((sent.mime = mime), response),
+      send: (body: unknown) => void (sent.body = body),
+      set: (field: string, value: string) => void (sent.headers[field] = value),
+    };
+    if (!route) return { ...sent, status: 404, matched: null };
+    await route.handler({ params: { 0: '' }, url, body }, response);
+    return { ...sent, matched: route.path };
+  };
+
+  return { router, routes, call };
+}
+
+const deps = (over: Partial<WebappDeps> = {}): WebappDeps =>
+  ({
+    config: { github: { repo: 'o/r', branch: 'main', owner: 'o', name: 'r' } },
+    store: {} as never,
+    publisher: {} as never,
+    identity: { name: 'Boat', mmsi: '' },
+    siteDir: SITE,
+    version: '0.2.0',
+    readTree: () => ({}),
+    polars: () => ({ csv: '', status: null }),
+    passage: () => null,
+    publishNow: async () => ({ published: true, files: ['a'], bytes: 10 }),
+    log: () => {},
+    ...over,
+  }) as unknown as WebappDeps;
 
 describe('parsePruneRequest', () => {
   it('reads a day count and the explicit "all"', () => {
@@ -100,45 +169,98 @@ describe('readJsonBody', () => {
   });
 });
 
+describe('the preview routes', () => {
+  it('serves the site for /preview/ rather than redirecting to itself', async () => {
+    // Express does not run in strict-routing mode, so `/preview` also matches
+    // `/preview/`. Registered first, it answered `/preview/` with a redirect
+    // to `preview/`, the browser resolved that against `/preview/` to get
+    // `/preview/preview/`, and the console's iframe showed "Not found".
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () => deps());
+    const result = await call('get', '/preview/');
+    expect(result.matched).toBe('/preview/*');
+    expect(result.status).toBe(200);
+  });
+
+  it('still redirects the bare path, which needs the trailing slash', async () => {
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () => deps());
+    const result = await call('get', '/preview');
+    expect(result.matched).toBe('/preview');
+    expect(result.status).toBe(302);
+    expect(result.headers.Location).toBe('preview/');
+  });
+
+  it('registers the wildcard before the bare path, which is what makes that work', () => {
+    const { router, routes } = fakeRouter();
+    registerRoutes(router, () => deps());
+    const paths = routes.map((route) => route.path);
+    expect(paths.indexOf('/preview/*')).toBeLessThan(paths.indexOf('/preview'));
+  });
+});
+
+describe('publishing on request', () => {
+  it('runs a cycle for POST /publish and reports what it did', async () => {
+    const publishNow = vi.fn(async () => ({
+      published: true,
+      files: ['data/telemetry/signalk_latest.json'],
+      bytes: 2048,
+      commitSha: 'abc1234',
+    }));
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () => deps({ publishNow }));
+    const result = await call('post', '/publish');
+    expect(publishNow).toHaveBeenCalledOnce();
+    expect(result.body).toMatchObject({ published: true, commitSha: 'abc1234' });
+  });
+
+  it('forces the frontend to be rewritten before publishing, for /publish/site', async () => {
+    const order: string[] = [];
+    const forceFrontendRepublish = vi.fn(async () => void order.push('force'));
+    const publishNow = vi.fn(async () => {
+      order.push('publish');
+      return { published: true, files: [], bytes: 0 };
+    });
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () =>
+      deps({ publishNow, publisher: { forceFrontendRepublish } as never }),
+    );
+    await call('post', '/publish/site');
+    // The other way round would publish the old frontend and only rewrite it
+    // on the *next* cycle, which is not what the button says.
+    expect(order).toEqual(['force', 'publish']);
+  });
+
+  it('answers 503 rather than throwing when the plugin is stopped', async () => {
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () => null);
+    expect((await call('post', '/publish')).status).toBe(503);
+  });
+
+  it('keeps every GET free of side effects', () => {
+    // A phone left on the preview page must not roll the publisher forward.
+    // Publishing is a POST for that reason; this pins it.
+    const { router, routes } = fakeRouter();
+    registerRoutes(router, () => deps());
+    const mutating = routes.filter((route) => /publish|prune/.test(route.path));
+    for (const route of mutating.filter((r) => r.method === 'get')) {
+      expect(route.path, `${route.path} must not mutate`).toMatch(/^\/prune\//);
+    }
+    expect(routes.some((r) => r.method === 'post' && r.path === '/publish')).toBe(true);
+  });
+});
+
 /**
  * The docs routes, driven the way Signal K drives them.
  *
- * A stand-in router and response rather than a running Express: what is
- * actually worth testing here is the status code each outcome gets, because
- * that is what the console page reads to decide between "already initialized"
- * and "something went wrong".
+ * A real publisher over the in-memory GitHub, because the thing worth pinning
+ * down is the status code each outcome gets: that is what the console page
+ * reads to tell "already initialized" from "something went wrong".
  */
 describe('the docs routes', () => {
   let dataDir: string;
   let fake: FakeGitHub;
-  let routes: Map<string, (request: any, response: any) => Promise<void> | void>;
-
-  const capture = () => {
-    const sent: { status: number; body: any } = { status: 200, body: undefined };
-    const response: any = {
-      status(code: number) {
-        sent.status = code;
-        return response;
-      },
-      json(body: unknown) {
-        sent.body = body;
-      },
-      type() {
-        return response;
-      },
-      send(body: unknown) {
-        sent.body = body;
-      },
-      set() {},
-    };
-    return { sent, response };
-  };
-
-  const call = async (key: string, request: any = { params: {} }) => {
-    const { sent, response } = capture();
-    await routes.get(key)!(request, response);
-    return sent;
-  };
+  let router: ReturnType<typeof fakeRouter>;
 
   beforeEach(async () => {
     dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skgp-routes-'));
@@ -148,6 +270,7 @@ describe('the docs routes', () => {
       files: { 'README.md': '# Site\n' },
     });
     const config = makeConfig({ timezone: { override: true, zone: 'America/Los_Angeles' } });
+    const store = new StateStore(dataDir);
     const publisher = new Publisher({
       client: new GitHubClient({
         repo: 'owner/site',
@@ -155,7 +278,7 @@ describe('the docs routes', () => {
         token: 'token',
         fetchImpl: fake.fetch,
       }),
-      store: new StateStore(dataDir),
+      store,
       config,
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
       siteDir: SITE,
@@ -164,22 +287,15 @@ describe('the docs routes', () => {
       log: () => {},
     });
 
-    routes = new Map();
-    const router: Router = {
-      get: (routePath, handler) => routes.set(`GET ${routePath}`, handler as any),
-      post: (routePath, handler) => routes.set(`POST ${routePath}`, handler as any),
-    };
-    registerRoutes(router, () => ({
-      config,
-      store: new StateStore(dataDir),
-      publisher,
-      identity: { name: 'S.V.Mermug', mmsi: '338543654' },
-      siteDir: SITE,
-      version: '0.1.0',
-      readTree: () => ({ propulsion: { main: { runTime: { value: 4_336_200 } } } }) as any,
-      polars: () => ({ csv: '', status: null }),
-      log: () => {},
-    }));
+    router = fakeRouter();
+    registerRoutes(router.router, () =>
+      deps({
+        config: config as never,
+        store,
+        publisher,
+        readTree: () => ({ propulsion: { main: { runTime: { value: 4_336_200 } } } }) as never,
+      }),
+    );
   });
 
   afterEach(async () => {
@@ -187,40 +303,41 @@ describe('the docs routes', () => {
   });
 
   it('reports an empty docs directory, with the form values the page needs', async () => {
-    const sent = await call('GET /docs');
-    expect(sent.body.initialized).toBe(false);
-    expect(sent.body.missing).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-    expect(sent.body.engineHours).toEqual([{ engine: 'main', hours: 1204.5 }]);
-    expect(sent.body.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(sent.body.docsUrl).toBe('https://owner.github.io/site/docs.html');
+    const result = await router.call('get', '/docs');
+    expect(result.body.initialized).toBe(false);
+    expect(result.body.missing).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
+    expect(result.body.engineHours).toEqual([{ engine: 'main', hours: 1204.5 }]);
+    expect(result.body.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(result.body.docsUrl).toBe('https://owner.github.io/site/docs.html');
   });
 
   it('initializes once, and a second press writes nothing', async () => {
-    expect((await call('POST /docs/init')).body.created).toEqual([
+    expect((await router.call('post', '/docs/init')).body.created).toEqual([
       'docs/AGENTS.md',
       'docs/ships-docs.md',
     ]);
 
-    const second = await call('POST /docs/init');
+    const second = await router.call('post', '/docs/init');
     expect(second.body.created).toEqual([]);
     expect(second.body.skipped).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-    expect((await call('GET /docs')).body.canInitialize).toBe(false);
+    expect((await router.call('get', '/docs')).body.canInitialize).toBe(false);
   });
 
   it('answers 409, not 500, over documents the boat already has', async () => {
     fake.commitFile('docs/mob.md', '# Man Overboard\n');
-    const sent = await call('POST /docs/init');
-    expect(sent.status).toBe(409);
-    expect(sent.body.error).toMatch(/already in docs/);
+    const result = await router.call('post', '/docs/init');
+    expect(result.status).toBe(409);
+    expect(result.body.error).toMatch(/already in docs/);
   });
 
   it('adds a maintenance entry and answers 201', async () => {
-    const sent = await call('POST /docs/maintenance', {
-      params: {},
-      body: { title: 'Replaced the impeller', date: '2026-03-01', engineHours: 1204.5 },
+    const result = await router.call('post', '/docs/maintenance', {
+      title: 'Replaced the impeller',
+      date: '2026-03-01',
+      engineHours: 1204.5,
     });
-    expect(sent.status).toBe(201);
-    expect(sent.body.created).toBe(true);
+    expect(result.status).toBe(201);
+    expect(result.body.created).toBe(true);
     expect(fake.files.get('docs/maintenance/log.md')).toContain(
       '## 2026-03-01: Replaced the impeller',
     );
@@ -228,23 +345,15 @@ describe('the docs routes', () => {
 
   it('answers 400 for a form the plugin cannot use, and writes nothing', async () => {
     const before = fake.commits.length;
-    const sent = await call('POST /docs/maintenance', { params: {}, body: { title: '  ' } });
-    expect(sent.status).toBe(400);
-    expect(sent.body.error).toMatch(/needs a title/);
+    const result = await router.call('post', '/docs/maintenance', { title: '  ' });
+    expect(result.status).toBe(400);
+    expect(result.body.error).toMatch(/needs a title/);
     expect(fake.commits.length).toBe(before);
   });
 
   it('answers 503 while the plugin is stopped', async () => {
-    const stopped = new Map<string, any>();
-    registerRoutes(
-      {
-        get: (routePath, handler) => stopped.set(`GET ${routePath}`, handler),
-        post: (routePath, handler) => stopped.set(`POST ${routePath}`, handler),
-      },
-      () => null,
-    );
-    const { sent, response } = capture();
-    await stopped.get('POST /docs/init')({ params: {} }, response);
-    expect(sent.status).toBe(503);
+    const stopped = fakeRouter();
+    registerRoutes(stopped.router, () => null);
+    expect((await stopped.call('post', '/docs/init')).status).toBe(503);
   });
 });

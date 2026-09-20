@@ -16,7 +16,7 @@ Read this file before changing anything under `docs/`.
 | `assets/custom.css` | **You** — loaded last by both pages, never overwritten |
 | `docs/index.json` | The plugin (rebuilt from `docs/**.md`; do not hand-edit) |
 | `data/telemetry/**` | The plugin, every publish cycle |
-| `data/vessel/info.yaml` | The plugin — except the `passage:` block, which is preserved |
+| `data/vessel/site.json` | The plugin, whenever the plugin config changes |
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `assets/**`, `.nojekyll` | The plugin, on install and upgrade |
 
 `.tracker-manifest.json` at the repository root is the authoritative list.
