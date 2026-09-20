@@ -134,7 +134,7 @@ only. Give Pages a minute, then open the URL.
 | `polars` | *empty* | Fallback polar table — only used when the server has none, [see below](#polars) |
 | `site.theme` | `marine` | `marine`, `mermug`, `bright`, `dark` |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
-| `site.defaultLocation` | *empty* | Home waters `{lat, lon, label}` — where the site looks before it has a fix |
+| `site.defaultLocation` | *empty* | Home waters `{lat, lon, label}` — tides and the map before the boat has a fix |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishFrontend` | on | Write the bundled site on install and upgrade |
 
@@ -255,6 +255,20 @@ server that carries neither. Fill one in and it wins; if Signal K reports
 something different, the log says so rather than quietly picking one.
 
 The polar table comes from the server the same way — see below.
+
+### Home waters
+
+The tide and forecast panels use the boat's position. Before there is a fix
+they use `site.defaultLocation`, and if that is not set either they say so and
+wait.
+
+Nothing stands in for it. The frontend used to carry a hardcoded San Francisco
+Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
+under a heading that read like its own — a wrong number presented as a right
+one. The same went for a fallback privacy zone at one particular dock, and for
+a whole fallback vessel identity (name, MMSI, documentation number) used when
+`info.yaml` failed to load, which made every such site introduce itself as
+somebody else's boat. All three are gone: unknown renders as unknown.
 
 ## Polars
 

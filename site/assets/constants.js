@@ -29,16 +29,12 @@ var VESSEL_CONSTANTS = Object.freeze({
   SPARKLINE_POINTS:           60,   // number of history points per sparkline
   DEFAULT_RECENT_TRACK_COUNT:  3,   // coloured track days shown by default
 
-  // ── Fallback privacy zone (South Beach Harbor, SF) ───────────────────────
-  // Overridden at runtime by privacy_zones in data/vessel/info.yaml.
-  FALLBACK_PRIVACY_ZONE_LAT:    37.7802069,
-  FALLBACK_PRIVACY_ZONE_LON:   -122.3858040,
-  FALLBACK_PRIVACY_ZONE_RADIUS_M: 200,
-
-  // ── Fallback tide / geocoding location ───────────────────────────────────
-  DEFAULT_TIDE_LAT:   37.806,
-  DEFAULT_TIDE_LON: -122.465,
-  DEFAULT_TIDE_LABEL: 'San Francisco Bay',
+  // Nothing here stands in for the boat's own position or the water it sits
+  // in. Both used to: a fallback privacy zone at one particular dock and a
+  // fallback tide location in San Francisco Bay, which any site that had not
+  // published its info.yaml yet showed as its own. Unknown renders as
+  // unknown — privacy_zones and default_location come from info.yaml or they
+  // do not come at all.
 
   // ── Theming ──────────────────────────────────────────────────────────────
   // Cycle order for the floating theme button. Shared by index.html and

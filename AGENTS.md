@@ -58,6 +58,14 @@ Run `npm test` and `npm run typecheck` before committing.
   a typed field and a line in `renderVesselInfo`, not a blob. `grep
   vesselData\. site/assets/app.js` lists every key the frontend reads; each
   one needs a source before a field is removed.
+- **Unknown renders as unknown.** The frontend carried three invented
+  fallbacks: a San Francisco Bay tide location, a privacy zone at one
+  particular dock, and a whole vessel identity — name, MMSI, documentation
+  number — used when `info.yaml` failed to load. Each one turned a missing
+  value into a confident wrong one on somebody else's boat. `resolveTidePosition`
+  returns null and the panels say what is missing; `getPrivacyZones` returns
+  an empty list, which is safe because the plugin already redacts before it
+  publishes; `vesselData` is `{}`. Do not add a fourth.
 - **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository

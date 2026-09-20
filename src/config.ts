@@ -83,8 +83,8 @@ export interface PluginConfig {
     hullNumber: string;
     /**
      * Where the site looks before it has a fix: the tide station it picks and
-     * the map it opens on. Null falls back to the frontend's own constant,
-     * which is San Francisco Bay.
+     * the map it opens on. Null means it waits for one — the tide and forecast
+     * panels say so rather than showing some other coast's numbers.
      */
     defaultLocation: { lat: number; lon: number; label: string } | null;
   };
@@ -438,7 +438,8 @@ export const configSchema = {
           description:
             'Where the site looks before the boat has reported a position: the ' +
             'tide station it picks and the map it opens on. Leave the ' +
-            'coordinates blank to use the frontend default, San Francisco Bay.',
+            'coordinates blank and the tide and forecast panels wait for a GPS ' +
+            'fix instead — they will not stand in some other coast for yours.',
           properties: {
             lat: { type: 'number', title: 'Latitude' },
             lon: { type: 'number', title: 'Longitude' },
