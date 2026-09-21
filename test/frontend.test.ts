@@ -19,7 +19,6 @@ const SITE_DIR = path.join(__dirname, '..', 'site');
 const options = (overrides: Partial<FrontendOptions> = {}): FrontendOptions => ({
   repo: 'owner/site',
   branch: 'main',
-  instrumentLogEntries: 120,
   version: '1.2.3',
   vesselName: 'Vessel',
   siteUrl: 'https://owner.github.io/site/',
@@ -34,7 +33,6 @@ describe('renderConstants', () => {
   const source = `var VESSEL_CONSTANTS = Object.freeze({
   GITHUB_REPO: 'OWNER/REPO',
   GITHUB_DEFAULT_BRANCH: 'main',
-  INSTRUMENT_LOG_ENTRIES: 120,
 });`;
 
   it("points the edit links at the adopter's own repository", () => {
@@ -44,12 +42,6 @@ describe('renderConstants', () => {
     );
     expect(rendered).toContain("GITHUB_REPO: 'someone/their-site'");
     expect(rendered).toContain("GITHUB_DEFAULT_BRANCH: 'gh-pages'");
-  });
-
-  it('keeps the log length in step with the publisher', () => {
-    // A mismatch here means the sparklines read the wrong number of points.
-    const rendered = renderConstants(source, options({ instrumentLogEntries: 240 }));
-    expect(rendered).toContain('INSTRUMENT_LOG_ENTRIES: 240');
   });
 
   it('still declares the constants with var, which the page depends on', () => {

@@ -287,7 +287,7 @@ Run `npm test` and `npm run typecheck` before committing.
   counts are a floor; the panel says so, and `sampled_since` bounds them to
   what the log has actually watched.
 - **A notification the adopter excludes leaves no trace.**
-  `notificationExclude` filters at three points: `readNotifications` never
+  `notifications.exclude` filters at three points: `readNotifications` never
   observes it, `NotificationRecorder` never records it, and
   `updateNotificationLog` drops it from both `seen` and the retained
   `events`. Adding a pattern has to take the path off the site on the next
@@ -322,17 +322,27 @@ Run `npm test` and `npm run typecheck` before committing.
   omit the sparklines instead of drawing whatever an older version last
   accumulated. Collapsing any two of those into a nullable snapshot loses a
   behaviour someone will notice.
-- **`instrumentLog.entries` is the query window, and it is also the history
-  dropdown.** `entries x resolutionSeconds` is how far back the log reaches,
-  and the sparklines' window dropdown offers 1/3/12/24 hours against exactly
-  that: a span the published file does not cover is disabled in the menu
-  rather than drawn as a duplicate of a shorter one. The frontend plots every
-  entry it is given, so raising `entries` is what makes the longer windows
-  selectable — and every one of those entries is uploaded in full on every
-  publish. At the default 60 s resolution, 24 hours is 1440 entries and about
-  half a megabyte a cycle, which is a real decision on a hotspot, not a knob
-  to turn up by default. `SPARKLINE_MAX_POINTS` is a draw cap, not a trim;
-  it does not shorten the window.
+- **`instrumentLog.hours` is the query window, and it is also the history
+  dropdown.** The sparklines' window dropdown offers 1/3/12/24 hours against
+  exactly what the published file reaches back: a span it does not cover is
+  disabled in the menu rather than drawn as a duplicate of a shorter one, so
+  raising the window is what makes the longer ones selectable. The bucket
+  width is not a second setting — `instrumentLogShape` derives it from the
+  window and caps the file at 360 buckets, because the whole log is uploaded
+  in full on every publish and 24 hours of one-minute buckets is 1440 entries
+  and about half a megabyte a cycle. Two knobs whose product was what mattered
+  meant a config could contradict itself (hence the warning about a log
+  shorter than one publish interval, which now only fires on a very slow
+  cadence). Zero hours publishes no log at all. `SPARKLINE_MAX_POINTS` is a
+  draw cap, not a trim; it does not shorten the window.
+- **A setting that leaves the page is still read.** `resolveConfig` reads the
+  keys a moved or replaced setting used to live under — `instrumentLog.entries`
+  with `history.resolutionSeconds`, the top-level `positionRetentionHours`,
+  `publishNotifications`, `notificationExclude`, `notifyAfterFailureMinutes` —
+  and `buildConfigSchema` carries them into the new field's `default` so the
+  page opens showing the boat's own values. Without that second half the admin
+  UI fills the new field from the schema default and submits it, and the first
+  save after an upgrade silently replaces what the boat was running on.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
@@ -582,7 +592,7 @@ Run `npm test` and `npm run typecheck` before committing.
   about a plugin, and nobody needs an alarm for them. Do not add
   `setPluginStatus`-style state as data paths.
   The exception is `notifications.tracker.publishFailed`, raised once
-  publishing has failed continuously for `notifyAfterFailureMinutes` and
+  publishing has failed continuously for `notifications.warnAfterMinutes` and
   cleared on the next success. An expired token otherwise reaches nobody: the
   admin UI is a browser tab nobody has open at sea, and the first anyone
   ashore knows is that the boat appears to have stopped. A notification is

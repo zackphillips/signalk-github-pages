@@ -879,7 +879,7 @@ describe('cycle accounting', () => {
         fetchImpl: fake.fetch,
       }),
       store: new StateStore(dataDir),
-      config: makeConfig({ buildDocsIndex: false, ...config }),
+      config: makeConfig(config),
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
       siteDir: SITE_DIR,
       seedDir: SEED_DIR,

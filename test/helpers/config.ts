@@ -18,9 +18,9 @@ export const COMPLETE_FORM = {
   interval: { underwayMinutes: 2, stationaryMinutes: 60 },
   instrumentLog: {
     paths: 'navigation.speedOverGround\nelectrical.batteries.*.voltage\n',
-    entries: 120,
+    hours: 2,
   },
-  positionRetentionHours: 24,
+  track: { detailMetres: 15, positionRetentionHours: 24 },
   staleMaxAgeMinutes: 60,
   timezone: { override: true, zone: 'America/Los_Angeles' },
   privacyZones: [],

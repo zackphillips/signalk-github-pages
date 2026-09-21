@@ -4,10 +4,11 @@ import {
   buildConfigSchema,
   configSchema,
   configUiSchema,
-  DEFAULT_HISTORY_RESOLUTION_SECONDS,
-  DEFAULT_HISTORY_TIMEOUT_MS,
+  HISTORY_RESOLUTION_SECONDS,
+  HISTORY_TIMEOUT_MS,
+  instrumentLogShape,
   POLARS_FIELD_DESCRIPTION,
-  DEFAULT_INSTRUMENT_LOG_ENTRIES,
+  DEFAULT_INSTRUMENT_LOG_HOURS,
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
   DEFAULT_INTERVAL_UNDERWAY,
@@ -43,8 +44,10 @@ describe('resolveConfig', () => {
     });
     expect(resolved.config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
     expect(resolved.config.staleMaxAgeMinutes).toBe(DEFAULT_STALE_MAX_AGE_MINUTES);
-    expect(resolved.config.instrumentLog.entries).toBe(DEFAULT_INSTRUMENT_LOG_ENTRIES);
     expect(resolved.config.instrumentLog.paths).toEqual(DEFAULT_INSTRUMENT_LOG_PATHS);
+    expect(resolved.config.instrumentLog.entries).toBe(
+      instrumentLogShape(DEFAULT_INSTRUMENT_LOG_HOURS).entries,
+    );
   });
 
   it('defaults nothing that belongs to one particular boat', () => {
@@ -56,13 +59,27 @@ describe('resolveConfig', () => {
   });
 
   it('falls back rather than accepting zero or a negative number', () => {
-    const config = makeConfig({ positionRetentionHours: 0, interval: { underwayMinutes: -5 } });
+    const config = makeConfig({
+      track: { positionRetentionHours: 0 },
+      interval: { underwayMinutes: -5 },
+    });
     expect(config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
     expect(config.interval.underway).toBe(DEFAULT_INTERVAL_UNDERWAY);
   });
 
+  it('keeps a zero where zero is an answer rather than an empty box', () => {
+    // "Zero turns it off" used to fall through to the default, because the
+    // number parser rejected zero along with the negatives and the blanks.
+    expect(makeConfig({ notifications: { warnAfterMinutes: 0 } }).notifyAfterFailureMinutes)
+      .toBe(0);
+    expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
+  });
+
   it('accepts the strings the admin UI hands back for number fields', () => {
-    const config = makeConfig({ staleMaxAgeMinutes: '45', positionRetentionHours: '12' });
+    const config = makeConfig({
+      staleMaxAgeMinutes: '45',
+      track: { positionRetentionHours: '12' },
+    });
     expect(config.staleMaxAgeMinutes).toBe(45);
     expect(config.positionRetentionHours).toBe(12);
   });
@@ -151,8 +168,9 @@ describe('resolveConfig', () => {
   it('accepts a fully specified form', () => {
     const config = makeConfig();
     expect(config.interval).toEqual({ underway: 120, stationary: 3600 });
+    // Two hours at the 60 s floor.
     expect(config.instrumentLog.entries).toBe(120);
-    expect(config.buildDocsIndex).toBe(true);
+    expect(config.history.resolutionSeconds).toBe(60);
   });
 
   it('takes the tide station override as a plain string, or leaves it empty', () => {
@@ -356,6 +374,47 @@ describe('buildConfigSchema', () => {
     expect(base.github.properties.overrideName.description).not.toContain('owner.github.io');
   });
 
+  it('opens a config written before a setting moved showing that config', () => {
+    // The admin UI fills a field the stored config has no value for from the
+    // schema default and submits it, so a default standing where a moved
+    // setting used to be would replace it on the next save.
+    const built = buildConfigSchema({
+      saved: {
+        instrumentLog: { paths: 'navigation.speedOverGround', entries: 720 },
+        history: { enabled: true, providerId: 'signalk-to-influxdb2', resolutionSeconds: 60 },
+        positionRetentionHours: 48,
+        publishNotifications: false,
+        notificationExclude: 'server\nsignalk-github-pages',
+        notifyAfterFailureMinutes: 0,
+      },
+    }) as any;
+    const properties = built.properties;
+    expect(properties.instrumentLog.properties.hours.default).toBe(12);
+    expect(properties.instrumentLog.properties.providerId.default).toBe('signalk-to-influxdb2');
+    expect(properties.track.properties.positionRetentionHours.default).toBe(48);
+    expect(properties.notifications.properties.publish.default).toBe(false);
+    expect(properties.notifications.properties.exclude.default).toBe(
+      'server\nsignalk-github-pages',
+    );
+    expect(properties.notifications.properties.warnAfterMinutes.default).toBe(0);
+  });
+
+  it('leaves the defaults alone for a config that has the settings already', () => {
+    const built = buildConfigSchema({
+      saved: {
+        instrumentLog: { hours: 3, providerId: '' },
+        history: { providerId: 'signalk-to-influxdb2' },
+        notifications: { publish: true, exclude: '', warnAfterMinutes: 30 },
+      },
+    }) as any;
+    // The window is set, so nothing is carried forward beside it — including
+    // the provider id from the section this one replaced.
+    expect(built.properties.instrumentLog.properties.hours.default).toBe(
+      DEFAULT_INSTRUMENT_LOG_HOURS,
+    );
+    expect(built.properties.instrumentLog.properties.providerId.default).toBe('');
+  });
+
   it('leaves every other field exactly as it was', () => {
     const built = buildConfigSchema({ polarCsv: 'x' }) as any;
     expect(built.properties.github).toEqual((configSchema.properties as any).github);
@@ -444,62 +503,83 @@ describe('parsePathList', () => {
   });
 });
 
-describe('the history provider settings', () => {
-  it('defaults to reading the instrument log from whichever provider the server has', () => {
-    const config = makeConfig();
+describe('the instrument log settings', () => {
+  it('defaults to an hour from whichever provider the server has', () => {
+    const config = makeConfig({ instrumentLog: { paths: 'navigation.speedOverGround' } });
     expect(config.history).toEqual({
       enabled: true,
       providerId: '',
-      resolutionSeconds: DEFAULT_HISTORY_RESOLUTION_SECONDS,
-      timeoutMs: DEFAULT_HISTORY_TIMEOUT_MS,
+      resolutionSeconds: HISTORY_RESOLUTION_SECONDS,
+      timeoutMs: HISTORY_TIMEOUT_MS,
     });
+    expect(config.instrumentLog.entries).toBe(60);
   });
 
-  it('takes a provider id, a resolution and a timeout from the form', () => {
+  it('takes the bucket width from the window, rather than asking twice', () => {
+    // One setting, because what matters is how far back the graphs go. The
+    // bucket width follows so that a day of history cannot quietly make every
+    // cycle upload half a megabyte.
+    expect(instrumentLogShape(1)).toEqual({ entries: 60, resolutionSeconds: 60 });
+    expect(instrumentLogShape(3)).toEqual({ entries: 180, resolutionSeconds: 60 });
+    expect(instrumentLogShape(6)).toEqual({ entries: 360, resolutionSeconds: 60 });
+    expect(instrumentLogShape(12)).toEqual({ entries: 360, resolutionSeconds: 120 });
+    expect(instrumentLogShape(24)).toEqual({ entries: 360, resolutionSeconds: 240 });
+  });
+
+  it('takes a provider id from the same section as the window', () => {
     const config = makeConfig({
-      history: {
-        enabled: true,
-        providerId: 'signalk-to-influxdb2',
-        resolutionSeconds: 30,
-        timeoutMs: 5000,
-      },
+      instrumentLog: { hours: 12, providerId: 'signalk-to-influxdb2' },
     });
     expect(config.history.providerId).toBe('signalk-to-influxdb2');
-    expect(config.history.resolutionSeconds).toBe(30);
-    expect(config.history.timeoutMs).toBe(5000);
+    expect(config.history.resolutionSeconds).toBe(120);
+    expect(config.instrumentLog.entries).toBe(360);
   });
 
-  it('can be turned off, leaving the plugin to accumulate history itself', () => {
-    expect(makeConfig({ history: { enabled: false } }).history.enabled).toBe(false);
+  it('publishes no log at all when the window is zero', () => {
+    expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
   });
 
-  it('floors a timeout too short to reach a database', () => {
-    expect(makeConfig({ history: { timeoutMs: 5 } }).history.timeoutMs).toBe(1000);
+  it('reads a window stored the way the two old sections stored it', () => {
+    // entries x resolution, in two sections, with a switch of its own. An
+    // upgrade keeps publishing the window it was publishing.
+    const config = makeConfig({
+      instrumentLog: { paths: 'navigation.speedOverGround', entries: 1440 },
+      history: { providerId: 'signalk-to-influxdb2', resolutionSeconds: 60, timeoutMs: 5000 },
+    });
+    expect(config.instrumentLog.entries).toBe(360);
+    expect(config.history.resolutionSeconds).toBe(240);
+    expect(config.history.providerId).toBe('signalk-to-influxdb2');
+    expect(config.history.timeoutMs).toBe(HISTORY_TIMEOUT_MS);
+
+    expect(
+      makeConfig({
+        instrumentLog: { paths: 'navigation.speedOverGround', entries: 60 },
+        history: { enabled: false },
+      }).history.enabled,
+    ).toBe(false);
   });
 
-  it('warns when the log is shorter than one publish interval', () => {
+  it('warns when the window is shorter than one publish interval', () => {
     // Two windows with no overlap: every publish would replace the graph
     // rather than extend it.
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
-      interval: { underwayMinutes: 10, stationaryMinutes: 60 },
-      instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
-      history: { resolutionSeconds: 60 },
+      interval: { underwayMinutes: 180, stationaryMinutes: 60 },
+      instrumentLog: { ...COMPLETE_FORM.instrumentLog, hours: 1 },
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.warnings.join(' ')).toMatch(
-      /instrument log covers 5 min \(60s x 5 entries\), less than the 600s underway/,
+      /history window is 60 min, less than the 10800s underway/,
     );
   });
 
-  it('says nothing when the log outlasts the cadence, or the provider is off', () => {
+  it('says nothing when the log outlasts the cadence, or there is no log', () => {
     expect(resolveConfig({ ...COMPLETE_FORM }).warnings).toEqual([]);
     expect(
       resolveConfig({
         ...COMPLETE_FORM,
-        interval: { underwayMinutes: 10, stationaryMinutes: 60 },
-        instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
-        history: { enabled: false, resolutionSeconds: 60 },
+        interval: { underwayMinutes: 180, stationaryMinutes: 60 },
+        instrumentLog: { ...COMPLETE_FORM.instrumentLog, hours: 0 },
       }).warnings,
     ).toEqual([]);
   });

@@ -92,7 +92,6 @@ export interface PluginConfig {
    * notification. Zero turns it off. See `alarm.ts`.
    */
   notifyAfterFailureMinutes: number;
-  buildDocsIndex: boolean;
   /**
    * Publish `data/telemetry/notifications.json`: the active notifications and
    * the 24-hour firing log behind the site's Notifications panel.
@@ -196,18 +195,25 @@ export const DEFAULT_INTERVAL_STATIONARY_MINUTES = 60;
 export const DEFAULT_INTERVAL_UNDERWAY = DEFAULT_INTERVAL_UNDERWAY_MINUTES * 60;
 export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES * 60;
 /**
- * Rolling length of the instrument log, in buckets.
+ * How far back the sparklines plot, in hours.
  *
- * At the default 60 s resolution this is the last hour, which is the shortest
- * window the site's history dropdown offers and the only one it can promise
- * on a default install. The frontend plots whatever it is given, so raising
- * this is what makes the 3, 12 and 24 hour windows selectable — at the cost
- * of uploading every entry in full on every publish. 24 hours at 60 s is 1440
- * entries, roughly half a megabyte a cycle: worth it on a dock, not on a
- * hotspot, which is why the default stays an hour and the choice is the
- * adopter's.
+ * One hour is the shortest window the site's history dropdown offers, and
+ * the only one every install can promise. Raising it is what makes the 3, 12
+ * and 24 hour windows selectable, at the cost of a longer file uploaded in
+ * full on every publish. Zero publishes no log at all, and the panels show
+ * current values without graphs.
  */
-export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
+export const DEFAULT_INSTRUMENT_LOG_HOURS = 1;
+/**
+ * Most buckets the published log is allowed to hold.
+ *
+ * The window is a single setting and the bucket width follows from it, so
+ * that asking for a day of history cannot quietly make every cycle upload
+ * half a megabyte. 24 hours lands on 4-minute buckets and about 130 kB; an
+ * hour stays at the 60 s floor. A sparkline card is some 400 px wide, so
+ * finer than this is detail nobody can see, paid for every two minutes.
+ */
+const INSTRUMENT_LOG_MAX_ENTRIES = 360;
 /**
  * Default track detail, in metres.
  *
@@ -231,14 +237,42 @@ export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
 export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
 /**
- * Bucket width asked of the history provider, in seconds.
+ * Finest bucket width asked of the history provider, in seconds.
  *
- * One minute is finer than any publish cadence, and it is the spacing of the
- * published log: `resolutionSeconds x entries` is how far back the graphs go.
+ * One minute is finer than any publish cadence, so nothing is gained by
+ * asking for less, and a window short enough to sit at this floor is
+ * published at full resolution.
  */
-export const DEFAULT_HISTORY_RESOLUTION_SECONDS = 60;
-/** A history query is a database call; past this it is a skipped cycle. */
-export const DEFAULT_HISTORY_TIMEOUT_MS = 20_000;
+export const HISTORY_RESOLUTION_SECONDS = 60;
+/**
+ * A history query is a database call; past this the cycle publishes no log
+ * and leaves the copy already on the site in place.
+ *
+ * Not on the config page: a query that has not answered in twenty seconds is
+ * a provider in trouble, not a number to tune per boat.
+ */
+export const HISTORY_TIMEOUT_MS = 20_000;
+
+/**
+ * The published log's shape, from the one window setting on the page.
+ *
+ * Bucket width is rounded up to whole minutes so the spacing reads as a
+ * round number in the graphs, and the entry count follows from it. Zero
+ * hours means no log: `entries` is still a positive number because the
+ * publisher trims by it, but nothing asks the provider for anything.
+ */
+export function instrumentLogShape(hours: number): {
+  entries: number;
+  resolutionSeconds: number;
+} {
+  const windowSeconds = Math.max(0, hours) * 3600;
+  const minutes = Math.ceil(windowSeconds / INSTRUMENT_LOG_MAX_ENTRIES / 60);
+  const resolutionSeconds = Math.max(HISTORY_RESOLUTION_SECONDS, minutes * 60);
+  return {
+    entries: Math.max(1, Math.round(windowSeconds / resolutionSeconds)),
+    resolutionSeconds,
+  };
+}
 
 /** Read once: the list is the same for every field that shows it. */
 const TIMEZONES = availableTimezones();
@@ -289,6 +323,62 @@ export interface SchemaContext {
   polar?: PolarStatus | null;
   /** The active polar rendered as CSV, to start an override off from. */
   polarCsv?: string;
+  /**
+   * The saved configuration, for settings that have moved between sections.
+   *
+   * The admin UI fills a field the stored config has no value for from the
+   * schema `default` — and submits it. Without this, opening the page on a
+   * config written before a setting moved would show the default beside every
+   * moved setting, and saving would quietly replace what the boat had been
+   * running on.
+   */
+  saved?: Record<string, any>;
+}
+
+/**
+ * Prefill the settings that have moved sections from where they used to be
+ * stored, so a config written before the move opens showing its own values.
+ *
+ * Only the keys the page no longer has a place for are read here;
+ * `resolveConfig` reads them too, so the plugin publishes the same settings
+ * whether or not anyone has opened the page since the upgrade.
+ */
+function carryForwardMovedSettings(
+  schema: typeof configSchema,
+  saved: Record<string, any>,
+): void {
+  const properties = schema.properties as any;
+  const instrumentLog = saved.instrumentLog ?? {};
+  const history = saved.history ?? {};
+  const notifications = saved.notifications ?? {};
+  const track = saved.track ?? {};
+
+  if (zeroOrMore(instrumentLog.hours) === null) {
+    const hours = resolveInstrumentLogHours(instrumentLog, history);
+    properties.instrumentLog.properties.hours.default = hours;
+    if (!str(instrumentLog.providerId) && str(history.providerId)) {
+      properties.instrumentLog.properties.providerId.default = str(history.providerId);
+    }
+  }
+  if (num(track.positionRetentionHours) === null && num(saved.positionRetentionHours) !== null) {
+    properties.track.properties.positionRetentionHours.default = num(saved.positionRetentionHours);
+  }
+  if (notifications.publish === undefined && saved.publishNotifications !== undefined) {
+    properties.notifications.properties.publish.default = saved.publishNotifications !== false;
+  }
+  if (notifications.exclude === undefined && saved.notificationExclude !== undefined) {
+    properties.notifications.properties.exclude.default = parsePathList(
+      saved.notificationExclude,
+    ).join('\n');
+  }
+  if (
+    zeroOrMore(notifications.warnAfterMinutes) === null &&
+    zeroOrMore(saved.notifyAfterFailureMinutes) !== null
+  ) {
+    properties.notifications.properties.warnAfterMinutes.default = zeroOrMore(
+      saved.notifyAfterFailureMinutes,
+    );
+  }
 }
 
 /**
@@ -334,8 +424,10 @@ function overrideCheckbox(
  * saved only once the override is genuinely on.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, polar, polarCsv } = context;
+  const { repoName, siteUrl, polar, polarCsv, saved } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
+
+  if (saved) carryForwardMovedSettings(schema, saved);
 
   if (repoName) {
     const checkbox = overrideCheckbox(schema, 'github', 'overrideName');
@@ -494,43 +586,30 @@ export const configSchema = {
     },
     instrumentLog: {
       type: 'object',
-      title: 'Instrument log (sparklines)',
+      title: 'Instruments (sparklines)',
+      description:
+        'The rolling log the sparklines are drawn from, read back every cycle from a ' +
+        'Signal K history provider (signalk-to-influxdb2, for example). With no ' +
+        'provider the site shows current values and omits the graphs. The map track ' +
+        "is not part of this: it is always the plugin's own.",
       properties: {
         paths: {
           type: 'string',
           title: 'Captured paths',
           description:
-            'One Signal K path per line, asked of the history provider. "*" matches ' +
-            'one path segment. Lines starting with # are comments. Every path here is ' +
-            'uploaded for every entry on every publish. navigation.position is never ' +
-            'asked for: the track comes from the boat, through the privacy zones.',
+            'One Signal K path per line. "*" matches one path segment, and lines ' +
+            'starting with # are comments. navigation.position is never asked for: ' +
+            'the track comes from the boat, through the privacy zones.',
           default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
         },
-        entries: {
+        hours: {
           type: 'number',
-          title: 'Entries retained',
+          title: 'History window (hours)',
           description:
-            'Rolling length of instrument_log.json, and the query window: the log ' +
-            'covers entries x resolution, which is also what the site’s history ' +
-            'dropdown can offer. 60 entries at 60 s is one hour; 24 hours needs 1440 ' +
-            'and uploads about half a megabyte on every publish.',
-          default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
-        },
-      },
-    },
-    history: {
-      type: 'object',
-      title: 'History provider (sparklines)',
-      description:
-        'Where the instrument log comes from. With a history provider installed ' +
-        '(signalk-to-influxdb2, for example) the sparklines are read back from it ' +
-        'every cycle; with none the site shows current values and omits the graphs. ' +
-        "The map track does not come from here — it is always the plugin's own.",
-      properties: {
-        enabled: {
-          type: 'boolean',
-          title: 'Read the instrument log from a history provider',
-          default: true,
+            'How far back the sparklines plot. Bucket width follows the window, so ' +
+            'the published file stays about the same size however long it is. Zero ' +
+            'publishes no log at all.',
+          default: DEFAULT_INSTRUMENT_LOG_HOURS,
         },
         providerId: {
           type: 'string',
@@ -540,30 +619,7 @@ export const configSchema = {
             '"signalk-to-influxdb2") when more than one is registered.',
           default: '',
         },
-        resolutionSeconds: {
-          type: 'number',
-          title: 'Resolution (seconds)',
-          description:
-            'Bucket width asked of the provider, and the spacing of the published log.',
-          default: DEFAULT_HISTORY_RESOLUTION_SECONDS,
-        },
-        timeoutMs: {
-          type: 'number',
-          title: 'Query timeout (ms)',
-          description:
-            'Past this the cycle publishes no instrument log and leaves the copy ' +
-            'already on the site in place.',
-          default: DEFAULT_HISTORY_TIMEOUT_MS,
-        },
       },
-    },
-    positionRetentionHours: {
-      type: 'number',
-      title: 'Position retention (hours)',
-      description:
-        'How long raw positions stay in positions_index.json — the map track. Past ' +
-        'days survive as GPX regardless.',
-      default: DEFAULT_POSITION_RETENTION_HOURS,
     },
     staleMaxAgeMinutes: {
       type: 'number',
@@ -593,59 +649,60 @@ export const configSchema = {
     },
     track: {
       type: 'object',
-      title: 'Track detail',
+      title: 'Track',
       properties: {
         detailMetres: {
           type: 'number',
           title: 'Track detail (metres)',
           description:
-            'The track is recorded from position deltas and thinned by shape: a fix is ' +
-            'kept when dropping it would move the drawn track by more than this, and at ' +
-            'least once per publish cycle. Smaller follows a tack more closely and uploads ' +
-            'more; larger is cheaper on a hotspot. Ignored on a server that does not offer ' +
-            'position deltas, where the track is one fix per cycle as before.',
+            'A fix is kept when dropping it would move the drawn track by more than ' +
+            'this, and at least once per publish cycle. Smaller follows a tack more ' +
+            'closely and uploads more; larger is cheaper on a hotspot.',
           default: DEFAULT_TRACK_DETAIL_METRES,
+        },
+        positionRetentionHours: {
+          type: 'number',
+          title: 'Position retention (hours)',
+          description:
+            'How long raw positions stay in positions_index.json — the map track. ' +
+            'Past days survive as GPX regardless.',
+          default: DEFAULT_POSITION_RETENTION_HOURS,
         },
       },
     },
-    notifyAfterFailureMinutes: {
-      type: 'number',
-      title: 'Warn after this many minutes of failure',
-      description:
-        'Raise a Signal K notification at notifications.tracker.publishFailed once ' +
-        'publishing has been failing continuously for this long, so an expired token ' +
-        'reaches KIP or the chartplotter rather than only the server log. Cleared on the ' +
-        'next successful publish. Zero turns it off.',
-      default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-    },
-    buildDocsIndex: {
-      type: 'boolean',
-      title: 'Maintain docs/index.json',
-      description:
-        "Rebuild the ship's-docs manifest when the docs tree changes. Turn off if you " +
-        'run the docs-index GitHub Action instead.',
-      default: true,
-    },
-    publishNotifications: {
-      type: 'boolean',
-      title: 'Publish notifications',
-      description:
-        'Publish active Signal K notifications and how often each one has fired over ' +
-        'the last 24 hours. Notification messages are free text from whichever plugin ' +
-        'raised them and are published verbatim — turn this off if yours say anything ' +
-        'you would not put on a public page.',
-      default: true,
-    },
-    notificationExclude: {
-      type: 'string',
-      title: 'Notifications never published',
-      description:
-        'One notification path per line, without the "notifications." prefix. ' +
-        '"*" matches one segment and a parent excludes its whole subtree, so "server" ' +
-        'drops every server notification. Adding a path removes it from the site on the ' +
-        'next cycle, including the firing counts it had already collected. Empty ' +
-        'publishes every notification.',
-      default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
+    notifications: {
+      type: 'object',
+      title: 'Notifications',
+      properties: {
+        publish: {
+          type: 'boolean',
+          title: 'Publish notifications',
+          description:
+            'Publish active notifications and how often each has fired over the last ' +
+            '24 hours. A notification message is free text from whichever plugin ' +
+            'raised it, published verbatim — turn this off if yours say anything you ' +
+            'would not put on a public page.',
+          default: true,
+        },
+        exclude: {
+          type: 'string',
+          title: 'Never published',
+          description:
+            'One notification path per line, without the "notifications." prefix. ' +
+            '"*" matches one segment and a parent excludes its subtree, so "server" ' +
+            'drops every server notification. Empty publishes every one.',
+          default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
+        },
+        warnAfterMinutes: {
+          type: 'number',
+          title: 'Warn after this many minutes of failure',
+          description:
+            'Raise notifications.tracker.publishFailed once publishing has been ' +
+            'failing for this long, so an expired token reaches KIP or the ' +
+            'chartplotter rather than only the server log. Zero turns it off.',
+          default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+        },
+      },
     },
     site: {
       type: 'object',
@@ -674,11 +731,8 @@ export const configSchema = {
           title: 'Vessel logo',
           description:
             'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG, any size the server will accept in a config save ' +
-            '(10 MB by default, and base64 adds about a third). Empty falls back to ' +
-            'data/vessel/logo.png if you have committed one. Set the tab and ' +
-            'home-screen icon separately, below — a detailed logo rarely reads well ' +
-            'shrunk to a favicon.',
+            'JPEG, WebP or SVG. Empty falls back to data/vessel/logo.png if you have ' +
+            'committed one. The tab and home-screen icon is set separately, below.',
           default: '',
         },
         icon: {
@@ -717,12 +771,10 @@ export const configSchema = {
           type: 'string',
           title: 'Tide station override',
           description:
-            'A NOAA station ID (e.g. 9414290) to query before the boat has reported a ' +
-            'GPS position, for the tide and 48-hour conditions panels. Blank means those ' +
-            "panels wait for a fix rather than showing some other coast's numbers. " +
-            'Nothing in the Signal K tree names a tide station, so there is nothing ' +
-            'here to derive or to keep in step — it is simply the station to use ' +
-            'until a fix arrives.',
+            'A NOAA station ID (e.g. 9414290) for the tide and 48-hour conditions ' +
+            'panels to use before the boat has reported a GPS position. Blank means ' +
+            "those panels wait for a fix rather than showing some other coast's " +
+            'numbers.',
           default: '',
         },
       },
@@ -736,6 +788,7 @@ export const configUiSchema = {
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
   polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
+  notifications: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } } },
 };
 
 function str(value: unknown, fallback = ''): string {
@@ -744,6 +797,23 @@ function str(value: unknown, fallback = ''): string {
 
 function bool(value: unknown): boolean {
   return value === true;
+}
+
+/**
+ * A number the page is allowed to set to zero, where zero is an answer
+ * rather than an empty box: no history window, no failure alarm.
+ *
+ * `num` rejects it along with the negatives and the blanks, which is how
+ * "Zero turns it off" came to mean "fall back to thirty minutes".
+ */
+function zeroOrMore(value: unknown): number | null {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function num(value: unknown): number | null {
@@ -992,6 +1062,43 @@ export function resolveCustomLinks(value: unknown): {
   return { links, warnings };
 }
 
+/**
+ * How far back the sparklines plot, in hours.
+ *
+ * The page asks for this one number. A config written before the instrument
+ * log and the history provider became a single section stored the window as
+ * `entries x resolutionSeconds` in two sections, with a switch of its own —
+ * read that back into hours, so an upgrade keeps publishing the window it was
+ * publishing rather than silently dropping to the default.
+ */
+function resolveInstrumentLogHours(
+  instrumentLog: Record<string, any>,
+  history: Record<string, any>,
+): number {
+  const typed = zeroOrMore(instrumentLog.hours);
+  if (typed !== null) return typed;
+  if (history.enabled === false) return 0;
+  const entries = num(instrumentLog.entries);
+  if (entries === null) return DEFAULT_INSTRUMENT_LOG_HOURS;
+  return (entries * (num(history.resolutionSeconds) ?? HISTORY_RESOLUTION_SECONDS)) / 3600;
+}
+
+/**
+ * Notification paths never published.
+ *
+ * Empty is a real answer — publish every one — so it must not fall back to
+ * the default the way an empty path list does. That holds for the key this
+ * setting had before it moved into the notifications section too: only a
+ * config that has never carried either gets the default.
+ */
+function notificationExclude(
+  notifications: Record<string, any>,
+  input: Record<string, any>,
+): string[] {
+  const value = notifications.exclude ?? input.notificationExclude;
+  return value === undefined ? [...DEFAULT_NOTIFICATION_EXCLUDE] : parsePathList(value);
+}
+
 /** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(value: unknown): string {
   if (value && typeof value === 'object') {
@@ -1040,7 +1147,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const github = input.github ?? {};
   const interval = input.interval ?? {};
   const instrumentLog = input.instrumentLog ?? {};
+  // A config written before the merge kept these in sections of their own.
   const history = input.history ?? {};
+  const notifications = input.notifications ?? {};
+  const track = input.track ?? {};
   const site = input.site ?? {};
   const problems: string[] = [];
 
@@ -1108,19 +1218,13 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const paths = parsePathList(instrumentLog.paths);
 
   const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
-  const resolutionSeconds =
-    num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
-  const entries = Math.max(
-    1,
-    Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
-  );
-  if (history.enabled !== false && resolutionSeconds * entries < underway) {
+  const hours = resolveInstrumentLogHours(instrumentLog, history);
+  const { entries, resolutionSeconds } = instrumentLogShape(hours);
+  if (hours > 0 && hours * 3600 < underway) {
     // The log would not even span one publish interval, so every cycle would
-    // publish a graph with no overlap with the last one. Neither field looks
-    // wrong on its own, which is why this is worth saying.
+    // publish a graph with no overlap with the last one.
     warnings.push(
-      `The instrument log covers ${Math.round((resolutionSeconds * entries) / 60)} min ` +
-        `(${Math.round(resolutionSeconds)}s x ${entries} entries), less than the ` +
+      `The history window is ${Math.round(hours * 60)} min, less than the ` +
         `${Math.round(underway)}s underway publish interval, so the sparklines will ` +
         'jump rather than scroll.',
     );
@@ -1149,37 +1253,30 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       polars: resolvePolars(input.polars),
       positionRetentionHours:
-        num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
+        num(track.positionRetentionHours) ??
+        num(input.positionRetentionHours) ??
+        DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
       history: {
-        enabled: history.enabled !== false,
-        providerId: str(history.providerId),
-        resolutionSeconds: Math.max(1, Math.round(resolutionSeconds)),
-        timeoutMs: Math.max(
-          1000,
-          Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
-        ),
+        enabled: hours > 0,
+        providerId: str(instrumentLog.providerId) || str(history.providerId),
+        resolutionSeconds,
+        timeoutMs: HISTORY_TIMEOUT_MS,
       },
       track: {
-        detailMetres: Math.max(
-          1,
-          num((input.track ?? {}).detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES,
-        ),
+        detailMetres: Math.max(1, num(track.detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES),
       },
-      notifyAfterFailureMinutes: Math.max(
-        0,
-        num(input.notifyAfterFailureMinutes) ?? DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-      ),
-      buildDocsIndex: input.buildDocsIndex !== false,
-      publishNotifications: input.publishNotifications !== false,
+      notifyAfterFailureMinutes:
+        zeroOrMore(notifications.warnAfterMinutes) ??
+        zeroOrMore(input.notifyAfterFailureMinutes) ??
+        DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+      publishNotifications:
+        (notifications.publish ?? input.publishNotifications) !== false,
       // No fallback to the default when the box is empty. For the captured
       // instrument paths an empty list means "nothing would be logged", so
       // the default stands in; for a blacklist it means "publish all of
       // them", which is a choice the adopter is allowed to make.
-      notificationExclude:
-        input.notificationExclude === undefined
-          ? [...DEFAULT_NOTIFICATION_EXCLUDE]
-          : parsePathList(input.notificationExclude),
+      notificationExclude: notificationExclude(notifications, input),
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,
