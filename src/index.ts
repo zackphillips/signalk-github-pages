@@ -192,23 +192,30 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   };
 
   /**
-   * The derived values the config page shows read-only beside their override
+   * The derived values the config page shows beside their override
    * checkboxes. Read when the page is opened, so they are current.
    *
    * The repository name comes from the saved options rather than from the
    * running config, because the page is worth opening on a plugin that is
    * disabled or has never started.
+   *
+   * `readPluginOptions()` is not the mirror image of `savePluginOptions()`:
+   * you save a configuration, and you read back the whole stored file —
+   * `{ enabled, configuration }`. Reading it as though it were the
+   * configuration found no owner on any server, which left every derived note
+   * blank and made the override checkboxes look like they did nothing.
    */
   const schemaContext = () => {
     let owner = '';
     let savedGithub: Record<string, any> = {};
     try {
       const saved = app.readPluginOptions?.() as Record<string, any> | undefined;
-      savedGithub = saved?.github ?? {};
+      const configuration = (saved?.configuration ?? {}) as Record<string, any>;
+      savedGithub = configuration.github ?? {};
       const value = savedGithub.owner;
       if (typeof value === 'string') owner = value.trim();
     } catch {
-      // Nothing saved yet: the box stays empty until the owner is.
+      // Nothing saved yet: the notes stay quiet until the owner is set.
     }
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually

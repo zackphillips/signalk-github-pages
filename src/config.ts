@@ -8,11 +8,12 @@
  * to read.
  *
  * Four settings are derived rather than typed: the repository name from the
- * owner, the track timezone from the server, the polar table from the Polar
- * Management plugin, and the USCG and hull numbers from the Signal K
- * registrations. Each one has an "Override" checkbox beside it that switches
- * the field from derived to typed. The derived value is what the plugin uses
- * whenever the box is unticked, whatever is sitting in the field.
+ * owner, the site address from the repository, the track timezone from the
+ * server, and the polar table from the Polar Management plugin. Each one has
+ * an "Override" checkbox, and the typed field appears only once that box is
+ * ticked — see `shownWhenTicked`. What the plugin derives is written into the
+ * checkbox's own description every time the page is opened, so it is current
+ * rather than whatever was derived the day the config was last saved.
  *
  * Defaults are the values this tracker has run on for years on a Raspberry
  * Pi. What is *not* defaulted is anything that belongs to one
@@ -258,15 +259,17 @@ export const PAT_GUIDANCE =
   'needs an organisation owner to approve the token.';
 
 /**
- * The polar field's help text when the plugin has not yet looked.
+ * The polar override box's help text.
  *
- * `buildConfigSchema` replaces it with what the last cycle actually found.
+ * `buildConfigSchema` puts what the last cycle actually found on the checkbox
+ * above it, where it is readable whether or not the override is ticked.
  */
 export const POLARS_FIELD_DESCRIPTION =
-  'The active polar from the Polar Management plugin. Tick Override polar to ' +
-  'publish the table below instead: first line the true wind speeds in knots, ' +
-  'then one line per true wind angle in degrees followed by the target boat ' +
-  'speeds. Semicolons, commas, tabs or spaces all work, and # starts a comment.';
+  'Published instead of the active polar from the Polar Management plugin: first ' +
+  'line the true wind speeds in knots, then one line per true wind angle in ' +
+  'degrees followed by the target boat speeds. Semicolons, commas, tabs or spaces ' +
+  'all work, and # starts a comment. A box you have not typed in yet starts off ' +
+  'as the active polar, if there is one; empty falls back to the server.';
 
 /** What the last cycle found, for the note under the polar field. */
 export interface PolarStatus {
@@ -284,67 +287,109 @@ export interface SchemaContext {
   siteUrl?: string;
   /** What the last cycle resolved for the polar table. */
   polar?: PolarStatus | null;
-  /** The active polar rendered as CSV, to show in the read-only box. */
+  /** The active polar rendered as CSV, to start an override off from. */
   polarCsv?: string;
 }
 
 /**
- * The config schema, with the derived fields prefilled from what the plugin
- * can see right now.
+ * The typed field a derived setting's "Override" checkbox reveals, for
+ * `buildConfigSchema` to fill in.
+ *
+ * It lives in the ticked branch of a `dependencies` block, which is past
+ * where the schema's own types reach; the cast is to that one field.
+ */
+function overrideField(
+  schema: typeof configSchema,
+  section: keyof typeof configSchema.properties,
+  flag: string,
+  field: string,
+): { description?: string; default?: string } {
+  return (schema.properties as any)[section].dependencies[flag].oneOf[1].properties[field];
+}
+
+/** The "Override" checkbox itself, whose description carries what is derived. */
+function overrideCheckbox(
+  schema: typeof configSchema,
+  section: keyof typeof configSchema.properties,
+  flag: string,
+): { description: string } {
+  return (schema.properties as any)[section].properties[flag];
+}
+
+/**
+ * The config schema, with what the plugin currently derives written into the
+ * override checkboxes.
  *
  * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
- * not at install: open the page after changing the active polar and the box
- * shows it.
+ * not at install: open the page after changing the active polar and it says
+ * which one is being published.
  *
- * The prefilled values are JSON Schema `default`s, which the admin UI shows
- * only in a field the user has not filled in. They are cosmetic — `resolveConfig`
- * derives the same values itself and ignores the field whenever its override is
- * unticked — so a stale default can never become a published value.
+ * The derived values go in the descriptions rather than into the fields
+ * because a description is read-only text the form cannot save back, while a
+ * `default` is submitted with everything else the first time the page is
+ * saved — which is how the old read-only boxes came to show a value from
+ * whenever the config was last written instead of what is true now. The one
+ * `default` still set here is the polar CSV, and it sits in the branch that
+ * exists only while Override polar is ticked: a starting point for editing,
+ * saved only once the override is genuinely on.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
   const { repoName, siteUrl, polar, polarCsv } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
-  if (repoName) schema.properties.github.properties.name.default = repoName;
-  if (siteUrl) schema.properties.site.properties.url.default = siteUrl;
+  if (repoName) {
+    const checkbox = overrideCheckbox(schema, 'github', 'overrideName');
+    checkbox.description = `${checkbox.description} Publishing to ${repoName}.`;
+  }
+  if (siteUrl) {
+    const checkbox = overrideCheckbox(schema, 'site', 'overrideUrl');
+    checkbox.description = `${checkbox.description} The site is served at ${siteUrl}.`;
+  }
 
   if (polar) {
     const note =
-      polar.source === 'resource'
-        ? `Publishing ${polar.summary}.`
-        : polar.source === 'config'
-          ? `Publishing ${polar.summary}.`
-          : `Publishing no polar: ${polar.summary}.`;
+      polar.source === 'none'
+        ? `Publishing no polar: ${polar.summary}.`
+        : `Publishing ${polar.summary}.`;
     const problems = polar.problems.length ? ` ${polar.problems.join(' ')}` : '';
-    schema.properties.polars.properties.table.description =
-      `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`;
+    const checkbox = overrideCheckbox(schema, 'polars', 'override');
+    checkbox.description = `${note}${problems} ${checkbox.description}`;
   }
-  if (polarCsv) schema.properties.polars.properties.table.default = polarCsv;
+  if (polarCsv) overrideField(schema, 'polars', 'override', 'table').default = polarCsv;
 
   return schema;
 }
 
 /**
- * A derived field's "Override" checkbox, as a JSON Schema dependency.
+ * A derived field's "Override" checkbox, as a JSON Schema dependency: the
+ * typed field exists only in the branch where the box is ticked.
  *
- * Unticked, the field goes read-only so the page shows what the plugin will
- * publish without inviting an edit that would be ignored. It is a `dependencies`
- * block rather than `if`/`then` because every version of react-json-schema-form
- * the Signal K admin UI has shipped understands one, and a renderer that
- * understands neither falls back to the plain editable field in `properties` —
- * a cosmetic loss, not a lost setting.
+ * `dependencies` rather than `if`/`then` because every react-json-schema-form
+ * the Signal K admin UI has shipped understands one, and the field is added by
+ * the branch rather than greyed out in `properties` because that is the part
+ * every version renders the same way. The greyed-out version this replaced had
+ * a worse problem than looking inert on an old admin UI: the box was filled
+ * from a JSON Schema `default`, the form submits its defaults, and so the
+ * derived value of the day was written into the saved config and shown back
+ * for ever after. Open the page a month later and the read-only polar box
+ * still held the table Polar Management served when the config was last
+ * saved — and ticking Override started you off editing that stale copy.
+ *
+ * A field that is not in the schema is still not dropped from the config: the
+ * admin UI leaves form data it cannot see alone, so a typed polar table
+ * survives unticking the box and comes back when it is ticked again.
  */
-function readOnlyUnless(flag: string, field: string) {
+function shownWhenTicked(flag: string, field: string, definition: object) {
   return {
     [flag]: {
       oneOf: [
+        { properties: { [flag]: { enum: [false] } } },
         {
           properties: {
-            [flag]: { enum: [false] },
-            [field]: { readOnly: true },
+            [flag]: { enum: [true] },
+            [field]: definition,
           },
         },
-        { properties: { [flag]: { enum: [true] } } },
       ],
     },
   };
@@ -358,7 +403,14 @@ export const configSchema = {
       type: 'object',
       title: 'GitHub repository',
       required: ['owner', 'token'],
-      dependencies: readOnlyUnless('overrideName', 'name'),
+      dependencies: shownWhenTicked('overrideName', 'name', {
+        type: 'string',
+        title: 'Repository name',
+        description:
+          'The repository to publish to, without the owner. A project site — e.g. ' +
+          '"tracker", served at /tracker/ — goes here.',
+        default: '',
+      }),
       properties: {
         owner: {
           type: 'string',
@@ -370,14 +422,6 @@ export const configSchema = {
           title: 'Override repository name',
           description: 'Publish to a repository other than <owner>.github.io.',
           default: false,
-        },
-        name: {
-          type: 'string',
-          title: 'Repository name',
-          description:
-            'Defaults to <owner>.github.io, the user site. A project site — e.g. ' +
-            '"tracker", served at /tracker/ — needs the override.',
-          default: '',
         },
         branch: {
           type: 'string',
@@ -432,20 +476,19 @@ export const configSchema = {
       type: 'object',
       title: 'Track timezone',
       description: `Calendar day GPX tracks are grouped by. This server is set to ${serverTimezone()}.`,
-      dependencies: readOnlyUnless('override', 'zone'),
+      dependencies: shownWhenTicked('override', 'zone', {
+        type: 'string',
+        enum: ['UTC', ...TIMEZONES],
+        enumNames: ['UTC', ...TIMEZONES],
+        title: 'Timezone',
+        default: serverTimezone(),
+      }),
       properties: {
         override: {
           type: 'boolean',
           title: 'Override timezone',
           description: "Group tracks by a zone other than the server's.",
           default: false,
-        },
-        zone: {
-          type: 'string',
-          enum: ['UTC', ...TIMEZONES],
-          enumNames: ['UTC', ...TIMEZONES],
-          title: 'Timezone',
-          default: serverTimezone(),
         },
       },
     },
@@ -533,19 +576,18 @@ export const configSchema = {
     polars: {
       type: 'object',
       title: 'Polar table',
-      dependencies: readOnlyUnless('override', 'table'),
+      dependencies: shownWhenTicked('override', 'table', {
+        type: 'string',
+        title: 'Polar table',
+        description: POLARS_FIELD_DESCRIPTION,
+        default: '',
+      }),
       properties: {
         override: {
           type: 'boolean',
           title: 'Override polar',
-          description: 'Publish the table below instead of the active polar.',
+          description: 'Publish a table typed here instead of the active polar.',
           default: false,
-        },
-        table: {
-          type: 'string',
-          title: 'Polar table',
-          description: POLARS_FIELD_DESCRIPTION,
-          default: '',
         },
       },
     },
@@ -611,7 +653,14 @@ export const configSchema = {
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
-      dependencies: readOnlyUnless('overrideUrl', 'url'),
+      dependencies: shownWhenTicked('overrideUrl', 'url', {
+        type: 'string',
+        title: 'Site address',
+        description:
+          'Where the published site is served, e.g. https://example.com/. It is what ' +
+          'a link preview in a chat app resolves images and titles against.',
+        default: '',
+      }),
       properties: {
         logo: {
           type: 'string',
@@ -625,9 +674,11 @@ export const configSchema = {
           title: 'Vessel logo',
           description:
             'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG, up to 512 kB. Empty falls back to data/vessel/logo.png ' +
-            'if you have committed one. Set the tab and home-screen icon separately, ' +
-            'below — a detailed logo rarely reads well shrunk to a favicon.',
+            'JPEG, WebP or SVG, any size the server will accept in a config save ' +
+            '(10 MB by default, and base64 adds about a third). Empty falls back to ' +
+            'data/vessel/logo.png if you have committed one. Set the tab and ' +
+            'home-screen icon separately, below — a detailed logo rarely reads well ' +
+            'shrunk to a favicon.',
           default: '',
         },
         icon: {
@@ -637,7 +688,7 @@ export const configSchema = {
           description:
             'The browser tab icon, the home-screen icon, and the image a shared link ' +
             'unfurls to in a chat app. A simple square mark works best. PNG, JPEG, ' +
-            'WebP or SVG, up to 512 kB. Empty falls back to a generic tracker icon.',
+            'WebP or SVG. Empty falls back to a generic tracker icon.',
           default: '',
         },
         overrideUrl: {
@@ -645,15 +696,6 @@ export const configSchema = {
           title: 'Override site address',
           description: 'Publish under a custom domain rather than the GitHub Pages URL.',
           default: false,
-        },
-        url: {
-          type: 'string',
-          title: 'Site address',
-          description:
-            'Where the published site is served, e.g. https://example.com/. Derived ' +
-            'from the repository unless overridden. It is what a link preview in a ' +
-            'chat app resolves images and titles against.',
-          default: '',
         },
         customLinks: {
           type: 'array',
@@ -678,9 +720,9 @@ export const configSchema = {
             'A NOAA station ID (e.g. 9414290) to query before the boat has reported a ' +
             'GPS position, for the tide and 48-hour conditions panels. Blank means those ' +
             "panels wait for a fix rather than showing some other coast's numbers. " +
-            'Unlike the USCG and hull numbers, this is never read from Signal K, so ' +
-            'there is nothing here to derive or agree with — it is simply the ' +
-            'station to use until a fix arrives.',
+            'Nothing in the Signal K tree names a tide station, so there is nothing ' +
+            'here to derive or to keep in step — it is simply the station to use ' +
+            'until a fix arrives.',
           default: '',
         },
       },

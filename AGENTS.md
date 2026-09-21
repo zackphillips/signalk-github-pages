@@ -91,9 +91,9 @@ Run `npm test` and `npm run typecheck` before committing.
   timezone, the address the site links back to), plus the USCG and hull
   numbers, which are here because picking them out of a `registrations` tree
   is a judgement the plugin already makes and the frontend should not make
-  twice. There is no override for either number, unlike the four settings
-  `resolveConfig` derives elsewhere: a boat with no matching registration
-  simply publishes neither key.
+  twice. Neither number is on the config page at all — they are read from
+  Signal K on every cycle — so a boat with no matching registration simply
+  publishes neither key.
 - **The passage comes from the Course API and carries no coordinates.**
   `nextPoint.position` and `previousPoint.position` are raw positions, and
   the privacy zones guard `navigation.position` on its way into the snapshot
@@ -493,12 +493,12 @@ Run `npm test` and `npm run typecheck` before committing.
   rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
   comes back as 5.999999999999999.
 - **The config polar table is an override, not a fallback.** Untick "Override
-  polar" and the field is read-only and ignored, whatever is in it; tick it
-  and it beats the server's active polar. An override that will not parse
-  falls back to the server rather than blanking the chart. `plugin.schema` is
-  a function so the field's description can say which of the two is live —
-  that note is the only way a user can tell which plugin the chart is coming
-  from.
+  polar" and the field is not on the page and is ignored, whatever is stored
+  in it; tick it and it beats the server's active polar, starting off from the
+  active polar's CSV. An override that will not parse falls back to the server
+  rather than blanking the chart. `plugin.schema` is a function so the
+  checkbox's description can say which of the two is live — that note is the
+  only way a user can tell which plugin the chart is coming from.
 - **The polar table is only ours while we have one.** `publishPolars` gates
   `data/vessel/polars.csv` in the manifest. Losing both sources stops
   publishing it and stops claiming it; it never deletes the file, because a
@@ -533,16 +533,26 @@ Run `npm test` and `npm run typecheck` before committing.
   repository name from the owner (`<owner>.github.io`), the site address from
   the repository (`pagesUrl`, which a custom domain overrides), the timezone
   from the server, and the polar from Polar Management. `resolveConfig`
-  derives them itself and ignores the field whenever its override is
-  unticked, so the `default` that `buildConfigSchema` puts in the box is
-  cosmetic and a stale one can never become a published value. Graying the
-  box out is a JSON Schema `dependencies` block, not `if`/`then`: every
-  react-json-schema-form the Signal K admin UI has shipped understands one,
-  and a renderer that understands neither still shows the plain editable
-  field from `properties`. The USCG and hull numbers are derived the same
-  way, from the Signal K registrations, but with no override and no box on
-  the config page at all: there is nothing there to agree or disagree with,
-  so a missing registration just means neither key is published.
+  derives them itself and ignores the typed field whenever its override is
+  unticked. The typed field is not on the page until the box is ticked:
+  `shownWhenTicked` puts it in the ticked branch of a JSON Schema
+  `dependencies` block, which every react-json-schema-form the Signal K admin
+  UI has shipped renders the same way. It used to sit in `properties` with
+  `readOnly` set in the unticked branch, prefilled from a `default` with
+  whatever the plugin had derived — but the admin UI submits defaults, so the
+  first save wrote that value into the config and showed it back for ever:
+  the read-only polar box held the table Polar Management served the day the
+  config was last saved, and ticking Override polar started you off editing
+  that stale copy. What is derived now goes into the checkbox's own
+  description, which is text the form cannot save back, rebuilt by
+  `buildConfigSchema` every time the page is opened. A field left out of the
+  schema is not dropped from the config: the admin UI leaves form data it
+  cannot see alone, so a typed polar table survives unticking.
+- **`readPluginOptions()` is not the mirror of `savePluginOptions()`.** You
+  save a configuration and you read back the whole stored file, `{ enabled,
+  configuration }`. `schemaContext` in `index.ts` reads the saved owner out of
+  `.configuration`; reading it one level too high found no owner on any
+  server, and every derived note on the config page came out blank.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
   nothing is fatal; a token that is not shaped like one is a warning. The test

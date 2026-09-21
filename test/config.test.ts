@@ -249,7 +249,8 @@ describe('resolveConfig', () => {
 });
 
 describe('the timezone field', () => {
-  const zone = () => (configSchema.properties as any).timezone.properties.zone;
+  const zone = () =>
+    (configSchema.properties as any).timezone.dependencies.override.oneOf[1].properties.zone;
 
   it('offers IANA names, not a free-text box where "PST" looked reasonable', () => {
     expect(zone().enum).toContain('America/Los_Angeles');
@@ -279,15 +280,20 @@ describe('the timezone field', () => {
 });
 
 describe('buildConfigSchema', () => {
-  const polarField = (schema: any) => schema.properties.polars.properties.table.description;
+  // What the checkbox says, and what the box it reveals holds.
+  const polarNote = (schema: any) => schema.properties.polars.properties.override.description;
+  const polarBox = (schema: any) =>
+    schema.properties.polars.dependencies.override.oneOf[1].properties.table;
 
-  it('describes the field generically before any cycle has run', () => {
-    expect(polarField(buildConfigSchema({ polar: null }))).toBe(POLARS_FIELD_DESCRIPTION);
-    expect(polarField(buildConfigSchema())).toBe(POLARS_FIELD_DESCRIPTION);
+  it('says nothing about a polar before any cycle has run', () => {
+    expect(polarNote(buildConfigSchema({ polar: null }))).toBe(
+      (configSchema.properties as any).polars.properties.override.description,
+    );
+    expect(polarBox(buildConfigSchema()).description).toBe(POLARS_FIELD_DESCRIPTION);
   });
 
   it('names the polar it is publishing', () => {
-    const description = polarField(
+    const note = polarNote(
       buildConfigSchema({
         polar: {
           source: 'resource',
@@ -296,12 +302,12 @@ describe('buildConfigSchema', () => {
         },
       }),
     );
-    expect(description).toContain('mermug-orc');
-    expect(description).toContain('Publishing');
+    expect(note).toContain('mermug-orc');
+    expect(note).toContain('Publishing');
   });
 
   it('carries the last cycle complaint onto the page', () => {
-    const description = polarField(
+    const note = polarNote(
       buildConfigSchema({
         polar: {
           source: 'none',
@@ -310,22 +316,44 @@ describe('buildConfigSchema', () => {
         },
       }),
     );
-    expect(description).toContain('Publishing no polar');
-    expect(description).toContain('Polar not found: x');
+    expect(note).toContain('Publishing no polar');
+    expect(note).toContain('Polar not found: x');
   });
 
-  it('prefills the read-only boxes with what the plugin can see', () => {
+  it('puts what is derived beside the checkbox, where saving cannot overwrite it', () => {
     const built = buildConfigSchema({
-      polarCsv: 'twa/tws;6\n52;4.1\n',
+      repoName: 'owner.github.io',
+      siteUrl: 'https://owner.github.io/',
     }) as any;
-    expect(built.properties.polars.properties.table.default).toBe('twa/tws;6\n52;4.1\n');
+    expect(built.properties.github.properties.overrideName.description).toContain(
+      'owner.github.io',
+    );
+    expect(built.properties.site.properties.overrideUrl.description).toContain(
+      'https://owner.github.io/',
+    );
+    // The typed boxes themselves stay empty: a default is submitted with the
+    // form, and a derived value written into the config goes stale there.
+    expect(
+      built.properties.github.dependencies.overrideName.oneOf[1].properties.name.default,
+    ).toBe('');
+    expect(built.properties.site.dependencies.overrideUrl.oneOf[1].properties.url.default).toBe(
+      '',
+    );
+  });
+
+  it('starts a polar override off from the active polar', () => {
+    const built = buildConfigSchema({ polarCsv: 'twa/tws;6\n52;4.1\n' }) as any;
+    expect(polarBox(built).default).toBe('twa/tws;6\n52;4.1\n');
   });
 
   it('never mutates the schema it was built from', () => {
-    buildConfigSchema({ polarCsv: 'x' });
+    buildConfigSchema({ polarCsv: 'x', repoName: 'owner.github.io' });
     const base = configSchema.properties as any;
-    expect(base.polars.properties.table.default).toBe('');
-    expect(base.polars.properties.table.description).toBe(POLARS_FIELD_DESCRIPTION);
+    expect(base.polars.dependencies.override.oneOf[1].properties.table.default).toBe('');
+    expect(base.polars.dependencies.override.oneOf[1].properties.table.description).toBe(
+      POLARS_FIELD_DESCRIPTION,
+    );
+    expect(base.github.properties.overrideName.description).not.toContain('owner.github.io');
   });
 
   it('leaves every other field exactly as it was', () => {
@@ -339,30 +367,43 @@ describe('the repository fields', () => {
   it('asks only for the owner, and offers the name behind an override', () => {
     const github = (configSchema.properties as any).github;
     expect(github.properties.owner.type).toBe('string');
-    expect(github.properties.name.type).toBe('string');
     expect(github.properties.overrideName.type).toBe('boolean');
+    expect(github.dependencies.overrideName.oneOf[1].properties.name.type).toBe('string');
     expect(github.required).toEqual(['owner', 'token']);
   });
 
   it('offers nothing left over from an old version', () => {
     const github = (configSchema.properties as any).github.properties;
-    expect(Object.keys(github).sort()).toEqual([
-      'branch',
-      'name',
-      'overrideName',
-      'owner',
-      'token',
-    ]);
+    expect(Object.keys(github).sort()).toEqual(['branch', 'overrideName', 'owner', 'token']);
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
-  it('grays the name out until the override is ticked', () => {
+  it('shows the name field only once the override is ticked', () => {
     const dependencies = (configSchema.properties as any).github.dependencies;
     const [off, on] = dependencies.overrideName.oneOf;
     expect(off.properties.overrideName.enum).toEqual([false]);
-    expect(off.properties.name.readOnly).toBe(true);
+    expect(off.properties.name).toBeUndefined();
     expect(on.properties.overrideName.enum).toEqual([true]);
-    expect(on.properties.name).toBeUndefined();
+    expect(on.properties.name.type).toBe('string');
+  });
+
+  it('keeps every overridable field out of the form until its box is ticked', () => {
+    // A field that is present but read-only is filled from a JSON Schema
+    // default, and the admin UI submits defaults: the derived value of the day
+    // was saved and shown back for ever. Absent until ticked, there is nothing
+    // to save.
+    const properties = configSchema.properties as any;
+    for (const [section, flag, field] of [
+      ['github', 'overrideName', 'name'],
+      ['timezone', 'override', 'zone'],
+      ['polars', 'override', 'table'],
+      ['site', 'overrideUrl', 'url'],
+    ] as const) {
+      expect(properties[section].properties[field], `${section}.${field}`).toBeUndefined();
+      const [off, on] = properties[section].dependencies[flag].oneOf;
+      expect(off.properties[field], `${section}.${field}`).toBeUndefined();
+      expect(on.properties[field].title, `${section}.${field}`).toBeTruthy();
+    }
   });
 
   it('says what to tick when making the token, and nothing more', () => {
@@ -545,11 +586,11 @@ describe('the vessel logo', () => {
     }
   });
 
-  it('refuses one too big to upload on every frontend publish', () => {
-    const huge = `data:image/png;base64,${'A'.repeat(1024 * 1024)}`;
-    const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: huge } });
-    expect(resolved.ok).toBe(false);
-    if (!resolved.ok) expect(resolved.problems.join(' ')).toMatch(/limit is/);
+  it('takes one of any size: it is uploaded only when its bytes change', () => {
+    const big = `data:image/png;base64,${'A'.repeat(4 * 1024 * 1024)}`;
+    const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: big } });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.config.site.logo?.content.length).toBe(3 * 1024 * 1024);
   });
 });
 
