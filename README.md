@@ -9,7 +9,7 @@
 
 <p align="center">
   <img alt="Signal K plugin" src="https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4">
-  <img alt="Node 18+" src="https://img.shields.io/badge/node-%E2%89%A518-5fa04e">
+  <img alt="Node 20+" src="https://img.shields.io/badge/node-%E2%89%A520-5fa04e">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6">
   <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -125,46 +125,48 @@ only. Give Pages a minute, then open the URL.
 |---|---|---|
 | `github.owner` | **required** | The user or organisation, e.g. `yourname` |
 | `github.overrideName` | off | Publish somewhere other than `<owner>.github.io` |
-| `github.name` | derived | `<owner>.github.io` unless the override is ticked |
+| `github.name` | derived | Shown only when the override is ticked; otherwise `<owner>.github.io` |
 | `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
 | `github.branch` | `main` | Branch Pages serves |
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
-| `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
-| `instrumentLog.entries` | `60` | Log length in buckets: 60 x 60 s is the last hour, and the longest window the site's history dropdown will offer |
-| `positionRetentionHours` | `24` | How long raw positions stay in the map track |
-| `track.detailMetres` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
-| `history.enabled` | on | Read the instrument log from a history provider — [see below](#history-provider) |
-| `history.providerId` | *empty* | Blank uses the server's default provider |
-| `history.resolutionSeconds` | `60` | Bucket width asked of the provider, and the log's spacing |
-| `history.timeoutMs` | `20000` | Past this the cycle publishes no log and leaves the last one up |
-| `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
 | `timezone.override` | off | Group tracks by a zone other than the server's |
-| `timezone.zone` | the server's zone | IANA zone, for grouping tracks by local day |
-| `polars.override` | off | Publish the table below instead of the active polar |
-| `polars.table` | the active polar | Read-only until the override is ticked, [see below](#polars) |
+| `timezone.zone` | the server's zone | IANA zone, shown only when the override is ticked |
+| `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
+| `instrumentLog.hours` | `1` | How far back the sparklines plot; 0 publishes no log — [see below](#history-provider) |
+| `instrumentLog.providerId` | *empty* | Blank uses the server's default history provider |
+| `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
+| `polars.override` | off | Publish a typed table instead of the active polar |
+| `polars.table` | the active polar | Shown only when the override is ticked, [see below](#polars) |
+| `track.detailMetres` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
+| `track.positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `notifications.publish` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
+| `notifications.exclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
+| `notifications.warnAfterMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](#branding) |
 | `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](#branding) |
 | `site.overrideUrl` | off | Publish under a custom domain rather than the Pages URL |
-| `site.url` | derived | Where the site is served, e.g. `https://example.com/` |
+| `site.url` | derived | Where the site is served, e.g. `https://example.com/`; shown only when the override is ticked |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
 | `site.tideStationOverride` | *empty* | A NOAA station ID to query before the boat has a GPS fix — see [Tide station override](#tide-station-override) |
-| `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
-| `notificationExclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
-| `buildDocsIndex` | on | Maintain `docs/index.json` |
-| `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
 The defaults are the numbers this tracker has run on for years on a
 Raspberry Pi. Four settings are derived rather than typed — the repository
 name from the owner, the site address from the repository, the timezone from
 the server, and the polar table from Polar Management — and each has an
-override checkbox beside it. The USCG and hull numbers are derived too, from
-the Signal K registrations, but with no override: a boat with no matching
-registration simply publishes neither one. What has no
-default at all is what belongs to one particular boat: privacy zones start
-empty, and [the vessel's own details](#what-comes-from-signal-k) come from
-Signal K rather than from this page.
+override checkbox. The box you would type in appears only once that checkbox
+is ticked; until then the checkbox itself says what the plugin is deriving,
+read afresh every time the page is opened. What has no default at all is what
+belongs to one particular boat: privacy zones start empty, and [the vessel's
+own details](#what-comes-from-signal-k) come from Signal K rather than from
+this page.
+
+Settings that used to be on this page and are not any more — an instrument
+log length and a bucket width where there is now one window, a history query
+timeout, a switch for `docs/index.json` — are still read from a config
+written against them, and a config that carries them opens showing its own
+values rather than the new defaults. Nothing resets on upgrade.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
@@ -209,12 +211,11 @@ registered ([signalk-to-influxdb2] and friends implement the Signal K History
 API) it already stores every value at full rate, so the plugin asks it for the
 sparkline window on every cycle instead of accumulating readings itself:
 
-- The graphs are spaced at `history.resolutionSeconds` (60 s by default)
-  rather than at the publish interval, so they are finer than a two-minute
-  cadence can produce.
-- The log covers `entries x resolution`: 60 entries at 60 s is the last hour.
-  That span is also what the site's history dropdown can offer — see
-  [how far back the sparklines go](#how-far-back-the-sparklines-go).
+- The graphs are spaced at 60 s rather than at the publish interval, so they
+  are finer than a two-minute cadence can produce.
+- The log covers `instrumentLog.hours` — an hour by default. That span is also
+  what the site's history dropdown can offer, see [how far back the sparklines
+  go](#how-far-back-the-sparklines-go).
 - A restart, a reinstall, a moved data directory or a plugin that was off for
   a day no longer leaves a hole. Nothing is accumulated, so there is nothing
   to lose.
@@ -228,9 +229,9 @@ forever. That is the normal case on a server without a history provider, not a
 failure.
 
 **A provider that stops answering is different from one that is not there.**
-A database still starting, a query past `history.timeoutMs`, a provider that
-threw: the cycle publishes no log at all and leaves the copy already on the
-site in place. A sparkline a few minutes stale beats a blank panel every time
+A database still starting, a query past the twenty-second timeout, a provider
+that threw: the cycle publishes no log at all and leaves the copy already on
+the site in place. A sparkline a few minutes stale beats a blank panel every time
 InfluxDB restarts. The plugin logs the reason, once per change of state.
 
 Wildcard paths (`electrical.batteries.*.voltage`) are expanded against the
@@ -238,10 +239,12 @@ paths the provider reports, re-listed every 15 minutes. A literal path the
 provider has never stored is still requested — a sensor that came online five
 minutes ago is not in the listing yet.
 
-Set `history.providerId` only if more than one provider is registered and you
-want a specific one; blank means the server's default.
+Set `instrumentLog.providerId` only if more than one provider is registered
+and you want a specific one; blank means the server's default. Setting
+`instrumentLog.hours` to zero turns the whole thing off.
 
-The whole log goes up on every publish, so its size is `entries` x paths: see
+The whole log goes up on every publish, so its size is the bucket count times
+the paths: see
 [why that matters](#why-this-matters-more-than-it-looks-like-it-should).
 
 [signalk-to-influxdb2]: https://www.npmjs.com/package/signalk-to-influxdb2
@@ -254,27 +257,29 @@ battery voltage is read against solar power and boat speed, and they only line
 up on a shared axis.
 
 What the dropdown can offer is decided by the published file, not by the site.
-`instrument_log.json` reaches back `entries x resolution`, so the defaults (60
-entries at 60 s) cover an hour, and the site marks the three longer windows
-*(not logged)* and disables them rather than drawing three copies of the same
-chart under different labels.
+`instrument_log.json` reaches back `instrumentLog.hours`, an hour by default,
+and the site marks the three longer windows *(not logged)* and disables them
+rather than drawing three copies of the same chart under different labels.
 
-To make them selectable, raise `instrumentLog.entries`:
+Raise the window and they become selectable. The bucket width follows from it
+rather than being a second setting, capped at 360 buckets so the file does not
+grow with the window:
 
-| Window | `entries` at 60 s | `entries` at 300 s |
+| `instrumentLog.hours` | Bucket width | Buckets published |
 | --- | --- | --- |
-| 1 hour | 60 | 12 |
-| 3 hours | 180 | 36 |
-| 12 hours | 720 | 144 |
-| 24 hours | 1440 | 288 |
+| 1 | 60 s | 60 |
+| 3 | 60 s | 180 |
+| 6 | 60 s | 360 |
+| 12 | 120 s | 360 |
+| 24 | 240 s | 360 |
 
-Every one of those entries is uploaded in full on every publish, so this is a
-real decision and not a knob to turn up by reflex. At the default path list, 24
-hours at 60 s is roughly half a megabyte a cycle — fine on a dock, expensive on
-a hotspot at a two-minute cadence. Coarsening `history.resolutionSeconds` buys
-the same window for a fifth of the bytes and costs detail inside the shorter
-ones: at 300 s the 1-hour view is twelve points. Pick the pair you want, or
-leave it at an hour.
+The whole file is uploaded on every publish, so the cap is what keeps a day of
+history off a hotspot budget: 24 hours costs about 130 kB a cycle at the
+default path list rather than the half megabyte 1440 one-minute buckets would.
+What it costs instead is detail inside the shorter views — at a 24-hour window
+the 1-hour view is fifteen points. An hour is the default because it is what
+every install can carry; six hours is the longest window that keeps full
+60 s resolution.
 
 ## Instrument paths
 
@@ -334,13 +339,13 @@ instrument log is a rolling window, so *every* entry shifts position each
 cycle — there is no "only the tail changed" for a delta to find even if one
 were possible.
 
-Asking for every path a database has stored is roughly 167 per entry, which at
-200 entries is a ~1 MB file. At a two-minute cadence that is about **40 MB per
-hour** over the hotspot, for data the sparklines never draw. The defaults are
-about two dozen patterns over 60 entries: tens of kilobytes, a megabyte or two
-an hour. Both halves are levers — the path list and `instrumentLog.entries` —
-and the second one is what the history dropdown spends: see [how far back the
-sparklines go](#how-far-back-the-sparklines-go).
+Asking for every path a database has stored is roughly 167 per bucket, which
+at 200 buckets is a ~1 MB file. At a two-minute cadence that is about **40 MB
+per hour** over the hotspot, for data the sparklines never draw. The defaults
+are about two dozen patterns over 60 buckets: tens of kilobytes, a megabyte or
+two an hour. The path list is the lever that matters, because the bucket count
+is capped: see [how far back the sparklines
+go](#how-far-back-the-sparklines-go).
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
@@ -431,7 +436,7 @@ silently.
 
 ### Notifications
 
-Not every notification belongs on a public page. `notificationExclude` is a
+Not every notification belongs on a public page. `notifications.exclude` is a
 list of paths — without the `notifications.` prefix — that are never
 published: `*` matches one segment, and naming a parent drops its whole
 subtree, so `server` silences every server notification at once.
@@ -479,7 +484,7 @@ grow the file without bound.
 > A notification's `message` is free text written by whichever plugin raised
 > it, and it is published verbatim to a public website. Everything else the
 > plugin publishes is a number off a known path, which is why this one has an
-> off switch: `publishNotifications`.
+> off switch: `notifications.publish`.
 
 ## Branding
 
@@ -498,14 +503,20 @@ or `<owner>.github.io/<name>/` for a project site) unless `site.overrideUrl` is
 ticked for a custom domain.
 
 The logo and the icon are two separate file pickers, `site.logo` and
-`site.icon`. Choose a PNG, JPEG, WebP or SVG up to 512 kB in each and the
-plugin publishes them to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
-uploaded independently and only when their own bytes change. The logo is shown
-beside the name in the status hero and the footer; the icon is what the
-browser tab, the phone home screen and a shared link's preview use. They used
-to be the same upload, which meant a detailed logo that read fine at 200px
-came out as a muddy favicon, and a boat that wanted a clean square icon had to
-make its status-hero image match it.
+`site.icon`. Choose a PNG, JPEG, WebP or SVG in each and the plugin publishes
+them to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`, uploaded
+independently and only when their own bytes change. The logo is shown beside
+the name in the status hero and the footer; the icon is what the browser tab,
+the phone home screen and a shared link's preview use. They used to be the
+same upload, which meant a detailed logo that read fine at 200px came out as a
+muddy favicon, and a boat that wanted a clean square icon had to make its
+status-hero image match it.
+
+Neither field has a size limit of the plugin's own. Each image is
+fingerprinted, so a large file costs one upload rather than one per cycle.
+The ceiling that does exist is the Signal K server's: it accepts a config save
+up to `FILEUPLOADSIZELIMIT`, 10 MB by default, and base64 adds about a third
+on the way in.
 
 With no logo set, the pages ask for `data/vessel/logo.png` — where the first
 adopters of this tracker committed theirs by hand — and hide the image if it is
@@ -544,6 +555,11 @@ It is read on every cycle, not once at start: a cold boot runs the first cycle
 before the first product-information frame arrives, and an identity read once
 would leave the GPX saying "Vessel" until the next restart.
 
+Neither number is on the config page, and neither has an override: a boat
+whose registrations match nothing simply publishes neither key, rather than
+carrying a typed box that would have to be kept in step with Signal K by
+hand. The polar table comes from the server the same way — see below.
+
 ### The passage banner
 
 Activate a waypoint or a route on the plotter and the banner appears: where
@@ -562,13 +578,6 @@ back to its latitude and longitude would put the slip you just left on a
 public page through a path the privacy zones do not guard. The ETA is left
 out too — `targetArrivalTime` is recomputed continuously, and `site.json` is
 only rewritten when its content changes.
-
-The config page shows both numbers read-only, exactly as Signal K reports
-them. There is no override: a boat with no matching registration simply
-publishes neither key, rather than a typed box that would have to be kept in
-sync with Signal K by hand.
-
-The polar table comes from the server the same way — see below.
 
 ### Tide station override
 
@@ -628,17 +637,18 @@ next cycle, with nothing to restart.
 
 ### Overriding it
 
-The config page shows the active polar in a read-only box. Tick **Override
-polar** to publish a table typed there instead — for a boat whose polar is on
-a sailmaker's PDF and which is not about to install a second plugin to type it
-in. Paste it in any shape it arrives — semicolons, commas, tabs or spaces, `#`
-comments, a European decimal comma — and the plugin re-renders it into the
-form the chart parses. An override that will not parse falls back to the
-server rather than blanking the chart. The config page says which of the two
-is in use every time you open it:
+The config page names the active polar beside the **Override polar**
+checkbox. Tick it and a box appears, holding that polar's CSV as a starting
+point, and what you leave in it is published instead — for a boat whose polar
+is on a sailmaker's PDF and which is not about to install a second plugin to
+type it in. Paste it in any shape it arrives — semicolons, commas, tabs or
+spaces, `#` comments, a European decimal comma — and the plugin re-renders it
+into the form the chart parses. An override that will not parse falls back to the
+server rather than blanking the chart. The checkbox says which of the two is
+in use every time you open the page:
 
-> In use: `"mermug-orc"` from Polar Management, 18 angle(s) x 7 wind speed(s).
-> This box is ignored while that holds.
+> Publishing `"mermug-orc"` from Polar Management, 18 angle(s) x 7 wind
+> speed(s). Publish a table typed here instead of the active polar.
 
 No polar from either source means the plugin publishes none and does not claim
 the path: a `polars.csv` you committed by hand stays yours, and clearing the
@@ -797,7 +807,7 @@ SHAs and rate limits are log output and the plugin status line, not paths in
 the model.
 
 One thing is not. If publishing fails continuously for
-`notifyAfterFailureMinutes` — half an hour by default, which at the underway
+`notifications.warnAfterMinutes` — half an hour by default, which at the underway
 cadence is fifteen consecutive attempts — the plugin raises
 `notifications.tracker.publishFailed` and clears it on the next success. An
 expired token otherwise reaches nobody: the admin UI is a browser tab nobody
@@ -855,7 +865,7 @@ node -e "console.log(require(process.env.HOME + \
 3. **Prints a function** — the package is fine and the problem is elsewhere:
    confirm the server was restarted, that it is reading the `~/.signalk` you
    are looking at (`SIGNALK_NODE_CONFIG_DIR` overrides it), and that Node is
-   18 or newer (`node -v`).
+   20 or newer (`node -v`), which is what `package.json` asks for.
 
 `npm install signalk-github-pages` by name fails with a 404 until this is
 published. Use the git form above.

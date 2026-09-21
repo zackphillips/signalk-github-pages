@@ -64,7 +64,6 @@ const TEXT_EXTENSIONS = new Set([
 export interface FrontendOptions {
   repo: string;
   branch: string;
-  instrumentLogEntries: number;
   /** Plugin version, which names the service worker's shell cache. */
   version: string;
   /** What the boat is called, from the Signal K tree. */
@@ -98,7 +97,6 @@ export function frontendOptions(
   return {
     repo: config.github.repo,
     branch: config.github.branch,
-    instrumentLogEntries: config.instrumentLog.entries,
     version,
     vesselName,
     siteUrl: config.site.url,
@@ -180,12 +178,6 @@ export function renderConstants(source: string, options: FrontendOptions): strin
       'GITHUB_DEFAULT_BRANCH',
     );
   }
-  output = replaceOrThrow(
-    output,
-    /(INSTRUMENT_LOG_ENTRIES:\s*)\d+/,
-    `$1${options.instrumentLogEntries}`,
-    'INSTRUMENT_LOG_ENTRIES',
-  );
   return output;
 }
 

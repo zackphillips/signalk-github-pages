@@ -17,6 +17,12 @@
  * (`data:image/png;name=burgee.png;base64,...`). This module turns that
  * string into bytes and a path; `publisher.ts` puts it in a commit and
  * `manifest.ts` claims the path only while there is one to publish.
+ *
+ * There is no size limit here. Each image is fingerprinted by `publisher.ts`
+ * and uploaded only when its own bytes change, so a large file costs one
+ * upload rather than one per cycle. The ceiling that does exist is the Signal
+ * K server's: it takes a config POST up to `FILEUPLOADSIZELIMIT`, 10 MB by
+ * default, and base64 inflates a file by about a third on the way in.
  */
 import { Buffer } from 'node:buffer';
 
@@ -36,15 +42,6 @@ const EXTENSIONS: Record<string, string> = {
  * on the config page overrides it.
  */
 export const LEGACY_LOGO_PATH = 'data/vessel/logo.png';
-
-/**
- * Cap on the decoded image.
- *
- * The data URL is stored in the plugin's config and the bytes are uploaded on
- * every frontend publish. A logo or icon is a few tens of kilobytes; a
- * megabyte of it is a photograph someone dropped in by mistake.
- */
-export const LOGO_MAX_BYTES = 512 * 1024;
 
 export interface VesselImage {
   /** Repository path this is published at. */
@@ -116,16 +113,6 @@ function parseVesselImage(
   const content = Buffer.from(payload, 'base64');
   if (!content.length) {
     return { image: null, problems: [`The ${field} decoded to an empty file.`] };
-  }
-  if (content.length > LOGO_MAX_BYTES) {
-    return {
-      image: null,
-      problems: [
-        `The ${field} is ${Math.round(content.length / 1024)} kB; the limit is ` +
-          `${Math.round(LOGO_MAX_BYTES / 1024)} kB. It is uploaded whole on every ` +
-          'frontend publish, so it wants to be an icon rather than a photograph.',
-      ],
-    };
   }
 
   return {

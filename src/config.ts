@@ -8,11 +8,12 @@
  * to read.
  *
  * Four settings are derived rather than typed: the repository name from the
- * owner, the track timezone from the server, the polar table from the Polar
- * Management plugin, and the USCG and hull numbers from the Signal K
- * registrations. Each one has an "Override" checkbox beside it that switches
- * the field from derived to typed. The derived value is what the plugin uses
- * whenever the box is unticked, whatever is sitting in the field.
+ * owner, the site address from the repository, the track timezone from the
+ * server, and the polar table from the Polar Management plugin. Each one has
+ * an "Override" checkbox, and the typed field appears only once that box is
+ * ticked — see `shownWhenTicked`. What the plugin derives is written into the
+ * checkbox's own description every time the page is opened, so it is current
+ * rather than whatever was derived the day the config was last saved.
  *
  * Defaults are the values this tracker has run on for years on a Raspberry
  * Pi. What is *not* defaulted is anything that belongs to one
@@ -91,7 +92,6 @@ export interface PluginConfig {
    * notification. Zero turns it off. See `alarm.ts`.
    */
   notifyAfterFailureMinutes: number;
-  buildDocsIndex: boolean;
   /**
    * Publish `data/telemetry/notifications.json`: the active notifications and
    * the 24-hour firing log behind the site's Notifications panel.
@@ -195,18 +195,25 @@ export const DEFAULT_INTERVAL_STATIONARY_MINUTES = 60;
 export const DEFAULT_INTERVAL_UNDERWAY = DEFAULT_INTERVAL_UNDERWAY_MINUTES * 60;
 export const DEFAULT_INTERVAL_STATIONARY = DEFAULT_INTERVAL_STATIONARY_MINUTES * 60;
 /**
- * Rolling length of the instrument log, in buckets.
+ * How far back the sparklines plot, in hours.
  *
- * At the default 60 s resolution this is the last hour, which is the shortest
- * window the site's history dropdown offers and the only one it can promise
- * on a default install. The frontend plots whatever it is given, so raising
- * this is what makes the 3, 12 and 24 hour windows selectable — at the cost
- * of uploading every entry in full on every publish. 24 hours at 60 s is 1440
- * entries, roughly half a megabyte a cycle: worth it on a dock, not on a
- * hotspot, which is why the default stays an hour and the choice is the
- * adopter's.
+ * One hour is the shortest window the site's history dropdown offers, and
+ * the only one every install can promise. Raising it is what makes the 3, 12
+ * and 24 hour windows selectable, at the cost of a longer file uploaded in
+ * full on every publish. Zero publishes no log at all, and the panels show
+ * current values without graphs.
  */
-export const DEFAULT_INSTRUMENT_LOG_ENTRIES = 60;
+export const DEFAULT_INSTRUMENT_LOG_HOURS = 1;
+/**
+ * Most buckets the published log is allowed to hold.
+ *
+ * The window is a single setting and the bucket width follows from it, so
+ * that asking for a day of history cannot quietly make every cycle upload
+ * half a megabyte. 24 hours lands on 4-minute buckets and about 130 kB; an
+ * hour stays at the 60 s floor. A sparkline card is some 400 px wide, so
+ * finer than this is detail nobody can see, paid for every two minutes.
+ */
+const INSTRUMENT_LOG_MAX_ENTRIES = 360;
 /**
  * Default track detail, in metres.
  *
@@ -230,14 +237,42 @@ export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
 export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
 /**
- * Bucket width asked of the history provider, in seconds.
+ * Finest bucket width asked of the history provider, in seconds.
  *
- * One minute is finer than any publish cadence, and it is the spacing of the
- * published log: `resolutionSeconds x entries` is how far back the graphs go.
+ * One minute is finer than any publish cadence, so nothing is gained by
+ * asking for less, and a window short enough to sit at this floor is
+ * published at full resolution.
  */
-export const DEFAULT_HISTORY_RESOLUTION_SECONDS = 60;
-/** A history query is a database call; past this it is a skipped cycle. */
-export const DEFAULT_HISTORY_TIMEOUT_MS = 20_000;
+export const HISTORY_RESOLUTION_SECONDS = 60;
+/**
+ * A history query is a database call; past this the cycle publishes no log
+ * and leaves the copy already on the site in place.
+ *
+ * Not on the config page: a query that has not answered in twenty seconds is
+ * a provider in trouble, not a number to tune per boat.
+ */
+export const HISTORY_TIMEOUT_MS = 20_000;
+
+/**
+ * The published log's shape, from the one window setting on the page.
+ *
+ * Bucket width is rounded up to whole minutes so the spacing reads as a
+ * round number in the graphs, and the entry count follows from it. Zero
+ * hours means no log: `entries` is still a positive number because the
+ * publisher trims by it, but nothing asks the provider for anything.
+ */
+export function instrumentLogShape(hours: number): {
+  entries: number;
+  resolutionSeconds: number;
+} {
+  const windowSeconds = Math.max(0, hours) * 3600;
+  const minutes = Math.ceil(windowSeconds / INSTRUMENT_LOG_MAX_ENTRIES / 60);
+  const resolutionSeconds = Math.max(HISTORY_RESOLUTION_SECONDS, minutes * 60);
+  return {
+    entries: Math.max(1, Math.round(windowSeconds / resolutionSeconds)),
+    resolutionSeconds,
+  };
+}
 
 /** Read once: the list is the same for every field that shows it. */
 const TIMEZONES = availableTimezones();
@@ -258,15 +293,17 @@ export const PAT_GUIDANCE =
   'needs an organisation owner to approve the token.';
 
 /**
- * The polar field's help text when the plugin has not yet looked.
+ * The polar override box's help text.
  *
- * `buildConfigSchema` replaces it with what the last cycle actually found.
+ * `buildConfigSchema` puts what the last cycle actually found on the checkbox
+ * above it, where it is readable whether or not the override is ticked.
  */
 export const POLARS_FIELD_DESCRIPTION =
-  'The active polar from the Polar Management plugin. Tick Override polar to ' +
-  'publish the table below instead: first line the true wind speeds in knots, ' +
-  'then one line per true wind angle in degrees followed by the target boat ' +
-  'speeds. Semicolons, commas, tabs or spaces all work, and # starts a comment.';
+  'Published instead of the active polar from the Polar Management plugin: first ' +
+  'line the true wind speeds in knots, then one line per true wind angle in ' +
+  'degrees followed by the target boat speeds. Semicolons, commas, tabs or spaces ' +
+  'all work, and # starts a comment. A box you have not typed in yet starts off ' +
+  'as the active polar, if there is one; empty falls back to the server.';
 
 /** What the last cycle found, for the note under the polar field. */
 export interface PolarStatus {
@@ -284,67 +321,167 @@ export interface SchemaContext {
   siteUrl?: string;
   /** What the last cycle resolved for the polar table. */
   polar?: PolarStatus | null;
-  /** The active polar rendered as CSV, to show in the read-only box. */
+  /** The active polar rendered as CSV, to start an override off from. */
   polarCsv?: string;
+  /**
+   * The saved configuration, for settings that have moved between sections.
+   *
+   * The admin UI fills a field the stored config has no value for from the
+   * schema `default` — and submits it. Without this, opening the page on a
+   * config written before a setting moved would show the default beside every
+   * moved setting, and saving would quietly replace what the boat had been
+   * running on.
+   */
+  saved?: Record<string, any>;
 }
 
 /**
- * The config schema, with the derived fields prefilled from what the plugin
- * can see right now.
+ * Prefill the settings that have moved sections from where they used to be
+ * stored, so a config written before the move opens showing its own values.
+ *
+ * Only the keys the page no longer has a place for are read here;
+ * `resolveConfig` reads them too, so the plugin publishes the same settings
+ * whether or not anyone has opened the page since the upgrade.
+ */
+function carryForwardMovedSettings(
+  schema: typeof configSchema,
+  saved: Record<string, any>,
+): void {
+  const properties = schema.properties as any;
+  const instrumentLog = saved.instrumentLog ?? {};
+  const history = saved.history ?? {};
+  const notifications = saved.notifications ?? {};
+  const track = saved.track ?? {};
+
+  if (zeroOrMore(instrumentLog.hours) === null) {
+    const hours = resolveInstrumentLogHours(instrumentLog, history);
+    properties.instrumentLog.properties.hours.default = hours;
+    if (!str(instrumentLog.providerId) && str(history.providerId)) {
+      properties.instrumentLog.properties.providerId.default = str(history.providerId);
+    }
+  }
+  if (num(track.positionRetentionHours) === null && num(saved.positionRetentionHours) !== null) {
+    properties.track.properties.positionRetentionHours.default = num(saved.positionRetentionHours);
+  }
+  if (notifications.publish === undefined && saved.publishNotifications !== undefined) {
+    properties.notifications.properties.publish.default = saved.publishNotifications !== false;
+  }
+  if (notifications.exclude === undefined && saved.notificationExclude !== undefined) {
+    properties.notifications.properties.exclude.default = parsePathList(
+      saved.notificationExclude,
+    ).join('\n');
+  }
+  if (
+    zeroOrMore(notifications.warnAfterMinutes) === null &&
+    zeroOrMore(saved.notifyAfterFailureMinutes) !== null
+  ) {
+    properties.notifications.properties.warnAfterMinutes.default = zeroOrMore(
+      saved.notifyAfterFailureMinutes,
+    );
+  }
+}
+
+/**
+ * The typed field a derived setting's "Override" checkbox reveals, for
+ * `buildConfigSchema` to fill in.
+ *
+ * It lives in the ticked branch of a `dependencies` block, which is past
+ * where the schema's own types reach; the cast is to that one field.
+ */
+function overrideField(
+  schema: typeof configSchema,
+  section: keyof typeof configSchema.properties,
+  flag: string,
+  field: string,
+): { description?: string; default?: string } {
+  return (schema.properties as any)[section].dependencies[flag].oneOf[1].properties[field];
+}
+
+/** The "Override" checkbox itself, whose description carries what is derived. */
+function overrideCheckbox(
+  schema: typeof configSchema,
+  section: keyof typeof configSchema.properties,
+  flag: string,
+): { description: string } {
+  return (schema.properties as any)[section].properties[flag];
+}
+
+/**
+ * The config schema, with what the plugin currently derives written into the
+ * override checkboxes.
  *
  * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
- * not at install: open the page after changing the active polar and the box
- * shows it.
+ * not at install: open the page after changing the active polar and it says
+ * which one is being published.
  *
- * The prefilled values are JSON Schema `default`s, which the admin UI shows
- * only in a field the user has not filled in. They are cosmetic — `resolveConfig`
- * derives the same values itself and ignores the field whenever its override is
- * unticked — so a stale default can never become a published value.
+ * The derived values go in the descriptions rather than into the fields
+ * because a description is read-only text the form cannot save back, while a
+ * `default` is submitted with everything else the first time the page is
+ * saved — which is how the old read-only boxes came to show a value from
+ * whenever the config was last written instead of what is true now. The one
+ * `default` still set here is the polar CSV, and it sits in the branch that
+ * exists only while Override polar is ticked: a starting point for editing,
+ * saved only once the override is genuinely on.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, polar, polarCsv } = context;
+  const { repoName, siteUrl, polar, polarCsv, saved } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
-  if (repoName) schema.properties.github.properties.name.default = repoName;
-  if (siteUrl) schema.properties.site.properties.url.default = siteUrl;
+  if (saved) carryForwardMovedSettings(schema, saved);
+
+  if (repoName) {
+    const checkbox = overrideCheckbox(schema, 'github', 'overrideName');
+    checkbox.description = `${checkbox.description} Publishing to ${repoName}.`;
+  }
+  if (siteUrl) {
+    const checkbox = overrideCheckbox(schema, 'site', 'overrideUrl');
+    checkbox.description = `${checkbox.description} The site is served at ${siteUrl}.`;
+  }
 
   if (polar) {
     const note =
-      polar.source === 'resource'
-        ? `Publishing ${polar.summary}.`
-        : polar.source === 'config'
-          ? `Publishing ${polar.summary}.`
-          : `Publishing no polar: ${polar.summary}.`;
+      polar.source === 'none'
+        ? `Publishing no polar: ${polar.summary}.`
+        : `Publishing ${polar.summary}.`;
     const problems = polar.problems.length ? ` ${polar.problems.join(' ')}` : '';
-    schema.properties.polars.properties.table.description =
-      `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`;
+    const checkbox = overrideCheckbox(schema, 'polars', 'override');
+    checkbox.description = `${note}${problems} ${checkbox.description}`;
   }
-  if (polarCsv) schema.properties.polars.properties.table.default = polarCsv;
+  if (polarCsv) overrideField(schema, 'polars', 'override', 'table').default = polarCsv;
 
   return schema;
 }
 
 /**
- * A derived field's "Override" checkbox, as a JSON Schema dependency.
+ * A derived field's "Override" checkbox, as a JSON Schema dependency: the
+ * typed field exists only in the branch where the box is ticked.
  *
- * Unticked, the field goes read-only so the page shows what the plugin will
- * publish without inviting an edit that would be ignored. It is a `dependencies`
- * block rather than `if`/`then` because every version of react-json-schema-form
- * the Signal K admin UI has shipped understands one, and a renderer that
- * understands neither falls back to the plain editable field in `properties` —
- * a cosmetic loss, not a lost setting.
+ * `dependencies` rather than `if`/`then` because every react-json-schema-form
+ * the Signal K admin UI has shipped understands one, and the field is added by
+ * the branch rather than greyed out in `properties` because that is the part
+ * every version renders the same way. The greyed-out version this replaced had
+ * a worse problem than looking inert on an old admin UI: the box was filled
+ * from a JSON Schema `default`, the form submits its defaults, and so the
+ * derived value of the day was written into the saved config and shown back
+ * for ever after. Open the page a month later and the read-only polar box
+ * still held the table Polar Management served when the config was last
+ * saved — and ticking Override started you off editing that stale copy.
+ *
+ * A field that is not in the schema is still not dropped from the config: the
+ * admin UI leaves form data it cannot see alone, so a typed polar table
+ * survives unticking the box and comes back when it is ticked again.
  */
-function readOnlyUnless(flag: string, field: string) {
+function shownWhenTicked(flag: string, field: string, definition: object) {
   return {
     [flag]: {
       oneOf: [
+        { properties: { [flag]: { enum: [false] } } },
         {
           properties: {
-            [flag]: { enum: [false] },
-            [field]: { readOnly: true },
+            [flag]: { enum: [true] },
+            [field]: definition,
           },
         },
-        { properties: { [flag]: { enum: [true] } } },
       ],
     },
   };
@@ -358,7 +495,14 @@ export const configSchema = {
       type: 'object',
       title: 'GitHub repository',
       required: ['owner', 'token'],
-      dependencies: readOnlyUnless('overrideName', 'name'),
+      dependencies: shownWhenTicked('overrideName', 'name', {
+        type: 'string',
+        title: 'Repository name',
+        description:
+          'The repository to publish to, without the owner. A project site — e.g. ' +
+          '"tracker", served at /tracker/ — goes here.',
+        default: '',
+      }),
       properties: {
         owner: {
           type: 'string',
@@ -370,14 +514,6 @@ export const configSchema = {
           title: 'Override repository name',
           description: 'Publish to a repository other than <owner>.github.io.',
           default: false,
-        },
-        name: {
-          type: 'string',
-          title: 'Repository name',
-          description:
-            'Defaults to <owner>.github.io, the user site. A project site — e.g. ' +
-            '"tracker", served at /tracker/ — needs the override.',
-          default: '',
         },
         branch: {
           type: 'string',
@@ -432,7 +568,13 @@ export const configSchema = {
       type: 'object',
       title: 'Track timezone',
       description: `Calendar day GPX tracks are grouped by. This server is set to ${serverTimezone()}.`,
-      dependencies: readOnlyUnless('override', 'zone'),
+      dependencies: shownWhenTicked('override', 'zone', {
+        type: 'string',
+        enum: ['UTC', ...TIMEZONES],
+        enumNames: ['UTC', ...TIMEZONES],
+        title: 'Timezone',
+        default: serverTimezone(),
+      }),
       properties: {
         override: {
           type: 'boolean',
@@ -440,54 +582,34 @@ export const configSchema = {
           description: "Group tracks by a zone other than the server's.",
           default: false,
         },
-        zone: {
-          type: 'string',
-          enum: ['UTC', ...TIMEZONES],
-          enumNames: ['UTC', ...TIMEZONES],
-          title: 'Timezone',
-          default: serverTimezone(),
-        },
       },
     },
     instrumentLog: {
       type: 'object',
-      title: 'Instrument log (sparklines)',
+      title: 'Instruments (sparklines)',
+      description:
+        'The rolling log the sparklines are drawn from, read back every cycle from a ' +
+        'Signal K history provider (signalk-to-influxdb2, for example). With no ' +
+        'provider the site shows current values and omits the graphs. The map track ' +
+        "is not part of this: it is always the plugin's own.",
       properties: {
         paths: {
           type: 'string',
           title: 'Captured paths',
           description:
-            'One Signal K path per line, asked of the history provider. "*" matches ' +
-            'one path segment. Lines starting with # are comments. Every path here is ' +
-            'uploaded for every entry on every publish. navigation.position is never ' +
-            'asked for: the track comes from the boat, through the privacy zones.',
+            'One Signal K path per line. "*" matches one path segment, and lines ' +
+            'starting with # are comments. navigation.position is never asked for: ' +
+            'the track comes from the boat, through the privacy zones.',
           default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
         },
-        entries: {
+        hours: {
           type: 'number',
-          title: 'Entries retained',
+          title: 'History window (hours)',
           description:
-            'Rolling length of instrument_log.json, and the query window: the log ' +
-            'covers entries x resolution, which is also what the site’s history ' +
-            'dropdown can offer. 60 entries at 60 s is one hour; 24 hours needs 1440 ' +
-            'and uploads about half a megabyte on every publish.',
-          default: DEFAULT_INSTRUMENT_LOG_ENTRIES,
-        },
-      },
-    },
-    history: {
-      type: 'object',
-      title: 'History provider (sparklines)',
-      description:
-        'Where the instrument log comes from. With a history provider installed ' +
-        '(signalk-to-influxdb2, for example) the sparklines are read back from it ' +
-        'every cycle; with none the site shows current values and omits the graphs. ' +
-        "The map track does not come from here — it is always the plugin's own.",
-      properties: {
-        enabled: {
-          type: 'boolean',
-          title: 'Read the instrument log from a history provider',
-          default: true,
+            'How far back the sparklines plot. Bucket width follows the window, so ' +
+            'the published file stays about the same size however long it is. Zero ' +
+            'publishes no log at all.',
+          default: DEFAULT_INSTRUMENT_LOG_HOURS,
         },
         providerId: {
           type: 'string',
@@ -497,30 +619,7 @@ export const configSchema = {
             '"signalk-to-influxdb2") when more than one is registered.',
           default: '',
         },
-        resolutionSeconds: {
-          type: 'number',
-          title: 'Resolution (seconds)',
-          description:
-            'Bucket width asked of the provider, and the spacing of the published log.',
-          default: DEFAULT_HISTORY_RESOLUTION_SECONDS,
-        },
-        timeoutMs: {
-          type: 'number',
-          title: 'Query timeout (ms)',
-          description:
-            'Past this the cycle publishes no instrument log and leaves the copy ' +
-            'already on the site in place.',
-          default: DEFAULT_HISTORY_TIMEOUT_MS,
-        },
       },
-    },
-    positionRetentionHours: {
-      type: 'number',
-      title: 'Position retention (hours)',
-      description:
-        'How long raw positions stay in positions_index.json — the map track. Past ' +
-        'days survive as GPX regardless.',
-      default: DEFAULT_POSITION_RETENTION_HOURS,
     },
     staleMaxAgeMinutes: {
       type: 'number',
@@ -533,77 +632,77 @@ export const configSchema = {
     polars: {
       type: 'object',
       title: 'Polar table',
-      dependencies: readOnlyUnless('override', 'table'),
+      dependencies: shownWhenTicked('override', 'table', {
+        type: 'string',
+        title: 'Polar table',
+        description: POLARS_FIELD_DESCRIPTION,
+        default: '',
+      }),
       properties: {
         override: {
           type: 'boolean',
           title: 'Override polar',
-          description: 'Publish the table below instead of the active polar.',
+          description: 'Publish a table typed here instead of the active polar.',
           default: false,
-        },
-        table: {
-          type: 'string',
-          title: 'Polar table',
-          description: POLARS_FIELD_DESCRIPTION,
-          default: '',
         },
       },
     },
     track: {
       type: 'object',
-      title: 'Track detail',
+      title: 'Track',
       properties: {
         detailMetres: {
           type: 'number',
           title: 'Track detail (metres)',
           description:
-            'The track is recorded from position deltas and thinned by shape: a fix is ' +
-            'kept when dropping it would move the drawn track by more than this, and at ' +
-            'least once per publish cycle. Smaller follows a tack more closely and uploads ' +
-            'more; larger is cheaper on a hotspot. Ignored on a server that does not offer ' +
-            'position deltas, where the track is one fix per cycle as before.',
+            'A fix is kept when dropping it would move the drawn track by more than ' +
+            'this, and at least once per publish cycle. Smaller follows a tack more ' +
+            'closely and uploads more; larger is cheaper on a hotspot.',
           default: DEFAULT_TRACK_DETAIL_METRES,
+        },
+        positionRetentionHours: {
+          type: 'number',
+          title: 'Position retention (hours)',
+          description:
+            'How long raw positions stay in positions_index.json — the map track. ' +
+            'Past days survive as GPX regardless.',
+          default: DEFAULT_POSITION_RETENTION_HOURS,
         },
       },
     },
-    notifyAfterFailureMinutes: {
-      type: 'number',
-      title: 'Warn after this many minutes of failure',
-      description:
-        'Raise a Signal K notification at notifications.tracker.publishFailed once ' +
-        'publishing has been failing continuously for this long, so an expired token ' +
-        'reaches KIP or the chartplotter rather than only the server log. Cleared on the ' +
-        'next successful publish. Zero turns it off.',
-      default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-    },
-    buildDocsIndex: {
-      type: 'boolean',
-      title: 'Maintain docs/index.json',
-      description:
-        "Rebuild the ship's-docs manifest when the docs tree changes. Turn off if you " +
-        'run the docs-index GitHub Action instead.',
-      default: true,
-    },
-    publishNotifications: {
-      type: 'boolean',
-      title: 'Publish notifications',
-      description:
-        'Publish active Signal K notifications and how often each one has fired over ' +
-        'the last 24 hours. Notification messages are free text from whichever plugin ' +
-        'raised them and are published verbatim — turn this off if yours say anything ' +
-        'you would not put on a public page.',
-      default: true,
-    },
-    notificationExclude: {
-      type: 'string',
-      title: 'Notifications never published',
-      description:
-        'One notification path per line, without the "notifications." prefix. ' +
-        '"*" matches one segment and a parent excludes its whole subtree, so "server" ' +
-        'drops every server notification. Adding a path removes it from the site on the ' +
-        'next cycle, including the firing counts it had already collected. Empty ' +
-        'publishes every notification.',
-      default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
+    notifications: {
+      type: 'object',
+      title: 'Notifications',
+      properties: {
+        publish: {
+          type: 'boolean',
+          title: 'Publish notifications',
+          description:
+            'Publish active notifications and how often each has fired over the last ' +
+            '24 hours. A notification message is free text from whichever plugin ' +
+            'raised it, published verbatim — turn this off if yours say anything you ' +
+            'would not put on a public page.',
+          default: true,
+        },
+        exclude: {
+          type: 'string',
+          title: 'Never published',
+          description:
+            'One notification path per line, without the "notifications." prefix. ' +
+            '"*" matches one segment and a parent excludes its subtree, so "server" ' +
+            'drops every server notification. Empty publishes every one.',
+          default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
+        },
+        warnAfterMinutes: {
+          type: 'number',
+          title: 'Warn after this many minutes of failure',
+          description:
+            'Raise notifications.tracker.publishFailed once publishing has been ' +
+            'failing for this long, so an expired token reaches KIP or the ' +
+            'chartplotter rather than only the server log. Zero turns it off.',
+          default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+        },
+      },
     },
     site: {
       type: 'object',
@@ -611,7 +710,14 @@ export const configSchema = {
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
-      dependencies: readOnlyUnless('overrideUrl', 'url'),
+      dependencies: shownWhenTicked('overrideUrl', 'url', {
+        type: 'string',
+        title: 'Site address',
+        description:
+          'Where the published site is served, e.g. https://example.com/. It is what ' +
+          'a link preview in a chat app resolves images and titles against.',
+        default: '',
+      }),
       properties: {
         logo: {
           type: 'string',
@@ -625,9 +731,8 @@ export const configSchema = {
           title: 'Vessel logo',
           description:
             'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG, up to 512 kB. Empty falls back to data/vessel/logo.png ' +
-            'if you have committed one. Set the tab and home-screen icon separately, ' +
-            'below — a detailed logo rarely reads well shrunk to a favicon.',
+            'JPEG, WebP or SVG. Empty falls back to data/vessel/logo.png if you have ' +
+            'committed one. The tab and home-screen icon is set separately, below.',
           default: '',
         },
         icon: {
@@ -637,7 +742,7 @@ export const configSchema = {
           description:
             'The browser tab icon, the home-screen icon, and the image a shared link ' +
             'unfurls to in a chat app. A simple square mark works best. PNG, JPEG, ' +
-            'WebP or SVG, up to 512 kB. Empty falls back to a generic tracker icon.',
+            'WebP or SVG. Empty falls back to a generic tracker icon.',
           default: '',
         },
         overrideUrl: {
@@ -645,15 +750,6 @@ export const configSchema = {
           title: 'Override site address',
           description: 'Publish under a custom domain rather than the GitHub Pages URL.',
           default: false,
-        },
-        url: {
-          type: 'string',
-          title: 'Site address',
-          description:
-            'Where the published site is served, e.g. https://example.com/. Derived ' +
-            'from the repository unless overridden. It is what a link preview in a ' +
-            'chat app resolves images and titles against.',
-          default: '',
         },
         customLinks: {
           type: 'array',
@@ -675,12 +771,10 @@ export const configSchema = {
           type: 'string',
           title: 'Tide station override',
           description:
-            'A NOAA station ID (e.g. 9414290) to query before the boat has reported a ' +
-            'GPS position, for the tide and 48-hour conditions panels. Blank means those ' +
-            "panels wait for a fix rather than showing some other coast's numbers. " +
-            'Unlike the USCG and hull numbers, this is never read from Signal K, so ' +
-            'there is nothing here to derive or agree with — it is simply the ' +
-            'station to use until a fix arrives.',
+            'A NOAA station ID (e.g. 9414290) for the tide and 48-hour conditions ' +
+            'panels to use before the boat has reported a GPS position. Blank means ' +
+            "those panels wait for a fix rather than showing some other coast's " +
+            'numbers.',
           default: '',
         },
       },
@@ -694,6 +788,7 @@ export const configUiSchema = {
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
   polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
+  notifications: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } } },
 };
 
 function str(value: unknown, fallback = ''): string {
@@ -702,6 +797,23 @@ function str(value: unknown, fallback = ''): string {
 
 function bool(value: unknown): boolean {
   return value === true;
+}
+
+/**
+ * A number the page is allowed to set to zero, where zero is an answer
+ * rather than an empty box: no history window, no failure alarm.
+ *
+ * `num` rejects it along with the negatives and the blanks, which is how
+ * "Zero turns it off" came to mean "fall back to thirty minutes".
+ */
+function zeroOrMore(value: unknown): number | null {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function num(value: unknown): number | null {
@@ -950,6 +1062,43 @@ export function resolveCustomLinks(value: unknown): {
   return { links, warnings };
 }
 
+/**
+ * How far back the sparklines plot, in hours.
+ *
+ * The page asks for this one number. A config written before the instrument
+ * log and the history provider became a single section stored the window as
+ * `entries x resolutionSeconds` in two sections, with a switch of its own —
+ * read that back into hours, so an upgrade keeps publishing the window it was
+ * publishing rather than silently dropping to the default.
+ */
+function resolveInstrumentLogHours(
+  instrumentLog: Record<string, any>,
+  history: Record<string, any>,
+): number {
+  const typed = zeroOrMore(instrumentLog.hours);
+  if (typed !== null) return typed;
+  if (history.enabled === false) return 0;
+  const entries = num(instrumentLog.entries);
+  if (entries === null) return DEFAULT_INSTRUMENT_LOG_HOURS;
+  return (entries * (num(history.resolutionSeconds) ?? HISTORY_RESOLUTION_SECONDS)) / 3600;
+}
+
+/**
+ * Notification paths never published.
+ *
+ * Empty is a real answer — publish every one — so it must not fall back to
+ * the default the way an empty path list does. That holds for the key this
+ * setting had before it moved into the notifications section too: only a
+ * config that has never carried either gets the default.
+ */
+function notificationExclude(
+  notifications: Record<string, any>,
+  input: Record<string, any>,
+): string[] {
+  const value = notifications.exclude ?? input.notificationExclude;
+  return value === undefined ? [...DEFAULT_NOTIFICATION_EXCLUDE] : parsePathList(value);
+}
+
 /** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(value: unknown): string {
   if (value && typeof value === 'object') {
@@ -998,7 +1147,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const github = input.github ?? {};
   const interval = input.interval ?? {};
   const instrumentLog = input.instrumentLog ?? {};
+  // A config written before the merge kept these in sections of their own.
   const history = input.history ?? {};
+  const notifications = input.notifications ?? {};
+  const track = input.track ?? {};
   const site = input.site ?? {};
   const problems: string[] = [];
 
@@ -1066,19 +1218,13 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const paths = parsePathList(instrumentLog.paths);
 
   const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
-  const resolutionSeconds =
-    num(history.resolutionSeconds) ?? DEFAULT_HISTORY_RESOLUTION_SECONDS;
-  const entries = Math.max(
-    1,
-    Math.floor(num(instrumentLog.entries) ?? DEFAULT_INSTRUMENT_LOG_ENTRIES),
-  );
-  if (history.enabled !== false && resolutionSeconds * entries < underway) {
+  const hours = resolveInstrumentLogHours(instrumentLog, history);
+  const { entries, resolutionSeconds } = instrumentLogShape(hours);
+  if (hours > 0 && hours * 3600 < underway) {
     // The log would not even span one publish interval, so every cycle would
-    // publish a graph with no overlap with the last one. Neither field looks
-    // wrong on its own, which is why this is worth saying.
+    // publish a graph with no overlap with the last one.
     warnings.push(
-      `The instrument log covers ${Math.round((resolutionSeconds * entries) / 60)} min ` +
-        `(${Math.round(resolutionSeconds)}s x ${entries} entries), less than the ` +
+      `The history window is ${Math.round(hours * 60)} min, less than the ` +
         `${Math.round(underway)}s underway publish interval, so the sparklines will ` +
         'jump rather than scroll.',
     );
@@ -1107,37 +1253,30 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       polars: resolvePolars(input.polars),
       positionRetentionHours:
-        num(input.positionRetentionHours) ?? DEFAULT_POSITION_RETENTION_HOURS,
+        num(track.positionRetentionHours) ??
+        num(input.positionRetentionHours) ??
+        DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
       history: {
-        enabled: history.enabled !== false,
-        providerId: str(history.providerId),
-        resolutionSeconds: Math.max(1, Math.round(resolutionSeconds)),
-        timeoutMs: Math.max(
-          1000,
-          Math.round(num(history.timeoutMs) ?? DEFAULT_HISTORY_TIMEOUT_MS),
-        ),
+        enabled: hours > 0,
+        providerId: str(instrumentLog.providerId) || str(history.providerId),
+        resolutionSeconds,
+        timeoutMs: HISTORY_TIMEOUT_MS,
       },
       track: {
-        detailMetres: Math.max(
-          1,
-          num((input.track ?? {}).detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES,
-        ),
+        detailMetres: Math.max(1, num(track.detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES),
       },
-      notifyAfterFailureMinutes: Math.max(
-        0,
-        num(input.notifyAfterFailureMinutes) ?? DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-      ),
-      buildDocsIndex: input.buildDocsIndex !== false,
-      publishNotifications: input.publishNotifications !== false,
+      notifyAfterFailureMinutes:
+        zeroOrMore(notifications.warnAfterMinutes) ??
+        zeroOrMore(input.notifyAfterFailureMinutes) ??
+        DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+      publishNotifications:
+        (notifications.publish ?? input.publishNotifications) !== false,
       // No fallback to the default when the box is empty. For the captured
       // instrument paths an empty list means "nothing would be logged", so
       // the default stands in; for a blacklist it means "publish all of
       // them", which is a choice the adopter is allowed to make.
-      notificationExclude:
-        input.notificationExclude === undefined
-          ? [...DEFAULT_NOTIFICATION_EXCLUDE]
-          : parsePathList(input.notificationExclude),
+      notificationExclude: notificationExclude(notifications, input),
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,

@@ -129,16 +129,15 @@ function sendNotification(app: SignalKApp, state: 'warn' | 'normal', message: st
  * not part of this: it is always the plugin's own.
  */
 function historySetting(app: SignalKApp, config: PluginConfig): string {
-  if (!config.history.enabled) return 'no instrument log (history provider turned off)';
+  if (!config.history.enabled) return 'no instrument log (the history window is zero)';
   if (typeof app.getHistoryApi !== 'function') {
     return 'no instrument log (this server has no History API)';
   }
-  const minutes = Math.round(
-    (config.history.resolutionSeconds * config.instrumentLog.entries) / 60,
-  );
+  const hours = (config.history.resolutionSeconds * config.instrumentLog.entries) / 3600;
   return (
-    `instrument log from ${config.history.providerId || 'the default'} history provider ` +
-    `at ${config.history.resolutionSeconds}s x ${config.instrumentLog.entries} entries (${minutes} min)`
+    `instrument log from ${config.history.providerId || 'the default'} history provider: ` +
+    `${hours}h at ${config.history.resolutionSeconds}s buckets ` +
+    `(${config.instrumentLog.entries} entries)`
   );
 }
 
@@ -192,23 +191,31 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   };
 
   /**
-   * The derived values the config page shows read-only beside their override
+   * The derived values the config page shows beside their override
    * checkboxes. Read when the page is opened, so they are current.
    *
    * The repository name comes from the saved options rather than from the
    * running config, because the page is worth opening on a plugin that is
    * disabled or has never started.
+   *
+   * `readPluginOptions()` is not the mirror image of `savePluginOptions()`:
+   * you save a configuration, and you read back the whole stored file —
+   * `{ enabled, configuration }`. Reading it as though it were the
+   * configuration found no owner on any server, which left every derived note
+   * blank and made the override checkboxes look like they did nothing.
    */
   const schemaContext = () => {
     let owner = '';
     let savedGithub: Record<string, any> = {};
+    let saved: Record<string, any> | undefined;
     try {
-      const saved = app.readPluginOptions?.() as Record<string, any> | undefined;
+      const stored = app.readPluginOptions?.() as Record<string, any> | undefined;
+      saved = (stored?.configuration ?? undefined) as Record<string, any> | undefined;
       savedGithub = saved?.github ?? {};
       const value = savedGithub.owner;
       if (typeof value === 'string') owner = value.trim();
     } catch {
-      // Nothing saved yet: the box stays empty until the owner is.
+      // Nothing saved yet: the notes stay quiet until the owner is set.
     }
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually
@@ -223,6 +230,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       polar: polarNote(),
       polarCsv,
+      saved,
     };
   };
 
@@ -267,8 +275,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       app.debug(
         `Starting: ${config.github.repo}@${config.github.branch}, ` +
           `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
-          `${config.instrumentLog.paths.length} instrument path pattern(s) x ` +
-          `${config.instrumentLog.entries} entries, ` +
+          `${config.instrumentLog.paths.length} instrument path pattern(s), ` +
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +

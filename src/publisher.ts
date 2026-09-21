@@ -914,7 +914,6 @@ export class Publisher {
   private manifestOptions(polars: string): ManifestOptions {
     const { config } = this.deps;
     return {
-      buildDocsIndex: config.buildDocsIndex,
       publishPolars: polars !== '',
       publishLogo: config.site.logo?.path,
       publishIcon: config.site.icon?.path,
@@ -1027,8 +1026,7 @@ export class Publisher {
    * tree costs nothing against the rate limit, so this can run every cycle.
    */
   private async docsIndexFiles(): Promise<PublishFile[]> {
-    const { config, client, store, log } = this.deps;
-    if (!config.buildDocsIndex) return [];
+    const { client, store, log } = this.deps;
 
     const state = await store.readState();
     const listing = await client.listTree(state.docsEtag);

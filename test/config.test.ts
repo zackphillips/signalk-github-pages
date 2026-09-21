@@ -4,10 +4,11 @@ import {
   buildConfigSchema,
   configSchema,
   configUiSchema,
-  DEFAULT_HISTORY_RESOLUTION_SECONDS,
-  DEFAULT_HISTORY_TIMEOUT_MS,
+  HISTORY_RESOLUTION_SECONDS,
+  HISTORY_TIMEOUT_MS,
+  instrumentLogShape,
   POLARS_FIELD_DESCRIPTION,
-  DEFAULT_INSTRUMENT_LOG_ENTRIES,
+  DEFAULT_INSTRUMENT_LOG_HOURS,
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
   DEFAULT_INTERVAL_UNDERWAY,
@@ -43,8 +44,10 @@ describe('resolveConfig', () => {
     });
     expect(resolved.config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
     expect(resolved.config.staleMaxAgeMinutes).toBe(DEFAULT_STALE_MAX_AGE_MINUTES);
-    expect(resolved.config.instrumentLog.entries).toBe(DEFAULT_INSTRUMENT_LOG_ENTRIES);
     expect(resolved.config.instrumentLog.paths).toEqual(DEFAULT_INSTRUMENT_LOG_PATHS);
+    expect(resolved.config.instrumentLog.entries).toBe(
+      instrumentLogShape(DEFAULT_INSTRUMENT_LOG_HOURS).entries,
+    );
   });
 
   it('defaults nothing that belongs to one particular boat', () => {
@@ -56,13 +59,27 @@ describe('resolveConfig', () => {
   });
 
   it('falls back rather than accepting zero or a negative number', () => {
-    const config = makeConfig({ positionRetentionHours: 0, interval: { underwayMinutes: -5 } });
+    const config = makeConfig({
+      track: { positionRetentionHours: 0 },
+      interval: { underwayMinutes: -5 },
+    });
     expect(config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
     expect(config.interval.underway).toBe(DEFAULT_INTERVAL_UNDERWAY);
   });
 
+  it('keeps a zero where zero is an answer rather than an empty box', () => {
+    // "Zero turns it off" used to fall through to the default, because the
+    // number parser rejected zero along with the negatives and the blanks.
+    expect(makeConfig({ notifications: { warnAfterMinutes: 0 } }).notifyAfterFailureMinutes)
+      .toBe(0);
+    expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
+  });
+
   it('accepts the strings the admin UI hands back for number fields', () => {
-    const config = makeConfig({ staleMaxAgeMinutes: '45', positionRetentionHours: '12' });
+    const config = makeConfig({
+      staleMaxAgeMinutes: '45',
+      track: { positionRetentionHours: '12' },
+    });
     expect(config.staleMaxAgeMinutes).toBe(45);
     expect(config.positionRetentionHours).toBe(12);
   });
@@ -151,8 +168,9 @@ describe('resolveConfig', () => {
   it('accepts a fully specified form', () => {
     const config = makeConfig();
     expect(config.interval).toEqual({ underway: 120, stationary: 3600 });
+    // Two hours at the 60 s floor.
     expect(config.instrumentLog.entries).toBe(120);
-    expect(config.buildDocsIndex).toBe(true);
+    expect(config.history.resolutionSeconds).toBe(60);
   });
 
   it('takes the tide station override as a plain string, or leaves it empty', () => {
@@ -249,7 +267,8 @@ describe('resolveConfig', () => {
 });
 
 describe('the timezone field', () => {
-  const zone = () => (configSchema.properties as any).timezone.properties.zone;
+  const zone = () =>
+    (configSchema.properties as any).timezone.dependencies.override.oneOf[1].properties.zone;
 
   it('offers IANA names, not a free-text box where "PST" looked reasonable', () => {
     expect(zone().enum).toContain('America/Los_Angeles');
@@ -279,15 +298,20 @@ describe('the timezone field', () => {
 });
 
 describe('buildConfigSchema', () => {
-  const polarField = (schema: any) => schema.properties.polars.properties.table.description;
+  // What the checkbox says, and what the box it reveals holds.
+  const polarNote = (schema: any) => schema.properties.polars.properties.override.description;
+  const polarBox = (schema: any) =>
+    schema.properties.polars.dependencies.override.oneOf[1].properties.table;
 
-  it('describes the field generically before any cycle has run', () => {
-    expect(polarField(buildConfigSchema({ polar: null }))).toBe(POLARS_FIELD_DESCRIPTION);
-    expect(polarField(buildConfigSchema())).toBe(POLARS_FIELD_DESCRIPTION);
+  it('says nothing about a polar before any cycle has run', () => {
+    expect(polarNote(buildConfigSchema({ polar: null }))).toBe(
+      (configSchema.properties as any).polars.properties.override.description,
+    );
+    expect(polarBox(buildConfigSchema()).description).toBe(POLARS_FIELD_DESCRIPTION);
   });
 
   it('names the polar it is publishing', () => {
-    const description = polarField(
+    const note = polarNote(
       buildConfigSchema({
         polar: {
           source: 'resource',
@@ -296,12 +320,12 @@ describe('buildConfigSchema', () => {
         },
       }),
     );
-    expect(description).toContain('mermug-orc');
-    expect(description).toContain('Publishing');
+    expect(note).toContain('mermug-orc');
+    expect(note).toContain('Publishing');
   });
 
   it('carries the last cycle complaint onto the page', () => {
-    const description = polarField(
+    const note = polarNote(
       buildConfigSchema({
         polar: {
           source: 'none',
@@ -310,22 +334,85 @@ describe('buildConfigSchema', () => {
         },
       }),
     );
-    expect(description).toContain('Publishing no polar');
-    expect(description).toContain('Polar not found: x');
+    expect(note).toContain('Publishing no polar');
+    expect(note).toContain('Polar not found: x');
   });
 
-  it('prefills the read-only boxes with what the plugin can see', () => {
+  it('puts what is derived beside the checkbox, where saving cannot overwrite it', () => {
     const built = buildConfigSchema({
-      polarCsv: 'twa/tws;6\n52;4.1\n',
+      repoName: 'owner.github.io',
+      siteUrl: 'https://owner.github.io/',
     }) as any;
-    expect(built.properties.polars.properties.table.default).toBe('twa/tws;6\n52;4.1\n');
+    expect(built.properties.github.properties.overrideName.description).toContain(
+      'owner.github.io',
+    );
+    expect(built.properties.site.properties.overrideUrl.description).toContain(
+      'https://owner.github.io/',
+    );
+    // The typed boxes themselves stay empty: a default is submitted with the
+    // form, and a derived value written into the config goes stale there.
+    expect(
+      built.properties.github.dependencies.overrideName.oneOf[1].properties.name.default,
+    ).toBe('');
+    expect(built.properties.site.dependencies.overrideUrl.oneOf[1].properties.url.default).toBe(
+      '',
+    );
+  });
+
+  it('starts a polar override off from the active polar', () => {
+    const built = buildConfigSchema({ polarCsv: 'twa/tws;6\n52;4.1\n' }) as any;
+    expect(polarBox(built).default).toBe('twa/tws;6\n52;4.1\n');
   });
 
   it('never mutates the schema it was built from', () => {
-    buildConfigSchema({ polarCsv: 'x' });
+    buildConfigSchema({ polarCsv: 'x', repoName: 'owner.github.io' });
     const base = configSchema.properties as any;
-    expect(base.polars.properties.table.default).toBe('');
-    expect(base.polars.properties.table.description).toBe(POLARS_FIELD_DESCRIPTION);
+    expect(base.polars.dependencies.override.oneOf[1].properties.table.default).toBe('');
+    expect(base.polars.dependencies.override.oneOf[1].properties.table.description).toBe(
+      POLARS_FIELD_DESCRIPTION,
+    );
+    expect(base.github.properties.overrideName.description).not.toContain('owner.github.io');
+  });
+
+  it('opens a config written before a setting moved showing that config', () => {
+    // The admin UI fills a field the stored config has no value for from the
+    // schema default and submits it, so a default standing where a moved
+    // setting used to be would replace it on the next save.
+    const built = buildConfigSchema({
+      saved: {
+        instrumentLog: { paths: 'navigation.speedOverGround', entries: 720 },
+        history: { enabled: true, providerId: 'signalk-to-influxdb2', resolutionSeconds: 60 },
+        positionRetentionHours: 48,
+        publishNotifications: false,
+        notificationExclude: 'server\nsignalk-github-pages',
+        notifyAfterFailureMinutes: 0,
+      },
+    }) as any;
+    const properties = built.properties;
+    expect(properties.instrumentLog.properties.hours.default).toBe(12);
+    expect(properties.instrumentLog.properties.providerId.default).toBe('signalk-to-influxdb2');
+    expect(properties.track.properties.positionRetentionHours.default).toBe(48);
+    expect(properties.notifications.properties.publish.default).toBe(false);
+    expect(properties.notifications.properties.exclude.default).toBe(
+      'server\nsignalk-github-pages',
+    );
+    expect(properties.notifications.properties.warnAfterMinutes.default).toBe(0);
+  });
+
+  it('leaves the defaults alone for a config that has the settings already', () => {
+    const built = buildConfigSchema({
+      saved: {
+        instrumentLog: { hours: 3, providerId: '' },
+        history: { providerId: 'signalk-to-influxdb2' },
+        notifications: { publish: true, exclude: '', warnAfterMinutes: 30 },
+      },
+    }) as any;
+    // The window is set, so nothing is carried forward beside it — including
+    // the provider id from the section this one replaced.
+    expect(built.properties.instrumentLog.properties.hours.default).toBe(
+      DEFAULT_INSTRUMENT_LOG_HOURS,
+    );
+    expect(built.properties.instrumentLog.properties.providerId.default).toBe('');
   });
 
   it('leaves every other field exactly as it was', () => {
@@ -339,30 +426,43 @@ describe('the repository fields', () => {
   it('asks only for the owner, and offers the name behind an override', () => {
     const github = (configSchema.properties as any).github;
     expect(github.properties.owner.type).toBe('string');
-    expect(github.properties.name.type).toBe('string');
     expect(github.properties.overrideName.type).toBe('boolean');
+    expect(github.dependencies.overrideName.oneOf[1].properties.name.type).toBe('string');
     expect(github.required).toEqual(['owner', 'token']);
   });
 
   it('offers nothing left over from an old version', () => {
     const github = (configSchema.properties as any).github.properties;
-    expect(Object.keys(github).sort()).toEqual([
-      'branch',
-      'name',
-      'overrideName',
-      'owner',
-      'token',
-    ]);
+    expect(Object.keys(github).sort()).toEqual(['branch', 'overrideName', 'owner', 'token']);
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
-  it('grays the name out until the override is ticked', () => {
+  it('shows the name field only once the override is ticked', () => {
     const dependencies = (configSchema.properties as any).github.dependencies;
     const [off, on] = dependencies.overrideName.oneOf;
     expect(off.properties.overrideName.enum).toEqual([false]);
-    expect(off.properties.name.readOnly).toBe(true);
+    expect(off.properties.name).toBeUndefined();
     expect(on.properties.overrideName.enum).toEqual([true]);
-    expect(on.properties.name).toBeUndefined();
+    expect(on.properties.name.type).toBe('string');
+  });
+
+  it('keeps every overridable field out of the form until its box is ticked', () => {
+    // A field that is present but read-only is filled from a JSON Schema
+    // default, and the admin UI submits defaults: the derived value of the day
+    // was saved and shown back for ever. Absent until ticked, there is nothing
+    // to save.
+    const properties = configSchema.properties as any;
+    for (const [section, flag, field] of [
+      ['github', 'overrideName', 'name'],
+      ['timezone', 'override', 'zone'],
+      ['polars', 'override', 'table'],
+      ['site', 'overrideUrl', 'url'],
+    ] as const) {
+      expect(properties[section].properties[field], `${section}.${field}`).toBeUndefined();
+      const [off, on] = properties[section].dependencies[flag].oneOf;
+      expect(off.properties[field], `${section}.${field}`).toBeUndefined();
+      expect(on.properties[field].title, `${section}.${field}`).toBeTruthy();
+    }
   });
 
   it('says what to tick when making the token, and nothing more', () => {
@@ -403,62 +503,83 @@ describe('parsePathList', () => {
   });
 });
 
-describe('the history provider settings', () => {
-  it('defaults to reading the instrument log from whichever provider the server has', () => {
-    const config = makeConfig();
+describe('the instrument log settings', () => {
+  it('defaults to an hour from whichever provider the server has', () => {
+    const config = makeConfig({ instrumentLog: { paths: 'navigation.speedOverGround' } });
     expect(config.history).toEqual({
       enabled: true,
       providerId: '',
-      resolutionSeconds: DEFAULT_HISTORY_RESOLUTION_SECONDS,
-      timeoutMs: DEFAULT_HISTORY_TIMEOUT_MS,
+      resolutionSeconds: HISTORY_RESOLUTION_SECONDS,
+      timeoutMs: HISTORY_TIMEOUT_MS,
     });
+    expect(config.instrumentLog.entries).toBe(60);
   });
 
-  it('takes a provider id, a resolution and a timeout from the form', () => {
+  it('takes the bucket width from the window, rather than asking twice', () => {
+    // One setting, because what matters is how far back the graphs go. The
+    // bucket width follows so that a day of history cannot quietly make every
+    // cycle upload half a megabyte.
+    expect(instrumentLogShape(1)).toEqual({ entries: 60, resolutionSeconds: 60 });
+    expect(instrumentLogShape(3)).toEqual({ entries: 180, resolutionSeconds: 60 });
+    expect(instrumentLogShape(6)).toEqual({ entries: 360, resolutionSeconds: 60 });
+    expect(instrumentLogShape(12)).toEqual({ entries: 360, resolutionSeconds: 120 });
+    expect(instrumentLogShape(24)).toEqual({ entries: 360, resolutionSeconds: 240 });
+  });
+
+  it('takes a provider id from the same section as the window', () => {
     const config = makeConfig({
-      history: {
-        enabled: true,
-        providerId: 'signalk-to-influxdb2',
-        resolutionSeconds: 30,
-        timeoutMs: 5000,
-      },
+      instrumentLog: { hours: 12, providerId: 'signalk-to-influxdb2' },
     });
     expect(config.history.providerId).toBe('signalk-to-influxdb2');
-    expect(config.history.resolutionSeconds).toBe(30);
-    expect(config.history.timeoutMs).toBe(5000);
+    expect(config.history.resolutionSeconds).toBe(120);
+    expect(config.instrumentLog.entries).toBe(360);
   });
 
-  it('can be turned off, leaving the plugin to accumulate history itself', () => {
-    expect(makeConfig({ history: { enabled: false } }).history.enabled).toBe(false);
+  it('publishes no log at all when the window is zero', () => {
+    expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
   });
 
-  it('floors a timeout too short to reach a database', () => {
-    expect(makeConfig({ history: { timeoutMs: 5 } }).history.timeoutMs).toBe(1000);
+  it('reads a window stored the way the two old sections stored it', () => {
+    // entries x resolution, in two sections, with a switch of its own. An
+    // upgrade keeps publishing the window it was publishing.
+    const config = makeConfig({
+      instrumentLog: { paths: 'navigation.speedOverGround', entries: 1440 },
+      history: { providerId: 'signalk-to-influxdb2', resolutionSeconds: 60, timeoutMs: 5000 },
+    });
+    expect(config.instrumentLog.entries).toBe(360);
+    expect(config.history.resolutionSeconds).toBe(240);
+    expect(config.history.providerId).toBe('signalk-to-influxdb2');
+    expect(config.history.timeoutMs).toBe(HISTORY_TIMEOUT_MS);
+
+    expect(
+      makeConfig({
+        instrumentLog: { paths: 'navigation.speedOverGround', entries: 60 },
+        history: { enabled: false },
+      }).history.enabled,
+    ).toBe(false);
   });
 
-  it('warns when the log is shorter than one publish interval', () => {
+  it('warns when the window is shorter than one publish interval', () => {
     // Two windows with no overlap: every publish would replace the graph
     // rather than extend it.
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
-      interval: { underwayMinutes: 10, stationaryMinutes: 60 },
-      instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
-      history: { resolutionSeconds: 60 },
+      interval: { underwayMinutes: 180, stationaryMinutes: 60 },
+      instrumentLog: { ...COMPLETE_FORM.instrumentLog, hours: 1 },
     });
     expect(resolved.ok).toBe(true);
     expect(resolved.warnings.join(' ')).toMatch(
-      /instrument log covers 5 min \(60s x 5 entries\), less than the 600s underway/,
+      /history window is 60 min, less than the 10800s underway/,
     );
   });
 
-  it('says nothing when the log outlasts the cadence, or the provider is off', () => {
+  it('says nothing when the log outlasts the cadence, or there is no log', () => {
     expect(resolveConfig({ ...COMPLETE_FORM }).warnings).toEqual([]);
     expect(
       resolveConfig({
         ...COMPLETE_FORM,
-        interval: { underwayMinutes: 10, stationaryMinutes: 60 },
-        instrumentLog: { ...COMPLETE_FORM.instrumentLog, entries: 5 },
-        history: { enabled: false, resolutionSeconds: 60 },
+        interval: { underwayMinutes: 180, stationaryMinutes: 60 },
+        instrumentLog: { ...COMPLETE_FORM.instrumentLog, hours: 0 },
       }).warnings,
     ).toEqual([]);
   });
@@ -545,11 +666,11 @@ describe('the vessel logo', () => {
     }
   });
 
-  it('refuses one too big to upload on every frontend publish', () => {
-    const huge = `data:image/png;base64,${'A'.repeat(1024 * 1024)}`;
-    const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: huge } });
-    expect(resolved.ok).toBe(false);
-    if (!resolved.ok) expect(resolved.problems.join(' ')).toMatch(/limit is/);
+  it('takes one of any size: it is uploaded only when its bytes change', () => {
+    const big = `data:image/png;base64,${'A'.repeat(4 * 1024 * 1024)}`;
+    const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: big } });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.config.site.logo?.content.length).toBe(3 * 1024 * 1024);
   });
 });
 

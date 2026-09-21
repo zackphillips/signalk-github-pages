@@ -105,10 +105,11 @@ describe('ownership', () => {
     ).toBe(false);
   });
 
-  it('drops the docs index when the Action maintains it instead', () => {
-    const minimal = { buildDocsIndex: false };
-    expect(isOwnedPath('docs/index.json', minimal)).toBe(false);
-    // The frontend is always the plugin's: there is no setting for it.
+  it('owns the docs index, the frontend and the telemetry unconditionally', () => {
+    // None of the three has a setting: the docs index used to have one, for
+    // an adopter who built it with a GitHub Action instead.
+    const minimal = {};
+    expect(isOwnedPath('docs/index.json', minimal)).toBe(true);
     expect(isOwnedPath('assets/app.js', minimal)).toBe(true);
     expect(isOwnedPath('data/telemetry/positions_index.json', minimal)).toBe(true);
   });

@@ -10,8 +10,6 @@
  */
 
 export interface ManifestOptions {
-  /** The plugin maintains docs/index.json (off when the Action does it). */
-  buildDocsIndex: boolean;
   /**
    * The Polar Management plugin has an active polar, so `data/vessel/polars.csv`
    * is generated rather than hand-committed. Off by default, which is what
@@ -33,6 +31,16 @@ export const MANIFEST_PATH = '.tracker-manifest.json';
 
 /** Paths written every cycle, whatever the configuration. */
 const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/site.json'];
+
+/**
+ * The docs manifest, rebuilt whenever the docs tree changes.
+ *
+ * Always owned. It used to be a config switch, for an adopter who built the
+ * index with a GitHub Action instead — an Action this repository does not
+ * ship. The rebuild is a conditional request, so an unchanged docs tree
+ * costs nothing against the rate limit and there is nothing to turn off.
+ */
+const DOCS_INDEX_PATH = 'docs/index.json';
 
 /**
  * Paths this plugin used to write and now only removes.
@@ -82,8 +90,7 @@ export const SEEDED_PATTERNS = [
 ];
 
 export function ownedPatterns(options: ManifestOptions): string[] {
-  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS];
-  if (options.buildDocsIndex) patterns.push('docs/index.json');
+  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS, DOCS_INDEX_PATH];
   if (options.publishPolars) patterns.push(POLARS_PATTERN);
   if (options.publishLogo) patterns.push(options.publishLogo);
   if (options.publishIcon) patterns.push(options.publishIcon);

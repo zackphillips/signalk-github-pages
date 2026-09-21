@@ -91,9 +91,9 @@ Run `npm test` and `npm run typecheck` before committing.
   timezone, the address the site links back to), plus the USCG and hull
   numbers, which are here because picking them out of a `registrations` tree
   is a judgement the plugin already makes and the frontend should not make
-  twice. There is no override for either number, unlike the four settings
-  `resolveConfig` derives elsewhere: a boat with no matching registration
-  simply publishes neither key.
+  twice. Neither number is on the config page at all — they are read from
+  Signal K on every cycle — so a boat with no matching registration simply
+  publishes neither key.
 - **The passage comes from the Course API and carries no coordinates.**
   `nextPoint.position` and `previousPoint.position` are raw positions, and
   the privacy zones guard `navigation.position` on its way into the snapshot
@@ -287,7 +287,7 @@ Run `npm test` and `npm run typecheck` before committing.
   counts are a floor; the panel says so, and `sampled_since` bounds them to
   what the log has actually watched.
 - **A notification the adopter excludes leaves no trace.**
-  `notificationExclude` filters at three points: `readNotifications` never
+  `notifications.exclude` filters at three points: `readNotifications` never
   observes it, `NotificationRecorder` never records it, and
   `updateNotificationLog` drops it from both `seen` and the retained
   `events`. Adding a pattern has to take the path off the site on the next
@@ -322,17 +322,27 @@ Run `npm test` and `npm run typecheck` before committing.
   omit the sparklines instead of drawing whatever an older version last
   accumulated. Collapsing any two of those into a nullable snapshot loses a
   behaviour someone will notice.
-- **`instrumentLog.entries` is the query window, and it is also the history
-  dropdown.** `entries x resolutionSeconds` is how far back the log reaches,
-  and the sparklines' window dropdown offers 1/3/12/24 hours against exactly
-  that: a span the published file does not cover is disabled in the menu
-  rather than drawn as a duplicate of a shorter one. The frontend plots every
-  entry it is given, so raising `entries` is what makes the longer windows
-  selectable — and every one of those entries is uploaded in full on every
-  publish. At the default 60 s resolution, 24 hours is 1440 entries and about
-  half a megabyte a cycle, which is a real decision on a hotspot, not a knob
-  to turn up by default. `SPARKLINE_MAX_POINTS` is a draw cap, not a trim;
-  it does not shorten the window.
+- **`instrumentLog.hours` is the query window, and it is also the history
+  dropdown.** The sparklines' window dropdown offers 1/3/12/24 hours against
+  exactly what the published file reaches back: a span it does not cover is
+  disabled in the menu rather than drawn as a duplicate of a shorter one, so
+  raising the window is what makes the longer ones selectable. The bucket
+  width is not a second setting — `instrumentLogShape` derives it from the
+  window and caps the file at 360 buckets, because the whole log is uploaded
+  in full on every publish and 24 hours of one-minute buckets is 1440 entries
+  and about half a megabyte a cycle. Two knobs whose product was what mattered
+  meant a config could contradict itself (hence the warning about a log
+  shorter than one publish interval, which now only fires on a very slow
+  cadence). Zero hours publishes no log at all. `SPARKLINE_MAX_POINTS` is a
+  draw cap, not a trim; it does not shorten the window.
+- **A setting that leaves the page is still read.** `resolveConfig` reads the
+  keys a moved or replaced setting used to live under — `instrumentLog.entries`
+  with `history.resolutionSeconds`, the top-level `positionRetentionHours`,
+  `publishNotifications`, `notificationExclude`, `notifyAfterFailureMinutes` —
+  and `buildConfigSchema` carries them into the new field's `default` so the
+  page opens showing the boat's own values. Without that second half the admin
+  UI fills the new field from the schema default and submits it, and the first
+  save after an upgrade silently replaces what the boat was running on.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
@@ -493,12 +503,12 @@ Run `npm test` and `npm run typecheck` before committing.
   rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
   comes back as 5.999999999999999.
 - **The config polar table is an override, not a fallback.** Untick "Override
-  polar" and the field is read-only and ignored, whatever is in it; tick it
-  and it beats the server's active polar. An override that will not parse
-  falls back to the server rather than blanking the chart. `plugin.schema` is
-  a function so the field's description can say which of the two is live —
-  that note is the only way a user can tell which plugin the chart is coming
-  from.
+  polar" and the field is not on the page and is ignored, whatever is stored
+  in it; tick it and it beats the server's active polar, starting off from the
+  active polar's CSV. An override that will not parse falls back to the server
+  rather than blanking the chart. `plugin.schema` is a function so the
+  checkbox's description can say which of the two is live — that note is the
+  only way a user can tell which plugin the chart is coming from.
 - **The polar table is only ours while we have one.** `publishPolars` gates
   `data/vessel/polars.csv` in the manifest. Losing both sources stops
   publishing it and stops claiming it; it never deletes the file, because a
@@ -533,16 +543,26 @@ Run `npm test` and `npm run typecheck` before committing.
   repository name from the owner (`<owner>.github.io`), the site address from
   the repository (`pagesUrl`, which a custom domain overrides), the timezone
   from the server, and the polar from Polar Management. `resolveConfig`
-  derives them itself and ignores the field whenever its override is
-  unticked, so the `default` that `buildConfigSchema` puts in the box is
-  cosmetic and a stale one can never become a published value. Graying the
-  box out is a JSON Schema `dependencies` block, not `if`/`then`: every
-  react-json-schema-form the Signal K admin UI has shipped understands one,
-  and a renderer that understands neither still shows the plain editable
-  field from `properties`. The USCG and hull numbers are derived the same
-  way, from the Signal K registrations, but with no override and no box on
-  the config page at all: there is nothing there to agree or disagree with,
-  so a missing registration just means neither key is published.
+  derives them itself and ignores the typed field whenever its override is
+  unticked. The typed field is not on the page until the box is ticked:
+  `shownWhenTicked` puts it in the ticked branch of a JSON Schema
+  `dependencies` block, which every react-json-schema-form the Signal K admin
+  UI has shipped renders the same way. It used to sit in `properties` with
+  `readOnly` set in the unticked branch, prefilled from a `default` with
+  whatever the plugin had derived — but the admin UI submits defaults, so the
+  first save wrote that value into the config and showed it back for ever:
+  the read-only polar box held the table Polar Management served the day the
+  config was last saved, and ticking Override polar started you off editing
+  that stale copy. What is derived now goes into the checkbox's own
+  description, which is text the form cannot save back, rebuilt by
+  `buildConfigSchema` every time the page is opened. A field left out of the
+  schema is not dropped from the config: the admin UI leaves form data it
+  cannot see alone, so a typed polar table survives unticking.
+- **`readPluginOptions()` is not the mirror of `savePluginOptions()`.** You
+  save a configuration and you read back the whole stored file, `{ enabled,
+  configuration }`. `schemaContext` in `index.ts` reads the saved owner out of
+  `.configuration`; reading it one level too high found no owner on any
+  server, and every derived note on the config page came out blank.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
   nothing is fatal; a token that is not shaped like one is a warning. The test
@@ -572,7 +592,7 @@ Run `npm test` and `npm run typecheck` before committing.
   about a plugin, and nobody needs an alarm for them. Do not add
   `setPluginStatus`-style state as data paths.
   The exception is `notifications.tracker.publishFailed`, raised once
-  publishing has failed continuously for `notifyAfterFailureMinutes` and
+  publishing has failed continuously for `notifications.warnAfterMinutes` and
   cleared on the next success. An expired token otherwise reaches nobody: the
   admin UI is a browser tab nobody has open at sea, and the first anyone
   ashore knows is that the boat appears to have stopped. A notification is

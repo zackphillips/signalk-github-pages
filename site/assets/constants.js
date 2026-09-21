@@ -35,10 +35,10 @@ var VESSEL_CONSTANTS = Object.freeze({
 
   // How far back the sparklines plot, offered in the panel header once
   // history is shown. What is actually selectable depends on the published
-  // log: instrument_log.json covers `entries x resolution` (both set on the
-  // plugin config page), and a window longer than that would draw the same
-  // chart as the longest one that fits, so the frontend disables it rather
-  // than pretending. Defaults to the shortest, which every log covers.
+  // log: instrument_log.json covers the history window set on the plugin
+  // config page, and a longer window would draw the same chart as the
+  // longest one that fits, so the frontend disables it rather than
+  // pretending. Defaults to the shortest, which every log covers.
   HISTORY_WINDOWS: [
     { label: '1 hour',   hours: 1  },
     { label: '3 hours',  hours: 3  },
@@ -101,7 +101,6 @@ var VESSEL_CONSTANTS = Object.freeze({
   // registration numbers, and the passage banner. Not the boat — that is in
   // the snapshot.
   SITE_CONFIG_URL:      'data/vessel/site.json',
-  INSTRUMENT_LOG_ENTRIES: 120,  // must match backend INSTRUMENT_LOG_ENTRIES
   NOTIFICATIONS_URL:    'data/telemetry/notifications.json',
 
   // ── Notifications ────────────────────────────────────────────────────────
