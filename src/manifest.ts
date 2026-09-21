@@ -25,6 +25,8 @@ export interface ManifestOptions {
    * reach of the publisher.
    */
   publishLogo?: string;
+  /** Likewise for the icon, published at a separate path from the logo. */
+  publishIcon?: string;
 }
 
 export const MANIFEST_PATH = '.tracker-manifest.json';
@@ -84,6 +86,7 @@ export function ownedPatterns(options: ManifestOptions): string[] {
   if (options.buildDocsIndex) patterns.push('docs/index.json');
   if (options.publishPolars) patterns.push(POLARS_PATTERN);
   if (options.publishLogo) patterns.push(options.publishLogo);
+  if (options.publishIcon) patterns.push(options.publishIcon);
   return patterns;
 }
 

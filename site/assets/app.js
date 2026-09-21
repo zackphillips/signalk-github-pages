@@ -1528,32 +1528,26 @@ const fmtUnit = (group, rawSI) => {
 const hasValidCoordinates = (latitude, longitude) =>
   Number.isFinite(latitude) && Number.isFinite(longitude);
 
-// Where to look up tides: the boat's position, or the home waters set on the
-// plugin config page, or nowhere.
+// Where to look up tides: the boat's position, or the tide station override
+// set on the plugin config page, or nowhere.
 //
-// Nowhere is a real answer and the panels say so. There used to be a third
-// step here, a hardcoded San Francisco Bay, which meant a boat in the
-// Chesapeake with no fix yet was shown Golden Gate tides under a heading that
-// read like its own — a wrong number presented as a right one. An empty panel
-// is worse to look at and better to trust.
-function resolveTidePosition(currentLat, currentLon) {
+// Nowhere is a real answer and the panels say so. There used to be a "home
+// waters" lat/lon fallback here, captured from the boat's own position and
+// published unredacted in site.json — a privacy zone hides a position from
+// the map and the track, not from a config field nobody thought to check
+// against it. A NOAA station ID carries no such risk: it names a public tide
+// station, not anywhere the boat has been. There was also a hardcoded
+// fallback before that, a box around San Francisco Bay, which meant a boat in
+// the Chesapeake with no fix yet was shown Golden Gate tides under a heading
+// that read like its own. Both are gone.
+function resolveTideTarget(currentLat, currentLon) {
   if (hasValidCoordinates(currentLat, currentLon)) {
-    return {
-      lat: currentLat,
-      lon: currentLon,
-      usingFallback: false,
-      label: 'current position',
-    };
+    return { mode: 'gps', lat: currentLat, lon: currentLon };
   }
 
-  const home = vesselData?.default_location;
-  if (home && hasValidCoordinates(home.lat, home.lon)) {
-    return {
-      lat: home.lat,
-      lon: home.lon,
-      usingFallback: true,
-      label: home.label || 'home waters',
-    };
+  const stationId = vesselData?.tide_station_override;
+  if (typeof stationId === 'string' && stationId.trim()) {
+    return { mode: 'override', stationId: stationId.trim() };
   }
 
   return null;
@@ -1611,8 +1605,9 @@ async function loadVoyageStats() {
 // dimensions — every one of which is already in the snapshot this page loads
 // a moment later. The duplicate is gone: the boat comes from the snapshot
 // (see the merge in loadData), and this file is privacy zones, custom links,
-// the default position, the timezone, the link back to the boat's Signal K,
-// the two registration numbers the plugin derives, and the passage banner.
+// the tide station override, the timezone, the link back to the boat's
+// Signal K, the two registration numbers the plugin derives, and the passage
+// banner.
 async function loadVesselData() {
   try {
     const response = await fetch(C.SITE_CONFIG_URL);
@@ -1648,7 +1643,7 @@ async function loadTideStations() {
     // No stand-in list. A single hardcoded San Francisco station used to sit
     // here, which meant a boat anywhere else picked it as its "nearest" one
     // and showed Golden Gate tides under its own heading. An empty list makes
-    // resolveTidePosition find nothing and the panel say so.
+    // resolveTideTarget find nothing and the panel say so.
     console.error('Error loading tide stations data:', error);
     tideStations = { stations: [] };
   }
@@ -1804,16 +1799,32 @@ async function findNearestNOAAStation(lat, lon) {
   return nearest;
 }
 
-async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
-  const {
-    usingFallback = false,
-    label: fallbackLabel = 'default location',
-  } = tidePositionMeta;
+// A station by its NOAA ID, from the local lookup table.
+function findStationById(stationId) {
+  return getAllStations().find(s => String(s.id) === String(stationId)) ?? null;
+}
 
-  // Find nearest station using NOAA Metadata API
-  let nearest;
+// Which NOAA station to query, and why: nearest-by-distance from a live GPS
+// fix, or the exact one the config page overrides to when there is none. The
+// override is never distance-ranked — it is a choice, not a guess — so an ID
+// outside the local lookup table (any valid NOAA station, not just the ~50
+// West Coast ones this table ships) still works, just without a name to show.
+async function resolveTideStation(target) {
+  if (target.mode === 'gps') {
+    const station = await findNearestNOAAStation(target.lat, target.lon);
+    const distKm = haversine(target.lat, target.lon, station.lat, station.lon);
+    return { station, distNm: (distKm / 1.852).toFixed(1), overridden: false };
+  }
+  const known = findStationById(target.stationId);
+  const station = known ?? { id: target.stationId, name: `Station #${target.stationId}` };
+  return { station, distNm: null, overridden: true };
+}
+
+async function drawTideGraph(target) {
+  // Find the station to query
+  let nearest, distNm, overridden;
   try {
-    nearest = await findNearestNOAAStation(lat, lon);
+    ({ station: nearest, distNm, overridden } = await resolveTideStation(target));
   } catch (error) {
     console.error('Error finding nearest station:', error);
     const tideHeader = document.getElementById("tideHeader");
@@ -1821,15 +1832,10 @@ async function drawTideGraph(lat, lon, tidePositionMeta = {}) {
     return;
   }
 
-  // Calculate distance in nautical miles
-  const distKm = haversine(lat, lon, nearest.lat, nearest.lon);
-  const distNm = (distKm / 1.852).toFixed(1);
-
   // Update title element above the chart
-  const locationDescriptor = usingFallback ? fallbackLabel : 'current position';
-  const fallbackSuffix = usingFallback ? ' — waiting for live GPS data' : '';
-  document.getElementById("tideHeader").textContent =
-    `Tides near ${nearest.name} (Station #${nearest.id} - ${distNm} NM from ${locationDescriptor})${fallbackSuffix}`;
+  document.getElementById("tideHeader").textContent = overridden
+    ? `Tides at ${nearest.name} (Station #${nearest.id} — tide station override)`
+    : `Tides near ${nearest.name} (Station #${nearest.id} - ${distNm} NM from current position)`;
 
 
   const now = new Date();
@@ -2750,101 +2756,123 @@ async function loadData() {
     lon = nav.position?.value?.longitude;
     const hasGpsFix = hasValidCoordinates(lat, lon);
 
-    if (hasGpsFix) {
-      if (!map) {
-        map = L.map('map').setView([lat, lon], 13);
-        window.trackerMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
-        tileLayerForTheme().addTo(map);
-        marker = L.marker([lat, lon]).addTo(map);
+    // The map (and everything drawn on it — privacy zones, the anchor swing
+    // circle) is isolated in its own try/catch so a Leaflet failure here
+    // cannot take the tide widget down with it. It used to be able to: both
+    // lived in the same unguarded block, so an exception thrown while
+    // drawing a privacy zone (or the anchor overlay) skipped the tide code
+    // entirely and left the panel with whatever empty markup index.html
+    // shipped — not an error message, just blank, forever, since the tide
+    // panel is not one of the PANEL_SKELETONS the catch-all below knows to
+    // mark "Data unavailable".
+    try {
+      if (hasGpsFix) {
+        if (!map) {
+          map = L.map('map').setView([lat, lon], 13);
+          window.trackerMap = map; // exposed for tabs.js to call invalidateSize() on tab switch
+          tileLayerForTheme().addTo(map);
+          marker = L.marker([lat, lon]).addTo(map);
 
-        drawPrivacyZones(map);
+          drawPrivacyZones(map);
+        } else {
+          map.setView([lat, lon]);
+          marker.setLatLng([lat, lon]);
+        }
+
+        // Anchor watch — swing circle, drop marker, and rode line.
+        const anchorPos = nav.anchor?.position?.value;
+        const anchorRadius = nav.anchor?.maxRadius?.value;
+        if (anchorPos?.latitude && anchorPos?.longitude && anchorRadius > 0) {
+          const anchorLatLng = [anchorPos.latitude, anchorPos.longitude];
+          const vesselLatLng = [lat, lon];
+          const radiusFt = (anchorRadius * 3.28084).toFixed(0);
+          const currentDist = nav.anchor?.currentRadius?.value;
+          const distFt = currentDist != null ? (currentDist * 3.28084).toFixed(0) : '?';
+          const tooltipText = `⚓ Swing radius: ${radiusFt} ft · Boat is ${distFt} ft out`;
+
+          // Swing-radius circle
+          if (anchorLayer) {
+            anchorLayer.setLatLng(anchorLatLng).setRadius(anchorRadius);
+            anchorLayer.setTooltipContent(tooltipText);
+          } else {
+            anchorLayer = L.circle(anchorLatLng, {
+              radius: anchorRadius,
+              color: '#f39c12',
+              fillColor: '#f39c12',
+              fillOpacity: 0.08,
+              opacity: 0.7,
+              weight: 2,
+              dashArray: '6 4',
+            }).bindTooltip(tooltipText, { sticky: true, opacity: 0.85 }).addTo(map);
+          }
+
+          // Anchor drop marker (⚓ emoji icon)
+          const anchorIcon = L.divIcon({
+            html: '<div style="font-size:18px;line-height:1;text-align:center;">⚓</div>',
+            className: '',
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+          });
+          if (anchorMarker) {
+            anchorMarker.setLatLng(anchorLatLng);
+            anchorMarker.setTooltipContent(`⚓ Anchor drop · Radius: ${radiusFt} ft`);
+          } else {
+            anchorMarker = L.marker(anchorLatLng, { icon: anchorIcon })
+              .bindTooltip(`⚓ Anchor drop · Radius: ${radiusFt} ft`, { opacity: 0.85 })
+              .addTo(map);
+          }
+
+          // Rode line from anchor drop to vessel
+          if (anchorLine) {
+            anchorLine.setLatLngs([anchorLatLng, vesselLatLng]);
+          } else {
+            anchorLine = L.polyline([anchorLatLng, vesselLatLng], {
+              color: '#f39c12',
+              weight: 2,
+              opacity: 0.55,
+              dashArray: '5 5',
+            }).addTo(map);
+          }
+        } else {
+          if (anchorLayer)  { anchorLayer.remove();  anchorLayer  = null; }
+          if (anchorMarker) { anchorMarker.remove(); anchorMarker = null; }
+          if (anchorLine)   { anchorLine.remove();   anchorLine   = null; }
+        }
+
+        // Load unified 48-hr conditions forecast
+        loadConditionsForecast().catch(err => console.error('Conditions forecast error:', err));
+        // Update map location title
+        updateMapLocation(lat, lon).catch(err => console.error('Location fetch error:', err));
+        // Load track for last 24 hours
+        loadTrack().catch(err => console.error('Track load error:', err));
+        // Update polar performance
+        updatePolarPerformance();
       } else {
-        map.setView([lat, lon]);
-        marker.setLatLng([lat, lon]);
+        const sentenceEl = document.getElementById('status-sentence');
+        if (sentenceEl) sentenceEl.textContent = 'Waiting for GPS position...';
       }
-
-      // Anchor watch — swing circle, drop marker, and rode line.
-      const anchorPos = nav.anchor?.position?.value;
-      const anchorRadius = nav.anchor?.maxRadius?.value;
-      if (anchorPos?.latitude && anchorPos?.longitude && anchorRadius > 0) {
-        const anchorLatLng = [anchorPos.latitude, anchorPos.longitude];
-        const vesselLatLng = [lat, lon];
-        const radiusFt = (anchorRadius * 3.28084).toFixed(0);
-        const currentDist = nav.anchor?.currentRadius?.value;
-        const distFt = currentDist != null ? (currentDist * 3.28084).toFixed(0) : '?';
-        const tooltipText = `⚓ Swing radius: ${radiusFt} ft · Boat is ${distFt} ft out`;
-
-        // Swing-radius circle
-        if (anchorLayer) {
-          anchorLayer.setLatLng(anchorLatLng).setRadius(anchorRadius);
-          anchorLayer.setTooltipContent(tooltipText);
-        } else {
-          anchorLayer = L.circle(anchorLatLng, {
-            radius: anchorRadius,
-            color: '#f39c12',
-            fillColor: '#f39c12',
-            fillOpacity: 0.08,
-            opacity: 0.7,
-            weight: 2,
-            dashArray: '6 4',
-          }).bindTooltip(tooltipText, { sticky: true, opacity: 0.85 }).addTo(map);
-        }
-
-        // Anchor drop marker (⚓ emoji icon)
-        const anchorIcon = L.divIcon({
-          html: '<div style="font-size:18px;line-height:1;text-align:center;">⚓</div>',
-          className: '',
-          iconSize: [22, 22],
-          iconAnchor: [11, 11],
-        });
-        if (anchorMarker) {
-          anchorMarker.setLatLng(anchorLatLng);
-          anchorMarker.setTooltipContent(`⚓ Anchor drop · Radius: ${radiusFt} ft`);
-        } else {
-          anchorMarker = L.marker(anchorLatLng, { icon: anchorIcon })
-            .bindTooltip(`⚓ Anchor drop · Radius: ${radiusFt} ft`, { opacity: 0.85 })
-            .addTo(map);
-        }
-
-        // Rode line from anchor drop to vessel
-        if (anchorLine) {
-          anchorLine.setLatLngs([anchorLatLng, vesselLatLng]);
-        } else {
-          anchorLine = L.polyline([anchorLatLng, vesselLatLng], {
-            color: '#f39c12',
-            weight: 2,
-            opacity: 0.55,
-            dashArray: '5 5',
-          }).addTo(map);
-        }
-      } else {
-        if (anchorLayer)  { anchorLayer.remove();  anchorLayer  = null; }
-        if (anchorMarker) { anchorMarker.remove(); anchorMarker = null; }
-        if (anchorLine)   { anchorLine.remove();   anchorLine   = null; }
-      }
-
-      // Load unified 48-hr conditions forecast
-      loadConditionsForecast().catch(err => console.error('Conditions forecast error:', err));
-      // Update map location title
-      updateMapLocation(lat, lon).catch(err => console.error('Location fetch error:', err));
-      // Load track for last 24 hours
-      loadTrack().catch(err => console.error('Track load error:', err));
-      // Update polar performance
-      updatePolarPerformance();
-    } else {
-      const sentenceEl = document.getElementById('status-sentence');
-      if (sentenceEl) sentenceEl.textContent = 'Waiting for GPS position...';
+    } catch (err) {
+      console.error('Map failed to render:', err);
     }
 
-    const tidePosition = resolveTidePosition(lat, lon);
-    if (tidePosition) {
-      drawTideGraph(tidePosition.lat, tidePosition.lon, tidePosition);
-    } else {
-      const tideHeader = document.getElementById('tideHeader');
-      if (tideHeader) {
-        tideHeader.textContent =
-          'Tides unavailable — waiting for a GPS fix, or set home waters on the plugin config page';
+    // Isolated the same way: a bad fetch or a station-lookup throw here must
+    // not cascade into the panels rendered after this point, and must not
+    // leave the header blank the way an uncaught exception used to.
+    try {
+      const tideTarget = resolveTideTarget(lat, lon);
+      if (tideTarget) {
+        drawTideGraph(tideTarget);
+      } else {
+        const tideHeader = document.getElementById('tideHeader');
+        if (tideHeader) {
+          tideHeader.textContent =
+            'Tides unavailable — waiting for a GPS fix, or set a tide station override on the plugin config page';
+        }
       }
+    } catch (err) {
+      console.error('Tide widget failed to render:', err);
+      const tideHeader = document.getElementById('tideHeader');
+      if (tideHeader) tideHeader.textContent = 'Tides unavailable (error rendering panel)';
     }
 
 
@@ -3375,14 +3403,26 @@ async function loadConditionsForecast() {
   const stack   = document.getElementById('conditions-chart-stack');
   const loading = document.getElementById('conditions-loading');
 
-  const tidePos = resolveTidePosition(lat, lon);
-  if (!tidePos) {
+  const tideTarget = resolveTideTarget(lat, lon);
+  if (!tideTarget) {
     if (loading) {
       loading.textContent =
-        'Waiting for a GPS fix — or set home waters on the plugin config page.';
+        'Waiting for a GPS fix — or set a tide station override on the plugin config page.';
     }
     return;
   }
+
+  // Wind, swell and temperature need an actual position, which a GPS fix
+  // supplies directly. A tide station override supplies one too, but only
+  // when the overridden ID happens to be in the local lookup table — it is a
+  // station choice, not a place typed in, so an ID this table has never
+  // heard of gets its tide predictions and nothing else here.
+  const weatherPosition = tideTarget.mode === 'gps'
+    ? { lat: tideTarget.lat, lon: tideTarget.lon }
+    : (() => {
+        const known = findStationById(tideTarget.stationId);
+        return known ? { lat: known.lat, lon: known.lon } : null;
+      })();
 
   const now         = new Date();
   // 48-hr window: midnight local today → midnight local day+2
@@ -3401,8 +3441,8 @@ async function loadConditionsForecast() {
 
   const today    = localDateStr(windowStart);
   const tomorrow = localDateStr(new Date(windowStart.getTime() + 24 * 3600000));
-  const latR = Math.round(tidePos.lat * 100) / 100;
-  const lonR = Math.round(tidePos.lon * 100) / 100;
+  const latR = weatherPosition ? Math.round(weatherPosition.lat * 100) / 100 : null;
+  const lonR = weatherPosition ? Math.round(weatherPosition.lon * 100) / 100 : null;
 
   // Show date range in header
   const dateRangeEl = document.getElementById('conditions-date-range');
@@ -3416,11 +3456,12 @@ async function loadConditionsForecast() {
 
     // ── Atmospheric (Open-Meteo) ──────────────────────────────────────────
     (async () => {
+      if (!weatherPosition) throw new Error('No position for a weather forecast');
       const key = `cond_atmos2_${latR}_${lonR}_${today}`;
       const hit = getCached(key, C.FORECAST_CACHE_TTL_MS);
       if (hit) return hit;
       const url = `https://api.open-meteo.com/v1/forecast` +
-        `?latitude=${tidePos.lat}&longitude=${tidePos.lon}` +
+        `?latitude=${weatherPosition.lat}&longitude=${weatherPosition.lon}` +
         `&hourly=wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,` +
         `surface_pressure,precipitation_probability,cloud_cover` +
         `&wind_speed_unit=kn&temperature_unit=fahrenheit` +
@@ -3434,11 +3475,12 @@ async function loadConditionsForecast() {
 
     // ── Marine (Open-Meteo Marine) ────────────────────────────────────────
     (async () => {
+      if (!weatherPosition) throw new Error('No position for a marine forecast');
       const key = `cond_marine_${latR}_${lonR}_${today}`;
       const hit = getCached(key, C.FORECAST_CACHE_TTL_MS);
       if (hit) return hit;
       const url = `https://marine-api.open-meteo.com/v1/marine` +
-        `?latitude=${tidePos.lat}&longitude=${tidePos.lon}` +
+        `?latitude=${weatherPosition.lat}&longitude=${weatherPosition.lon}` +
         `&hourly=wave_height,wave_period,wave_direction,ocean_current_velocity,ocean_current_direction` +
         `&timezone=auto&start_date=${today}&end_date=${tomorrow}`;
       const res = await fetch(url);
@@ -3450,7 +3492,7 @@ async function loadConditionsForecast() {
 
     // ── Tide (NOAA) ───────────────────────────────────────────────────────
     (async () => {
-      const station = await findNearestNOAAStation(tidePos.lat, tidePos.lon);
+      const { station } = await resolveTideStation(tideTarget);
       const begin   = utcDateStr(windowStart);
       const end     = utcDateStr(windowEnd);
       const key     = `cond_tide_${station.id}_${begin}_${end}`;

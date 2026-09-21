@@ -16,10 +16,6 @@ const CONFIG = makeConfig({
   ],
   site: {
     postgsailLogsUrl: 'https://example.invalid/logs',
-    overrideUscgNumber: true,
-    uscgNumber: '1024168',
-    overrideHullNumber: true,
-    hullNumber: 'BEY57004E494',
   },
 });
 
@@ -27,6 +23,8 @@ const IDENTITY = {
   name: 'S.V.Mermug',
   mmsi: '338543654',
   signalk: { host: '192.168.8.50', port: 3000, protocol: 'http' },
+  uscgNumber: '1024168',
+  hullNumber: 'BEY57004E494',
 };
 
 describe('renderSiteConfig', () => {
@@ -123,22 +121,16 @@ describe('the vessel logo', () => {
   });
 });
 
-describe('the default position', () => {
-  it('writes default_location, which is where the site looks before a fix', () => {
-    const config = makeConfig({
-      site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'San Francisco Bay' } },
-    });
+describe('the tide station override', () => {
+  it('writes tide_station_override, which is what the site queries before a fix', () => {
+    const config = makeConfig({ site: { tideStationOverride: '9414290' } });
     const parsed = render(config, IDENTITY, null);
-    expect(parsed.default_location).toEqual({
-      lat: 37.806,
-      lon: -122.465,
-      label: 'San Francisco Bay',
-    });
+    expect(parsed.tide_station_override).toBe('9414290');
   });
 
-  it('leaves it out when it is not set, so the frontend uses its own default', () => {
+  it('leaves it out when it is not set, so the frontend waits for a fix', () => {
     const parsed = render(makeConfig(), IDENTITY, null);
-    expect(parsed.default_location).toBeUndefined();
+    expect(parsed.tide_station_override).toBeUndefined();
   });
 });
 
@@ -257,26 +249,13 @@ describe('what is read from Signal K versus typed on the config page', () => {
     expect(parsed.registrations).toBeUndefined();
   });
 
-  it('takes the config page only when the override is ticked, and says so', () => {
-    const problems: string[] = [];
-    const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '9999999' } });
-    const parsed = render(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
-    expect(parsed.uscg_number).toBe('9999999');
-    expect(problems.join(' ')).toContain('differs from the one Signal K reports');
-  });
-
-  it('ignores a number left in the box with the override unticked', () => {
-    const problems: string[] = [];
-    const config = makeConfig({ site: { uscgNumber: '9999999' } });
-    const parsed = render(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
-    expect(parsed.uscg_number).toBe('1024168');
-    expect(problems).toEqual([]);
-  });
-
-  it('says nothing when the config page agrees with Signal K', () => {
-    const problems: string[] = [];
-    const config = makeConfig({ site: { overrideUscgNumber: true, uscgNumber: '1024168' } });
-    renderSiteConfig(config, FROM_SIGNALK, null, (problem) => problems.push(problem));
-    expect(problems).toEqual([]);
+  it('publishes neither key when Signal K has no matching registration', () => {
+    // There is no config-page override to fall back to any more: a boat with
+    // no USCG documentation number or hull identification number in its
+    // registrations simply does not publish one, rather than offering a
+    // typed box that would have to be kept in sync by hand.
+    const parsed = render(makeConfig(), { name: 'Boat', mmsi: '' }, null);
+    expect(parsed.uscg_number).toBeUndefined();
+    expect(parsed.hull_number).toBeUndefined();
   });
 });

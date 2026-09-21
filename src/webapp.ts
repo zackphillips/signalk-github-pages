@@ -333,12 +333,16 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     if (!current) return;
     const { config, store, siteDir, version, identity } = current;
     try {
-      // The configured logo, straight from the config rather than from the
-      // repository: it is the one published file the plugin holds as bytes,
-      // and the preview is where someone checks it looks right before it is
-      // committed.
+      // The configured logo and icon, straight from the config rather than
+      // from the repository: they are the published files the plugin holds
+      // as bytes, and the preview is where someone checks each looks right
+      // before it is committed.
       if (config.site.logo && requested === config.site.logo.path) {
         response.type(config.site.logo.mediaType).send(config.site.logo.content);
+        return;
+      }
+      if (config.site.icon && requested === config.site.icon.path) {
+        response.type(config.site.icon.mediaType).send(config.site.icon.content);
         return;
       }
 

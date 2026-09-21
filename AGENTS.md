@@ -32,7 +32,7 @@ src/
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
-  logo.ts           The config page's logo field, decoded into bytes and a path
+  logo.ts           The config page's logo and icon fields, decoded into bytes and a path
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
@@ -87,11 +87,13 @@ Run `npm test` and `npm run typecheck` before committing.
   self tree. It used to be in both, and the frontend preferred the snapshot
   and treated the other as a fallback, so the duplicate only ever had one
   possible effect: disagreeing. What stays in `site.json` is what has no
-  other source (privacy zones, custom links, the default position, the
+  other source (privacy zones, custom links, the tide station override, the
   timezone, the address the site links back to), plus the USCG and hull
   numbers, which are here because picking them out of a `registrations` tree
   is a judgement the plugin already makes and the frontend should not make
-  twice.
+  twice. There is no override for either number, unlike the four settings
+  `resolveConfig` derives elsewhere: a boat with no matching registration
+  simply publishes neither key.
 - **The passage comes from the Course API and carries no coordinates.**
   `nextPoint.position` and `previousPoint.position` are raw positions, and
   the privacy zones guard `navigation.position` on its way into the snapshot
@@ -125,13 +127,28 @@ Run `npm test` and `npm run typecheck` before committing.
   Bay, 10 knots of true wind, a house bank at 12.5 V and 80%) shown whenever
   `signalk_latest.json` would not load, so a boat whose publishing had failed
   showed someone ashore a plausible afternoon's sailing. All of them are gone.
-  `resolveTidePosition` returns null and the panels say what is missing;
+  `resolveTideTarget` returns null and the panels say what is missing;
   `getPrivacyZones` returns an empty list, which is safe because the plugin
   already redacts before it publishes; `stationsByDistance` sorts by distance
   and nothing else; a failed station list is empty; a failed NOAA fetch
   throws; a failed snapshot is `{}` and the banner reads "Telemetry
   unavailable". They were found in four separate passes, so assume there is
-  another. If a value is not known, the page says so.
+  another. If a value is not known, the page says so. A fifth pass found an
+  eighth: `site.defaultLocation`, a "default position" lat/lon captured from
+  `navigation.position` by a config-page checkbox that read the self tree
+  directly, ahead of the privacy-zone redaction every other position on its
+  way to the repository goes through. It is gone too, replaced by
+  `site.tideStationOverride`, a NOAA station ID with nothing for a privacy
+  zone to redact.
+- **The tide and map/conditions panels are isolated from each other and from
+  everything rendered before them.** Both used to sit in `loadData`'s one big
+  `try`, unguarded, so an exception thrown while drawing the map — a bad
+  privacy zone, a malformed anchor position — skipped the tide code entirely
+  and left `#tideHeader` at the empty markup `index.html` ships, forever: the
+  tide panel is not one of the `PANEL_SKELETONS` the catch-all at the bottom
+  of `loadData` knows to mark "Data unavailable", so nothing ever told anyone
+  it had failed. Each now has its own `try`/`catch`, the same isolation
+  `paintPanel` already gave every other panel.
 - **The map draws the zones it is redacting against.** `drawPrivacyZones`
   renders `privacy_zones` from `site.json`, and no zones means no rings. The
   ring used to be a literal at one dock in San Francisco, drawn on every
@@ -414,9 +431,10 @@ Run `npm test` and `npm run typecheck` before committing.
   six favicon and home-screen PNGs of one boat's burgee under `assets/`, which
   the plugin owns and overwrites on upgrade, so the only way to have your own
   was to fork the plugin; a theme named after that boat; `mermug.checklist.`
-  and `mermug-active-tab` in localStorage; `window.mermugMap`. The logo is
-  `site.logo` on the config page now, published to `data/vessel/logo.<ext>`,
-  with `assets/icon.svg` as the generic fallback.
+  and `mermug-active-tab` in localStorage; `window.mermugMap`. The logo and
+  icon are `site.logo` and `site.icon` on the config page now, two separate
+  uploads published to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
+  with `assets/icon.svg` as the generic icon fallback.
 - **The shipped constants are placeholders, and a missed substitution throws.**
   `GITHUB_REPO: 'OWNER/REPO'` in `constants.js` is not a value, it is a slot.
   It used to ship as one real repository, so `renderConstants` failing to match
@@ -492,23 +510,39 @@ Run `npm test` and `npm run typecheck` before committing.
   claiming the path rather than deleting their artwork. The pages fall back to
   `data/vessel/logo.png` and hide the image when it 404s, which is what keeps
   a hand-committed one working.
+- **The logo and the icon are two uploads, not one.** `site.logo` feeds the
+  status hero and the footer; `site.icon` feeds the browser tab, the
+  home-screen icon and the link-preview image. They used to be a single
+  field, which meant a detailed logo that read fine at 200px came out as a
+  muddy favicon, and a boat that wanted a clean square icon had to make its
+  status-hero image match it. `logo.ts` decodes both through the same
+  `parseVesselImage`, `publishIcon` gates `data/vessel/icon.*` in the
+  manifest exactly the way `publishLogo` gates the logo, and `iconFile`
+  fingerprints and publishes it independently of `logoFile` — setting one
+  must not republish or claim the other. Unlike the logo, the icon has no
+  hand-committed fallback path: it is a new field with no history to keep
+  working, so an unset icon falls straight to the bundled generic
+  `assets/icon.svg`.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the path list all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
-- **Five settings are derived, each behind an override checkbox.** The
+- **Four settings are derived, each behind an override checkbox.** The
   repository name from the owner (`<owner>.github.io`), the site address from
   the repository (`pagesUrl`, which a custom domain overrides), the timezone
-  from the server, the polar from Polar Management, the USCG and hull numbers
-  from the Signal K registrations. `resolveConfig` derives them itself and ignores the
-  field whenever its override is unticked, so the `default` that
-  `buildConfigSchema` puts in the box is cosmetic and a stale one can never
-  become a published value. Graying the box out is a JSON Schema
-  `dependencies` block, not `if`/`then`: every react-json-schema-form the
-  Signal K admin UI has shipped understands one, and a renderer that
-  understands neither still shows the plain editable field from `properties`.
+  from the server, and the polar from Polar Management. `resolveConfig`
+  derives them itself and ignores the field whenever its override is
+  unticked, so the `default` that `buildConfigSchema` puts in the box is
+  cosmetic and a stale one can never become a published value. Graying the
+  box out is a JSON Schema `dependencies` block, not `if`/`then`: every
+  react-json-schema-form the Signal K admin UI has shipped understands one,
+  and a renderer that understands neither still shows the plain editable
+  field from `properties`. The USCG and hull numbers are derived the same
+  way, from the Signal K registrations, but with no override and no box on
+  the config page at all: there is nothing there to agree or disagree with,
+  so a missing registration just means neither key is published.
 - **Fatal or a warning, deliberately.** `resolveConfig` returns `problems`
   that stop the plugin and `warnings` that do not. A privacy zone that hides
   nothing is fatal; a token that is not shaped like one is a warning. The test

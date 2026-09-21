@@ -52,10 +52,7 @@ describe('resolveConfig', () => {
     if (!resolved.ok) throw new Error('expected a resolved config');
     // A guessed privacy zone is worse than none: it hides the wrong water.
     expect(resolved.config.privacyZones).toEqual([]);
-    expect(resolved.config.site.uscgNumber).toBe('');
-    expect(resolved.config.site.hullNumber).toBe('');
-    expect(resolved.config.site.overrideUscgNumber).toBe(false);
-    expect(resolved.config.site.overrideHullNumber).toBe(false);
+    expect(resolved.config.site.tideStationOverride).toBe('');
   });
 
   it('falls back rather than accepting zero or a negative number', () => {
@@ -158,18 +155,14 @@ describe('resolveConfig', () => {
     expect(config.buildDocsIndex).toBe(true);
   });
 
-  it('takes the default position only when both coordinates are there', () => {
-    expect(makeConfig().site.defaultLocation).toBeNull();
-    expect(
-      makeConfig({ site: { defaultLocation: { lat: 37.806, lon: -122.465, label: 'SF Bay' } } })
-        .site.defaultLocation,
-    ).toEqual({ lat: 37.806, lon: -122.465, label: 'SF Bay' });
-    // Half a fix would send the tide lookup somewhere in the ocean; the
-    // frontend's own default is the better answer.
-    expect(makeConfig({ site: { defaultLocation: { lat: 37.806 } } }).site.defaultLocation)
-      .toBeNull();
-    expect(makeConfig({ site: { defaultLocation: { lat: 137, lon: -122 } } }).site.defaultLocation)
-      .toBeNull();
+  it('takes the tide station override as a plain string, or leaves it empty', () => {
+    expect(makeConfig().site.tideStationOverride).toBe('');
+    expect(makeConfig({ site: { tideStationOverride: '9414290' } }).site.tideStationOverride)
+      .toBe('9414290');
+    // Trimmed, like every other typed field: a stray space pasted in from a
+    // NOAA station listing would otherwise fail to match the ID it names.
+    expect(makeConfig({ site: { tideStationOverride: '  9414290  ' } }).site.tideStationOverride)
+      .toBe('9414290');
   });
 
   it('keeps custom buttons that have both a label and a URL', () => {
@@ -324,19 +317,14 @@ describe('buildConfigSchema', () => {
   it('prefills the read-only boxes with what the plugin can see', () => {
     const built = buildConfigSchema({
       polarCsv: 'twa/tws;6\n52;4.1\n',
-      uscgNumber: '1024168',
-      hullNumber: 'BEY57004E494',
     }) as any;
     expect(built.properties.polars.properties.table.default).toBe('twa/tws;6\n52;4.1\n');
-    expect(built.properties.site.properties.uscgNumber.default).toBe('1024168');
-    expect(built.properties.site.properties.hullNumber.default).toBe('BEY57004E494');
   });
 
   it('never mutates the schema it was built from', () => {
-    buildConfigSchema({ polarCsv: 'x', uscgNumber: '1', hullNumber: '2' });
+    buildConfigSchema({ polarCsv: 'x' });
     const base = configSchema.properties as any;
     expect(base.polars.properties.table.default).toBe('');
-    expect(base.site.properties.uscgNumber.default).toBe('');
     expect(base.polars.properties.table.description).toBe(POLARS_FIELD_DESCRIPTION);
   });
 
@@ -562,5 +550,30 @@ describe('the vessel logo', () => {
     const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo: huge } });
     expect(resolved.ok).toBe(false);
     if (!resolved.ok) expect(resolved.problems.join(' ')).toMatch(/limit is/);
+  });
+});
+
+describe('the vessel icon', () => {
+  it('publishes an uploaded image under its own path, separate from the logo', () => {
+    const config = makeConfig({
+      site: { icon: 'data:image/svg+xml;base64,PHN2Zy8+' },
+    });
+    expect(config.site.icon?.path).toBe('data/vessel/icon.svg');
+    expect(config.site.icon?.mediaType).toBe('image/svg+xml');
+    expect(config.site.icon?.content.length).toBeGreaterThan(0);
+    expect(config.site.logo).toBeNull();
+  });
+
+  it('falls back to the bundled generic icon when nothing is set', () => {
+    expect(makeConfig().site.icon).toBeNull();
+    expect(makeConfig({ site: { icon: '   ' } }).site.icon).toBeNull();
+  });
+
+  it('is a config problem rather than a silent drop, same as the logo', () => {
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      site: { icon: 'https://example.com/icon.png' },
+    });
+    expect(resolved.ok).toBe(false);
   });
 });

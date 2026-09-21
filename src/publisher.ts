@@ -366,6 +366,7 @@ export class Publisher {
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
     files.push(...(await this.logoFile()));
+    files.push(...(await this.iconFile()));
     const frontend = await this.frontendFiles(
       siteDir,
       version,
@@ -875,7 +876,7 @@ export class Publisher {
     passage: Passage | null,
   ): Promise<PublishFile[]> {
     const { store, config, log } = this.deps;
-    const contents = renderSiteConfig(config, identity, passage, (problem) => log(problem));
+    const contents = renderSiteConfig(config, identity, passage);
     const previous = await store.readText('site.json');
     if (previous === contents) return [];
 
@@ -916,6 +917,7 @@ export class Publisher {
       buildDocsIndex: config.buildDocsIndex,
       publishPolars: polars !== '',
       publishLogo: config.site.logo?.path,
+      publishIcon: config.site.icon?.path,
     };
   }
 
@@ -958,6 +960,26 @@ export class Publisher {
     await store.writeText('logo-fingerprint.txt', fingerprint);
     log(`Publishing ${logo.path} (${kb(logo.content.length)}).`);
     return [{ path: logo.path, content: logo.content }];
+  }
+
+  /**
+   * `data/vessel/icon.*`, when the config page has one.
+   *
+   * Same arrangement as the logo, kept as a separate field and a separate
+   * fingerprint: the two images are unrelated uploads, and treating them as
+   * one would republish the icon every time only the logo changed, or the
+   * reverse.
+   */
+  private async iconFile(): Promise<PublishFile[]> {
+    const { config, store, log } = this.deps;
+    const icon = config.site.icon;
+    if (!icon) return [];
+
+    const fingerprint = `${icon.path}:${createHash('sha256').update(icon.content).digest('hex')}`;
+    if ((await store.readText('icon-fingerprint.txt')) === fingerprint) return [];
+    await store.writeText('icon-fingerprint.txt', fingerprint);
+    log(`Publishing ${icon.path} (${kb(icon.content.length)}).`);
+    return [{ path: icon.path, content: icon.content }];
   }
 
   /** The frontend goes up on first run and after an upgrade, never per cycle. */

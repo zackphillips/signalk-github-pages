@@ -28,13 +28,13 @@ import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { activePolarId, readActivePolar } from './polars';
-import { extractPositionFix, isUnderway, readSelfTree } from './snapshot';
+import { isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { NotificationRecorder } from './notificationRecorder';
 import { PositionRecorder } from './track';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
-import { readVesselDetails, type VesselIdentity } from './siteConfig';
+import type { VesselIdentity } from './siteConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: PLUGIN_VERSION } = require('../package.json') as { version: string };
@@ -200,12 +200,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
    * disabled or has never started.
    */
   const schemaContext = () => {
-    let details: ReturnType<typeof readVesselDetails> = {};
-    try {
-      details = readVesselDetails(readSelfTree(app));
-    } catch {
-      // A server that will not hand over a tree leaves the boxes empty.
-    }
     let owner = '';
     let savedGithub: Record<string, any> = {};
     try {
@@ -229,52 +223,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       polar: polarNote(),
       polarCsv,
-      uscgNumber: details.uscgNumber,
-      hullNumber: details.hullNumber,
     };
-  };
-
-  /**
-   * "Set to the current position", which is a checkbox because a JSON Schema
-   * form has no buttons.
-   *
-   * Ticked, it copies `navigation.position` into the coordinates and unticks
-   * itself, so the next time the page is opened it shows the captured fix
-   * rather than a control that would capture a different one. Saving the
-   * config is what makes it stick; without a fix it is left ticked and the
-   * plugin says why.
-   */
-  const captureCurrentPosition = (options: unknown): void => {
-    const input = (options ?? {}) as Record<string, any>;
-    if (input.site?.defaultLocation?.useCurrentPosition !== true) return;
-    if (typeof app.savePluginOptions !== 'function') {
-      app.error('This server cannot save plugin options, so the current position was not captured.');
-      return;
-    }
-    const fix = extractPositionFix(readSelfTree(app));
-    if (!fix) {
-      app.error('No navigation.position yet, so the default position was not set.');
-      return;
-    }
-    const saved = {
-      ...input,
-      site: {
-        ...input.site,
-        defaultLocation: {
-          ...input.site.defaultLocation,
-          useCurrentPosition: false,
-          lat: Math.round(fix.latitude * 1e6) / 1e6,
-          lon: Math.round(fix.longitude * 1e6) / 1e6,
-        },
-      },
-    };
-    // Mutated in place as well as saved: `start` carries on with `options`,
-    // so this cycle publishes the position the checkbox just captured.
-    input.site.defaultLocation = saved.site.defaultLocation;
-    app.savePluginOptions(saved, (error: unknown) => {
-      if (error) app.error(`Could not save the captured position: ${(error as any)?.message ?? error}`);
-      else app.debug(`Default position set to ${saved.site.defaultLocation.lat}, ${saved.site.defaultLocation.lon}.`);
-    });
   };
 
   const plugin: TrackerPlugin = {
@@ -289,12 +238,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     start(options: unknown) {
       stopped = false;
-
-      try {
-        captureCurrentPosition(options);
-      } catch (error: any) {
-        app.error(`Could not capture the current position: ${error?.message ?? error}`);
-      }
 
       const resolved = resolveConfig(options);
       if (!resolved.ok) {

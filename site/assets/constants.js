@@ -53,8 +53,8 @@ var VESSEL_CONSTANTS = Object.freeze({
   // in. Both used to: a fallback privacy zone at one particular dock and a
   // fallback tide location in San Francisco Bay, which any site that had not
   // published its site config yet showed as its own. Unknown renders as
-  // unknown — privacy_zones and default_location come from site.json or they
-  // do not come at all.
+  // unknown — privacy_zones and tide_station_override come from site.json or
+  // they do not come at all.
 
   // ── Theming ──────────────────────────────────────────────────────────────
   // Cycle order for the floating theme button. Shared by index.html and
@@ -96,9 +96,10 @@ var VESSEL_CONSTANTS = Object.freeze({
   TRACKS_INDEX_URL:     'data/telemetry/tracks_index.json',
   POSITIONS_INDEX_URL:  'data/telemetry/positions_index.json',
   INSTRUMENT_LOG_URL:   'data/telemetry/instrument_log.json',
-  // Site configuration: privacy zones, custom links, the default position,
-  // the timezone, the link back to the boat, the two derived registration
-  // numbers, and the passage banner. Not the boat — that is in the snapshot.
+  // Site configuration: privacy zones, custom links, the tide station
+  // override, the timezone, the link back to the boat, the two derived
+  // registration numbers, and the passage banner. Not the boat — that is in
+  // the snapshot.
   SITE_CONFIG_URL:      'data/vessel/site.json',
   INSTRUMENT_LOG_ENTRIES: 120,  // must match backend INSTRUMENT_LOG_ENTRIES
   NOTIFICATIONS_URL:    'data/telemetry/notifications.json',
