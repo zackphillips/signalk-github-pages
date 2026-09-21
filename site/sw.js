@@ -9,11 +9,11 @@
 //
 // The cache name carries SITE_VERSION, which the plugin substitutes with its
 // own version on the way into the repository. This matters more than it looks
-// like it should: the shell used to be cache-first in a cache called
-// "mermug-shell-v4", a constant nobody bumped. A phone that had ever loaded
-// the site kept serving that HTML and JS forever while the telemetry beside it
-// went on updating — old code, new data, and a dashboard reading "Data
-// unavailable" against a snapshot it had just downloaded successfully.
+// like it should: the shell used to be cache-first in a cache with a constant
+// name nobody bumped. A phone that had ever loaded the site kept serving that
+// HTML and JS forever while the telemetry beside it went on updating — old
+// code, new data, and a dashboard reading "Data unavailable" against a
+// snapshot it had just downloaded successfully.
 
 const SITE_VERSION  = '0.0.0-dev';
 const SHELL_CACHE   = `tracker-shell-${SITE_VERSION}`;

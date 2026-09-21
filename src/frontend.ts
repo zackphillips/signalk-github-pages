@@ -33,7 +33,7 @@ import { siteBasePath, type PluginConfig } from './config';
 import { LEGACY_LOGO_PATH } from './logo';
 
 /**
- * The tab and home-screen icon for a site with no logo set.
+ * The tab, home-screen and link-preview icon for a site with no icon set.
  *
  * Shipped in `site/assets/` and deliberately generic. What used to be here
  * were six PNG and ICO files carrying one boat's burgee, published into every
@@ -73,7 +73,7 @@ export interface FrontendOptions {
   siteUrl: string;
   /** Where the logo lives, relative to the site root. */
   logoPath: string;
-  /** Tab and home-screen icon: the logo, or the bundled generic one. */
+  /** Tab, home-screen and link-preview icon: the configured one, or the bundled generic one. */
   iconPath: string;
   /** The icon's media type, which the web app manifest declares. */
   iconType: string;
@@ -94,6 +94,7 @@ export function frontendOptions(
   version: string,
 ): FrontendOptions {
   const logo = config.site.logo;
+  const icon = config.site.icon;
   return {
     repo: config.github.repo,
     branch: config.github.branch,
@@ -103,10 +104,11 @@ export function frontendOptions(
     siteUrl: config.site.url,
     // With no logo configured the pages still ask for the path the first
     // adopters committed theirs to, and hide the image when it 404s. The icon
-    // does not get that second chance, so it falls back to the generic one.
+    // is a separate upload with no such history, so it falls back to the
+    // bundled generic one instead.
     logoPath: logo?.path ?? LEGACY_LOGO_PATH,
-    iconPath: logo?.path ?? GENERIC_ICON_PATH,
-    iconType: logo?.mediaType ?? 'image/svg+xml',
+    iconPath: icon?.path ?? GENERIC_ICON_PATH,
+    iconType: icon?.mediaType ?? 'image/svg+xml',
     basePath: siteBasePath(config.site.url),
   };
 }

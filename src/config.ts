@@ -20,7 +20,7 @@
  * stand-in.
  */
 
-import { parseLogo, type VesselLogo } from './logo';
+import { parseIcon, parseLogo, type VesselIcon, type VesselLogo } from './logo';
 import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
 
@@ -120,19 +120,27 @@ export interface PluginConfig {
     url: string;
     /** The logo to publish, or null to leave `data/vessel/logo.png` alone. */
     logo: VesselLogo | null;
+    /**
+     * The icon to publish, or null to fall back to the bundled generic one.
+     * Separate from the logo: the tab, home-screen and link-preview icon
+     * wants a simple square mark, not the same image the status hero shows.
+     */
+    icon: VesselIcon | null;
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
-    /** Ticked, the typed number wins over the Signal K registrations. */
-    overrideUscgNumber: boolean;
-    uscgNumber: string;
-    overrideHullNumber: boolean;
-    hullNumber: string;
     /**
-     * Where the site looks before it has a fix: the tide station it picks and
-     * the map it opens on. Null means it waits for one — the tide and forecast
-     * panels say so rather than showing some other coast's numbers.
+     * The NOAA tide station the site queries before it has a GPS fix. Empty
+     * means it waits for one — the tide and forecast panels say so rather
+     * than showing some other coast's numbers.
+     *
+     * This replaced a "default position" lat/lon, captured from the boat's
+     * own `navigation.position` by a checkbox that read the self tree
+     * directly, ahead of the privacy-zone redaction that guards every other
+     * position on its way to the repository. A station ID names a public
+     * NOAA reference point, not anywhere the boat has been, so there is
+     * nothing here for a privacy zone to need to redact.
      */
-    defaultLocation: { lat: number; lon: number; label: string } | null;
+    tideStationOverride: string;
   };
 }
 
@@ -278,10 +286,6 @@ export interface SchemaContext {
   polar?: PolarStatus | null;
   /** The active polar rendered as CSV, to show in the read-only box. */
   polarCsv?: string;
-  /** The USCG documentation number read off the Signal K registrations. */
-  uscgNumber?: string;
-  /** Likewise the hull identification number. */
-  hullNumber?: string;
 }
 
 /**
@@ -298,7 +302,7 @@ export interface SchemaContext {
  * unticked — so a stale default can never become a published value.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, polar, polarCsv, uscgNumber, hullNumber } = context;
+  const { repoName, siteUrl, polar, polarCsv } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
   if (repoName) schema.properties.github.properties.name.default = repoName;
@@ -316,8 +320,6 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
       `${note}${problems}\n\n${POLARS_FIELD_DESCRIPTION}`;
   }
   if (polarCsv) schema.properties.polars.properties.table.default = polarCsv;
-  if (uscgNumber) schema.properties.site.properties.uscgNumber.default = uscgNumber;
-  if (hullNumber) schema.properties.site.properties.hullNumber.default = hullNumber;
 
   return schema;
 }
@@ -609,11 +611,7 @@ export const configSchema = {
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
-      dependencies: {
-        ...readOnlyUnless('overrideUrl', 'url'),
-        ...readOnlyUnless('overrideUscgNumber', 'uscgNumber'),
-        ...readOnlyUnless('overrideHullNumber', 'hullNumber'),
-      },
+      dependencies: readOnlyUnless('overrideUrl', 'url'),
       properties: {
         logo: {
           type: 'string',
@@ -626,11 +624,20 @@ export const configSchema = {
           format: 'data-url',
           title: 'Vessel logo',
           description:
-            'Shown beside the name at the top of the site and in the footer, and ' +
-            'used as the browser tab icon, the home-screen icon and the image on a ' +
-            'shared link. PNG, JPEG, WebP or SVG, up to 512 kB. Empty falls back to ' +
-            'data/vessel/logo.png if you have committed one, and to a generic ' +
-            'tracker icon if you have not.',
+            'Shown beside the name at the top of the site and in the footer. PNG, ' +
+            'JPEG, WebP or SVG, up to 512 kB. Empty falls back to data/vessel/logo.png ' +
+            'if you have committed one. Set the tab and home-screen icon separately, ' +
+            'below — a detailed logo rarely reads well shrunk to a favicon.',
+          default: '',
+        },
+        icon: {
+          type: 'string',
+          format: 'data-url',
+          title: 'Vessel icon',
+          description:
+            'The browser tab icon, the home-screen icon, and the image a shared link ' +
+            'unfurls to in a chat app. A simple square mark works best. PNG, JPEG, ' +
+            'WebP or SVG, up to 512 kB. Empty falls back to a generic tracker icon.',
           default: '',
         },
         overrideUrl: {
@@ -664,48 +671,17 @@ export const configSchema = {
           },
           default: [],
         },
-        overrideUscgNumber: {
-          type: 'boolean',
-          title: 'Override USCG documentation number',
-          default: false,
-        },
-        uscgNumber: {
+        tideStationOverride: {
           type: 'string',
-          title: 'USCG documentation number',
-          description: 'Read from the Signal K registrations.',
-          default: '',
-        },
-        overrideHullNumber: {
-          type: 'boolean',
-          title: 'Override hull number',
-          default: false,
-        },
-        hullNumber: {
-          type: 'string',
-          title: 'Hull number (HIN)',
-          description: 'Read from the Signal K registrations.',
-          default: '',
-        },
-        defaultLocation: {
-          type: 'object',
-          title: 'Default position',
+          title: 'Tide station override',
           description:
-            'Where the site looks before the boat has reported a position: the tide ' +
-            'station it picks and the map it opens on. Blank coordinates mean the tide ' +
-            'and forecast panels wait for a fix.',
-          properties: {
-            useCurrentPosition: {
-              type: 'boolean',
-              title: 'Set to the current position',
-              description:
-                'Fills the coordinates below from navigation.position and unticks ' +
-                'itself. Takes effect when the plugin restarts on save.',
-              default: false,
-            },
-            lat: { type: 'number', title: 'Latitude' },
-            lon: { type: 'number', title: 'Longitude' },
-            label: { type: 'string', title: 'Label', default: '' },
-          },
+            'A NOAA station ID (e.g. 9414290) to query before the boat has reported a ' +
+            'GPS position, for the tide and 48-hour conditions panels. Blank means those ' +
+            "panels wait for a fix rather than showing some other coast's numbers. " +
+            'Unlike the USCG and hull numbers, this is never read from Signal K, so ' +
+            'there is nothing here to derive or agree with — it is simply the ' +
+            'station to use until a fix arrives.',
+          default: '',
         },
       },
     },
@@ -715,7 +691,7 @@ export const configSchema = {
 /** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
-  site: { logo: { 'ui:widget': 'file' } },
+  site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
   polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
 };
@@ -974,25 +950,6 @@ export function resolveCustomLinks(value: unknown): {
   return { links, warnings };
 }
 
-/**
- * The default-position coordinates, or null.
- *
- * Both halves or neither: a latitude with no longitude is not a place, and
- * sending half a fix to the tide-station lookup would land the panel somewhere
- * in the ocean rather than falling back to the frontend's default.
- */
-export function resolveDefaultLocation(
-  value: unknown,
-): { lat: number; lon: number; label: string } | null {
-  if (!value || typeof value !== 'object') return null;
-  const { lat, lon, label } = value as Record<string, unknown>;
-  const latitude = Number(lat);
-  const longitude = Number(lon);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  if (Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
-  return { lat: latitude, lon: longitude, label: str(label) };
-}
-
 /** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(value: unknown): string {
   if (value && typeof value === 'object') {
@@ -1068,12 +1025,14 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const siteUrlResult = resolveSiteUrl(owner, name, site.overrideUrl, site.url);
   warnings.push(...siteUrlResult.warnings);
 
-  // A logo that will not decode is fatal rather than a warning: it is the one
-  // setting whose failure is invisible on the config page, and the site would
-  // go on showing the previous logo — or a broken image — while the page said
-  // a new one was set.
+  // A logo or icon that will not decode is fatal rather than a warning: it is
+  // the one setting whose failure is invisible on the config page, and the
+  // site would go on showing the previous image — or a broken one — while the
+  // page said a new one was set.
   const logoResult = parseLogo(site.logo);
   problems.push(...logoResult.problems);
+  const iconResult = parseIcon(site.icon);
+  problems.push(...iconResult.problems);
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones
@@ -1182,12 +1141,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,
+        icon: iconResult.icon,
         customLinks,
-        overrideUscgNumber: bool(site.overrideUscgNumber),
-        uscgNumber: str(site.uscgNumber),
-        overrideHullNumber: bool(site.overrideHullNumber),
-        hullNumber: str(site.hullNumber),
-        defaultLocation: resolveDefaultLocation(site.defaultLocation),
+        tideStationOverride: str(site.tideStationOverride),
       },
     },
   };

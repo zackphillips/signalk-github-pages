@@ -416,6 +416,53 @@ describe('Publisher', () => {
     });
   });
 
+  describe('the vessel icon', () => {
+    // A different 1x1 PNG from the logo fixture, so a test that checks both
+    // published cannot pass by publishing the same bytes to both paths.
+    const ICON =
+      'data:image/png;name=icon.png;base64,' +
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+
+    it('publishes an uploaded icon to its own path, separate from the logo', async () => {
+      const publisher = makePublisher({ site: { icon: ICON } });
+      await publisher.seed();
+      const result = await publisher.runCycle(tree());
+
+      expect(result.files).toContain('data/vessel/icon.png');
+      expect(result.rejected).toEqual([]);
+      const manifest = JSON.parse(String(fake.files.get('.tracker-manifest.json')));
+      expect(manifest.owned).toContain('data/vessel/icon.png');
+    });
+
+    it('does not re-upload it on every cycle', async () => {
+      const publisher = makePublisher({ site: { icon: ICON } });
+      await publisher.seed();
+      await publisher.runCycle(tree());
+      const second = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }));
+      expect(second.files).not.toContain('data/vessel/icon.png');
+    });
+
+    it('is independent of the logo: setting one does not publish or claim the other', async () => {
+      const publisher = makePublisher({ site: { icon: ICON } });
+      await publisher.seed();
+      const result = await publisher.runCycle(tree());
+
+      expect(result.files).not.toContain('data/vessel/logo.png');
+      const manifest = JSON.parse(String(fake.files.get('.tracker-manifest.json')));
+      expect(manifest.owned).not.toContain('data/vessel/logo.png');
+    });
+
+    it('claims nothing and publishes nothing when none is configured', async () => {
+      const publisher = makePublisher();
+      await publisher.seed();
+      const result = await publisher.runCycle(tree());
+
+      expect(result.files).not.toContain('data/vessel/icon.png');
+      const manifest = JSON.parse(String(fake.files.get('.tracker-manifest.json')));
+      expect(manifest.owned).not.toContain('data/vessel/icon.png');
+    });
+  });
+
   describe('notifications', () => {
     const alarmed = (state: string, message = 'Shallow') => ({
       ...tree(),

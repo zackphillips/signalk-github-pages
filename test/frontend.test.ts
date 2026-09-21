@@ -145,13 +145,26 @@ describe('frontendOptions', () => {
     expect(resolved.iconType).toBe('image/svg+xml');
   });
 
-  it('uses a configured logo for both the image and the icon', () => {
+  it('uses a configured logo for the image, and the generic icon when none is set', () => {
     const config = makeConfig({
       site: { logo: 'data:image/svg+xml;base64,PHN2Zy8+' },
     });
     const resolved = frontendOptions(config, 'Vessel', '1.0.0');
     expect(resolved.logoPath).toBe('data/vessel/logo.svg');
-    expect(resolved.iconPath).toBe('data/vessel/logo.svg');
+    expect(resolved.iconPath).toBe('assets/icon.svg');
+    expect(resolved.iconType).toBe('image/svg+xml');
+  });
+
+  it('uses a configured icon independently of the logo', () => {
+    const config = makeConfig({
+      site: {
+        logo: 'data:image/png;base64,iVBORw0KGgo=',
+        icon: 'data:image/svg+xml;base64,PHN2Zy8+',
+      },
+    });
+    const resolved = frontendOptions(config, 'Vessel', '1.0.0');
+    expect(resolved.logoPath).toBe('data/vessel/logo.png');
+    expect(resolved.iconPath).toBe('data/vessel/icon.svg');
     expect(resolved.iconType).toBe('image/svg+xml');
   });
 

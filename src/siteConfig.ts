@@ -12,8 +12,8 @@
  * what has no other source.
  *
  * What has no other source is site configuration — the privacy zones, the
- * custom links, the default position, the track timezone, the address the
- * site links back to — plus two numbers derived from the tree that the
+ * custom links, the tide station override, the track timezone, the address
+ * the site links back to — plus two numbers derived from the tree that the
  * frontend should not have to re-derive (the USCG documentation number and
  * the hull number, picked out of `registrations` by `readVesselDetails`),
  * plus the passage banner, which now comes from the Course API rather than
@@ -223,23 +223,6 @@ export function mergeVesselIdentity(
  * documentation number while the page says another is a thing to notice, not
  * to resolve silently.
  */
-function pick(
-  label: string,
-  override: boolean,
-  configured: string,
-  fromSignalK: string | undefined,
-  onProblem: (message: string) => void,
-): string {
-  if (!override) return fromSignalK || '';
-  if (configured && fromSignalK && configured !== fromSignalK) {
-    onProblem(
-      `The ${label} on the config page ("${configured}") differs from the one Signal K ` +
-        `reports ("${fromSignalK}"); publishing the configured one.`,
-    );
-  }
-  return configured || fromSignalK || '';
-}
-
 /** What the plugin publishes to `data/vessel/site.json`. */
 export interface SiteConfigDocument {
   schema_version: number;
@@ -250,7 +233,8 @@ export interface SiteConfigDocument {
   /** Where the configured vessel logo was published, when one is set. */
   logo?: string;
   custom_links?: Array<{ label: string; url: string }>;
-  default_location?: { lat: number; lon: number; label?: string };
+  /** The NOAA station queried before the boat has reported a GPS position. */
+  tide_station_override?: string;
   timezone?: string;
   /** From the Course API; absent whenever nothing is being navigated to. */
   passage?: Passage;
@@ -273,7 +257,6 @@ export function renderSiteConfig(
   config: PluginConfig,
   identity: VesselIdentity,
   passage: Passage | null,
-  onProblem: (message: string) => void = () => {},
 ): string {
   const document: SiteConfigDocument = {
     schema_version: SITE_CONFIG_SCHEMA_VERSION,
@@ -292,22 +275,14 @@ export function renderSiteConfig(
       protocol: identity.signalk.protocol ?? 'http',
     };  }
 
-  const uscgNumber = pick(
-    'USCG documentation number',
-    config.site.overrideUscgNumber,
-    config.site.uscgNumber,
-    identity.uscgNumber,
-    onProblem,
-  );
-  if (uscgNumber) document.uscg_number = uscgNumber;
-  const hullNumber = pick(
-    'hull number',
-    config.site.overrideHullNumber,
-    config.site.hullNumber,
-    identity.hullNumber,
-    onProblem,
-  );
-  if (hullNumber) document.hull_number = hullNumber;
+  // No override for either: they are picked out of `registrations` by
+  // `readVesselDetails`, which is a judgement the plugin already makes, and
+  // there is no longer a config-page field to disagree with it. A boat with
+  // no matching registration simply publishes neither key, rather than
+  // offering a typed box that would have to be kept in sync with Signal K by
+  // hand.
+  if (identity.uscgNumber) document.uscg_number = identity.uscgNumber;
+  if (identity.hullNumber) document.hull_number = identity.hullNumber;
 
   // Where the logo was published, for the <img> tags the page fills in after
   // it loads. The site's address is deliberately not here: the published HTML
@@ -322,9 +297,8 @@ export function renderSiteConfig(
       url: link.url,
     }));
   }
-  if (config.site.defaultLocation) {
-    const { lat, lon, label } = config.site.defaultLocation;
-    document.default_location = label ? { lat, lon, label } : { lat, lon };
+  if (config.site.tideStationOverride) {
+    document.tide_station_override = config.site.tideStationOverride;
   }
   if (config.timezone) document.timezone = config.timezone;
   if (passage) document.passage = passage;

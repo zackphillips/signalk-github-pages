@@ -12,11 +12,7 @@
       "url": "https://example.com/logs"
     }
   ],
-  "default_location": {
-    "lat": 37.806,
-    "lon": -122.465,
-    "label": "San Francisco Bay"
-  },
+  "tide_station_override": "9414290",
   "timezone": "America/Los_Angeles",
   "passage": {
     "to": "Santa Cruz, CA",

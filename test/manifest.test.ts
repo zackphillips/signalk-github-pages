@@ -87,6 +87,24 @@ describe('ownership', () => {
     ).toBe(false);
   });
 
+  it('leaves an icon unset alone, and owns only the path it is actually publishing', () => {
+    // Same arrangement as the logo, kept as a separate path: publishing one
+    // must not claim or unclaim the other.
+    expect(isOwnedPath('data/vessel/icon.svg', FULL)).toBe(false);
+    expect(
+      isOwnedPath('data/vessel/icon.svg', { ...FULL, publishIcon: 'data/vessel/icon.svg' }),
+    ).toBe(true);
+    expect(
+      isOwnedPath('data/vessel/icon.svg', { ...FULL, publishIcon: 'data/vessel/icon.png' }),
+    ).toBe(false);
+    expect(
+      isOwnedPath('data/vessel/logo.png', {
+        ...FULL,
+        publishIcon: 'data/vessel/icon.svg',
+      }),
+    ).toBe(false);
+  });
+
   it('drops the docs index when the Action maintains it instead', () => {
     const minimal = { buildDocsIndex: false };
     expect(isOwnedPath('docs/index.json', minimal)).toBe(false);

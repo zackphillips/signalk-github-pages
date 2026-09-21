@@ -145,23 +145,23 @@ only. Give Pages a minute, then open the URL.
 | `polars.override` | off | Publish the table below instead of the active polar |
 | `polars.table` | the active polar | Read-only until the override is ticked, [see below](#polars) |
 | `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](#branding) |
+| `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](#branding) |
 | `site.overrideUrl` | off | Publish under a custom domain rather than the Pages URL |
 | `site.url` | derived | Where the site is served, e.g. `https://example.com/` |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
-| `site.overrideUscgNumber` | off | Type a documentation number instead of reading it from Signal K |
-| `site.overrideHullNumber` | off | Likewise for the hull number |
-| `site.defaultLocation` | *empty* | Default position `{lat, lon, label}` — tides and the map before the boat has a fix |
+| `site.tideStationOverride` | *empty* | A NOAA station ID to query before the boat has a GPS fix — see [Tide station override](#tide-station-override) |
 | `notifyAfterFailureMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `notificationExclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
 | `buildDocsIndex` | on | Maintain `docs/index.json` |
 | `publishNotifications` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 
 The defaults are the numbers this tracker has run on for years on a
-Raspberry Pi. Five settings are derived rather than typed — the repository
+Raspberry Pi. Four settings are derived rather than typed — the repository
 name from the owner, the site address from the repository, the timezone from
-the server, the polar table from Polar Management, and the USCG and hull
-numbers from the Signal K registrations — and each has an override checkbox
-beside it. What has no
+the server, and the polar table from Polar Management — and each has an
+override checkbox beside it. The USCG and hull numbers are derived too, from
+the Signal K registrations, but with no override: a boat with no matching
+registration simply publishes neither one. What has no
 default at all is what belongs to one particular boat: privacy zones start
 empty, and [the vessel's own details](#what-comes-from-signal-k) come from
 Signal K rather than from this page.
@@ -495,15 +495,24 @@ and icon, and the `<link rel="icon">` on both pages.
 Everything it needs comes off the config page or the Signal K tree. The name is
 `vessels.self`. The address is derived from the repository (`<owner>.github.io`,
 or `<owner>.github.io/<name>/` for a project site) unless `site.overrideUrl` is
-ticked for a custom domain. The logo is `site.logo`, which is a file picker:
-choose a PNG, JPEG, WebP or SVG up to 512 kB and the plugin publishes it to
-`data/vessel/logo.<ext>` and points the pages, the tab icon and the home-screen
-icon at it. It is uploaded when it changes, not every cycle.
+ticked for a custom domain.
+
+The logo and the icon are two separate file pickers, `site.logo` and
+`site.icon`. Choose a PNG, JPEG, WebP or SVG up to 512 kB in each and the
+plugin publishes them to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
+uploaded independently and only when their own bytes change. The logo is shown
+beside the name in the status hero and the footer; the icon is what the
+browser tab, the phone home screen and a shared link's preview use. They used
+to be the same upload, which meant a detailed logo that read fine at 200px
+came out as a muddy favicon, and a boat that wanted a clean square icon had to
+make its status-hero image match it.
 
 With no logo set, the pages ask for `data/vessel/logo.png` — where the first
 adopters of this tracker committed theirs by hand — and hide the image if it is
-not there. The tab and home-screen icon fall back to a generic
-`assets/icon.svg` that ships with the plugin.
+not there. With no icon set, the tab, home-screen and link-preview icon fall
+back to a generic `assets/icon.svg` that ships with the plugin — there is no
+hand-committed fallback path for the icon, since it is a new field with no
+history to keep working.
 
 None of this used to be configurable. The pages named one boat in their
 preview tags and their manifest, and the six favicon and home-screen icons in
@@ -521,7 +530,7 @@ the name, MMSI, callsign, registrations and dimensions are already there and
 the site reads them from there.
 
 `data/vessel/site.json` carries only what the snapshot cannot supply — the
-privacy zones, the custom links, the default position, the timezone, the
+privacy zones, the custom links, the tide station override, the timezone, the
 address the site links back to — plus two numbers the plugin derives from the
 tree so the frontend does not have to:
 
@@ -554,29 +563,40 @@ public page through a path the privacy zones do not guard. The ETA is left
 out too — `targetArrivalTime` is recomputed continuously, and `site.json` is
 only rewritten when its content changes.
 
-The config page shows both numbers read-only. Tick `site.overrideUscgNumber`
-or `site.overrideHullNumber` to type one instead; if Signal K reports something
-different, the log says so rather than quietly picking one.
+The config page shows both numbers read-only, exactly as Signal K reports
+them. There is no override: a boat with no matching registration simply
+publishes neither key, rather than a typed box that would have to be kept in
+sync with Signal K by hand.
 
 The polar table comes from the server the same way — see below.
 
-### Default position
+### Tide station override
 
-The tide and forecast panels use the boat's position. Before there is a fix
-they use `site.defaultLocation`, and if that is not set either they say so and
-wait. Tick **Set to the current position** on the config page and save: the
-plugin copies `navigation.position` into the coordinates and unticks the box.
+The tide and 48-hour conditions panels use the boat's position when there is
+a live GPS fix. Before there is one, they use `site.tideStationOverride` — a
+NOAA station ID, e.g. `9414290` — and if that is not set either they say so
+and wait.
 
-Nothing stands in for it. The frontend used to carry a hardcoded San Francisco
-Bay, so a boat in the Chesapeake with a cold GPS was shown Golden Gate tides
-under a heading that read like its own — a wrong number presented as a right
-one. The same went for a fallback privacy zone at one particular dock, and for
-a whole fallback vessel identity (name, MMSI, documentation number) used when
-the site configuration failed to load, which made every such site introduce
-itself as somebody else's boat. So was a fabricated telemetry snapshot shown
-when `signalk_latest.json` would not load, which told anyone following the
-boat it was sailing in ten knots off Ocean Beach when in fact publishing had
-broken. All of them are gone: unknown renders as unknown.
+A station ID rather than a position on purpose: this setting replaced a
+"default position" lat/lon, captured from `navigation.position` by a checkbox
+that read the self tree directly, ahead of the privacy-zone redaction that
+guards every other position on its way to the repository — a boat whose
+default position happened to sit inside its own privacy zone published its
+exact home coordinates unredacted. A NOAA station ID names a public reference
+point, not anywhere the boat has been, so there is nothing here for a privacy
+zone to need to redact.
+
+Nothing stands in for it beyond that. The frontend used to carry a hardcoded
+San Francisco Bay, so a boat in the Chesapeake with a cold GPS was shown
+Golden Gate tides under a heading that read like its own — a wrong number
+presented as a right one. The same went for a fallback privacy zone at one
+particular dock, and for a whole fallback vessel identity (name, MMSI,
+documentation number) used when the site configuration failed to load, which
+made every such site introduce itself as somebody else's boat. So was a
+fabricated telemetry snapshot shown when `signalk_latest.json` would not
+load, which told anyone following the boat it was sailing in ten knots off
+Ocean Beach when in fact publishing had broken. All of them are gone: unknown
+renders as unknown.
 
 ## Polars
 
