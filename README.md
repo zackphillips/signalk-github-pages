@@ -48,7 +48,7 @@ live `HEAD`.
 |---|---|
 | **Live position** | With privacy zones: inside one, the site shows the zone center and the track simply stops |
 | **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
-| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else. A path no panel knows about still gets drawn, labeled from the server's own metadata |
+| **Instrument sparklines** | Every number the boat reports that your history provider has stored, less the paths you exclude. A path no panel knows about still gets drawn, labeled from the server's own metadata |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
@@ -123,7 +123,7 @@ only. Give Pages a minute, then open the URL.
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](#privacy-zones) |
-| `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
+| `instrumentLog.exclude` | design, course, GNSS housekeeping… | Paths never logged, one per line; everything else the boat reports gets a sparkline — [see below](#instrument-paths) |
 | `instrumentLog.hours` | `1` | How far back the sparklines plot; 0 publishes no log — [see below](#history-provider) |
 | `instrumentLog.providerId` | *server default* | A dropdown of the history providers registered on the server |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
@@ -286,7 +286,7 @@ grow with the window:
 
 The whole file is uploaded on every publish, so the cap is what keeps a day of
 history off a hotspot budget: 24 hours costs about 130 kB a cycle at the
-default path list rather than the half megabyte 1440 one-minute buckets would.
+size of the default two dozen paths rather than the half megabyte 1440 one-minute buckets would.
 What it costs instead is detail inside the shorter views — at a 24-hour window
 the 1-hour view is fifteen points. An hour is the default because it is what
 every install can carry; six hours is the longest window that keeps full
@@ -294,53 +294,50 @@ every install can carry; six hours is the longest window that keeps full
 
 ## Instrument paths
 
-One Signal K path per line — this is what the plugin asks the history provider
-for. `*` matches one segment, so `electrical.batteries.*.voltage` covers every
-bank the provider has stored. Lines starting with `#` are comments. A path no
-instrument produces costs nothing — it comes back as a column of nulls and
-never appears in the file, which is why state of charge is asked for under
-both the spec's `capacity.stateOfCharge` and the short form some producers
-use.
+Every path gets a sparkline unless you exclude it. A path is logged when the
+history provider has stored it **and** the boat is reporting a number for it
+right now. The first condition is what makes a sparkline possible. The second
+keeps out everything the database remembers but the boat no longer has: the
+sensor you unplugged in March, the bank you renamed.
 
-A path you add that no panel draws is not lost: it appears under **Other
-Instruments** on the Data tab, named, converted and colored from the
-metadata the server publishes for it.
-
-This list is the entire bandwidth cost of a cycle. Trim it to what you look at.
-
-<details>
-<summary><strong>The default list</strong> — what the bundled sparklines draw</summary>
+**Never logged** (`instrumentLog.exclude`) is the list to leave out. One path
+per line; `*` matches one segment, a parent excludes its whole subtree
+(`design` drops every `design.*` path), and lines starting with `#` are
+comments. Empty logs everything the boat reports. The default leaves out
+what is not worth a graph:
 
 ```
-navigation.speedOverGround
-navigation.speedThroughWater
-navigation.courseOverGroundTrue
-navigation.headingTrue
-navigation.attitude.roll
-navigation.attitude.pitch
-environment.wind.speedApparent
-environment.wind.angleApparent
-environment.wind.speedTrue
-environment.wind.directionTrue
-environment.depth.belowTransducer
-environment.water.temperature
-environment.outside.temperature
-environment.outside.pressure
-environment.inside.temperature
-environment.inside.humidity
-electrical.batteries.*.voltage
-electrical.batteries.*.current
-electrical.batteries.*.capacity.stateOfCharge
-electrical.batteries.*.stateOfCharge
-electrical.batteries.*.capacity.timeRemaining
-electrical.solar.*.panelPower
-tanks.*.*.currentLevel
-propulsion.*.revolutions
-propulsion.*.temperature
-propulsion.*.runTime
+design
+navigation.course
+navigation.courseRhumbline
+navigation.courseGreatCircle
+navigation.gnss
+navigation.datetime
+communication
+sensors
+notifications
 ```
 
-</details>
+**Positions are never logged, whatever this list says.** Any path with a
+`position` segment is dropped from the query and from the answer, and so is
+any value carrying a latitude or longitude. That covers
+`navigation.anchor.position` (the drop point, often inside your privacy
+zone) and `navigation.course.previousPoint.position` (the slip you just
+left). The track is the only way a position reaches the site, and it goes
+through the privacy zones.
+
+A path no panel draws is not lost: it appears under **Other Instruments** on
+the Data tab, named, converted and colored from the metadata the server
+publishes for it.
+
+The log is the entire bandwidth cost of a cycle, and its size now follows the
+boat rather than the config page. The plugin logs the file's size every
+cycle and warns past 512 kB. If it is more than you want on a cellular plan,
+add paths to *Never logged* — `environment.rpi`, per-cell battery voltages,
+whatever you never look at — or shorten the window.
+
+The old allowlist, `instrumentLog.paths`, is not read any more. Carried over
+as an exclusion list it would have excluded exactly the paths it named.
 
 ### Why this matters more than it looks like it should
 
@@ -350,13 +347,14 @@ instrument log is a rolling window, so *every* entry shifts position each
 cycle — there is no "only the tail changed" for a delta to find even if one
 were possible.
 
-Asking for every path a database has stored is roughly 167 per bucket, which
-at 200 buckets is a ~1 MB file. At a two-minute cadence that is about **40 MB
-per hour** over the hotspot, for data the sparklines never draw. The defaults
-are about two dozen patterns over 60 buckets: tens of kilobytes, a megabyte or
-two an hour. The path list is the lever that matters, because the bucket count
-is capped: see [how far back the sparklines
-go](#how-far-back-the-sparklines-go).
+Asking for every path a database has stored was once roughly 167 per bucket,
+which at 200 buckets is a ~1 MB file. At a two-minute cadence that is about
+**40 MB per hour** over the hotspot. That is why only paths the boat is
+reporting now are asked for, and why the exclusion list exists. Size scales
+with paths × buckets: 60 live paths over the default 60 buckets is on the
+order of 150 kB a file, about 5 MB an hour underway. The exclusion list is the
+lever that matters, because the bucket count is capped: see [how far back the
+sparklines go](#how-far-back-the-sparklines-go).
 
 The plugin measures this rather than assuming it. Past half a megabyte the log
 line becomes a warning with the hourly cost at your configured cadence.
@@ -984,8 +982,8 @@ that could freeze the site on stale data.
 
 **The token sits in plain text**, as above.
 
-**One commit per cycle.** The repository grows at the rate you publish. Keep
-the path list tight.
+**One commit per cycle.** The repository grows at the rate you publish.
+Exclude the instrument paths you do not look at.
 
 **Nothing is served from the boat.** That is KIP's job. This site is for
 people ashore, and it stays up when the boat's link does not.

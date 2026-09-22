@@ -321,7 +321,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       app.debug(
         `Starting: ${config.github.repo}@${config.github.branch}, ` +
           `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
-          `${config.instrumentLog.paths.length} instrument path pattern(s), ` +
+          `${config.instrumentLog.exclude.length} instrument path exclusion(s), ` +
           `${config.positionRetentionHours}h position retention, ` +
           `${config.staleMaxAgeMinutes}min stale cutoff, ` +
           `${config.privacyZones.length} privacy zone(s), ` +
@@ -382,7 +382,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       const history = new HistoryReader({
         app,
         history: config.history,
-        instrumentPaths: config.instrumentLog.paths,
+        exclude: config.instrumentLog.exclude,
         instrumentEntries: config.instrumentLog.entries,
         log: (message) => app.debug(message),
       });
@@ -482,7 +482,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         passage = await readPassage(app, (problem) => app.error(problem));
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
-          history: await history.read(new Date()),
+          history: await history.read(new Date(), tree),
           passage,
           fixes: recorder?.drain(),
           notificationEdges: notifications?.drain(),
@@ -565,7 +565,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           passage = await readPassage(app, (problem) => app.error(problem));
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
-            history: await history.read(new Date()),
+            history: await history.read(new Date(), tree),
             passage,
             fixes: recorder?.drain(),
             notificationEdges: notifications?.drain(),

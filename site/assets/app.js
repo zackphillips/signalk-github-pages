@@ -518,8 +518,8 @@ const paintedPanels = new Set();
 /**
  * Paths the plugin logs that no panel above draws.
  *
- * `instrumentLog.paths` is configurable, so a boat can capture something this
- * release has never heard of — a coolant temperature, a tank nobody
+ * The instrument log carries every path the boat reports and the history
+ * provider has stored, so a boat logs things this release has never heard of — a coolant temperature, a tank nobody
  * anticipated, a sensor from a plugin written next year. Those were fetched
  * from the history provider, uploaded in full on every publish, and then
  * drawn by nothing at all.

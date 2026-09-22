@@ -30,7 +30,7 @@
  * dock that gap is the stationary interval — an hour by default. These counts
  * are a floor, not a total.
  */
-import { pathMatches } from './instrumentLog';
+import { isExcludedPath } from './instrumentLog';
 import { parseTimestamp } from './time';
 
 export const NOTIFICATIONS_SCHEMA_VERSION = 1;
@@ -62,18 +62,11 @@ export const DEFAULT_NOTIFICATION_EXCLUDE = ['server.history.defaultProvider'];
 /**
  * Does a notification path match any exclusion pattern?
  *
- * Three ways to match, because a blacklist is worth being generous about:
- * the exact path; a `*` wildcard for one segment, the same rule the captured
- * instrument paths use; and a prefix, so `server` excludes the whole
- * `server.*` subtree without anyone enumerating it.
+ * The same rule as the instrument log's exclusions — see `isExcludedPath` —
+ * so `server` excludes the whole `server.*` subtree.
  */
 export function isExcludedNotification(path: string, patterns: string[]): boolean {
-  return patterns.some(
-    (pattern) =>
-      pathMatches(pattern, path) ||
-      path.startsWith(`${pattern}.`) ||
-      pathMatches(`${pattern}.*`, path),
-  );
+  return isExcludedPath(path, patterns);
 }
 
 export type NotificationLevel = 'ok' | 'warn' | 'alert';

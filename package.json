@@ -1,6 +1,6 @@
 {
   "name": "signalk-github-pages",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Publish Signal K vessel telemetry to a GitHub Pages site — a static tracker, updated from the boat, with no server ashore.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

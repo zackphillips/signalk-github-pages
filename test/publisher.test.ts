@@ -56,7 +56,7 @@ describe('Publisher', () => {
     const config = makeConfig({
       privacyZones: [HOME],
       instrumentLog: {
-        paths: 'navigation.speedOverGround\nelectrical.batteries.*.voltage\n',
+        exclude: 'design',
         entries: 5,
       },
       ...overrides,
@@ -1082,7 +1082,7 @@ describe('cycle accounting', () => {
     // A log the size one gets from asking for every bank at a fine
     // resolution, which is when the upload starts to matter.
     const { result, logs } = await run(
-      { instrumentLog: { paths: 'electrical.batteries.*.voltage', entries: 200 } },
+      { instrumentLog: { entries: 200 } },
       200,
     );
     const logFile = result.fileSizes.find(
@@ -1091,7 +1091,7 @@ describe('cycle accounting', () => {
     expect(logFile.bytes).toBeGreaterThan(INSTRUMENT_LOG_WARN_BYTES);
     const warning = logs.find((line) => line.includes('uploaded in full'))!;
     expect(warning).toContain('per hour');
-    expect(warning).toContain('Shorten the captured-path list');
+    expect(warning).toContain('Add paths to Never logged');
   });
 
   it('stays quiet about size when the log is small', async () => {
