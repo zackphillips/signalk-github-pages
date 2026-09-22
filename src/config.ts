@@ -61,7 +61,8 @@ export interface PluginConfig {
   /** IANA zone tracks are grouped by: the server's, or the one overridden. */
   timezone: string;
   instrumentLog: {
-    paths: string[];
+    /** Paths never logged. Everything else the provider has stored is. */
+    exclude: string[];
     entries: number;
   };
   /** How long raw positions stay in `positions_index.json`. Not configurable. */
@@ -107,7 +108,7 @@ export interface PluginConfig {
   publishNotifications: boolean;
   /**
    * Notification paths never published. Empty means publish every one —
-   * unlike the captured instrument paths, an empty blacklist is a real
+   * like the instrument log exclusions, an empty blacklist is a real
    * answer and must not fall back to the default.
    */
   notificationExclude: string[];
@@ -149,46 +150,33 @@ export interface PluginConfig {
 }
 
 /**
- * Default `instrumentLog.paths`: what the bundled sparklines draw.
+ * Default `instrumentLog.exclude`: stored paths not worth a sparkline.
  *
- * A path no instrument produces costs nothing — it simply never appears in the
- * log. Every path here is recorded for every entry and re-uploaded on every
- * publish, so the list is worth trimming on a cellular data plan.
+ * Every path the history provider has stored is logged unless it matches one
+ * of these, and every logged path is re-uploaded on every publish — so this
+ * is the list to extend on a cellular data plan. Each entry is a subtree:
+ *
+ * - `design`: the boat's dimensions, which do not change.
+ * - `navigation.course*`: bearing, distance and XTE to a waypoint, which are
+ *   the passage banner's job and a flat line whenever nothing is active.
+ * - `navigation.gnss`: satellite counts and fix quality — receiver health,
+ *   not the boat.
+ * - `navigation.datetime`, `communication`, `sensors`, `notifications`:
+ *   clocks, radio identities, sensor configuration and alarm states, none of
+ *   them a number worth a graph.
+ *
+ * Positions are never logged whatever this says — see `isPositionPath`.
  */
-export const DEFAULT_INSTRUMENT_LOG_PATHS = [
-  'navigation.speedOverGround',
-  'navigation.speedThroughWater',
-  'navigation.courseOverGroundTrue',
-  'navigation.headingTrue',
-  'navigation.attitude.roll',
-  'navigation.attitude.pitch',
-  'environment.wind.speedApparent',
-  'environment.wind.angleApparent',
-  'environment.wind.speedTrue',
-  'environment.wind.directionTrue',
-  'environment.depth.belowTransducer',
-  'environment.water.temperature',
-  'environment.outside.temperature',
-  'environment.outside.pressure',
-  'environment.inside.temperature',
-  'environment.inside.humidity',
-  'electrical.batteries.*.voltage',
-  'electrical.batteries.*.current',
-  // Both spellings. The Signal K spec puts state of charge under
-  // `capacity`, which is what the frontend's battery panel reads and what a
-  // spec-compliant producer publishes; the short form is what some others
-  // use. Asking for a path no instrument produces costs nothing — it comes
-  // back as a column of nulls and never reaches the file — and asking for
-  // only the short one meant the battery sparkline never drew on a
-  // spec-compliant boat.
-  'electrical.batteries.*.capacity.stateOfCharge',
-  'electrical.batteries.*.stateOfCharge',
-  'electrical.batteries.*.capacity.timeRemaining',
-  'electrical.solar.*.panelPower',
-  'tanks.*.*.currentLevel',
-  'propulsion.*.revolutions',
-  'propulsion.*.temperature',
-  'propulsion.*.runTime',
+export const DEFAULT_INSTRUMENT_LOG_EXCLUDE = [
+  'design',
+  'navigation.course',
+  'navigation.courseRhumbline',
+  'navigation.courseGreatCircle',
+  'navigation.gnss',
+  'navigation.datetime',
+  'communication',
+  'sensors',
+  'notifications',
 ];
 
 /** Cadence while `navigation.state` says the boat is moving, in minutes. */
@@ -717,14 +705,18 @@ export const configSchema = {
         'provider the site shows current values and omits the graphs. The map track ' +
         "is not part of this: it is always the plugin's own.",
       properties: {
-        paths: {
+        exclude: {
           type: 'string',
-          title: 'Captured paths',
+          title: 'Never logged',
           description:
-            'One Signal K path per line. "*" matches one path segment, and lines ' +
-            'starting with # are comments. navigation.position is never asked for: ' +
-            'the track comes from the boat, through the privacy zones.',
-          default: DEFAULT_INSTRUMENT_LOG_PATHS.join('\n'),
+            'Every path the history provider has stored gets a sparkline except ' +
+            'these. One path per line; "*" matches one segment and a parent ' +
+            'excludes its subtree, so "design" drops every design path. Lines ' +
+            'starting with # are comments. Every logged path is uploaded on every ' +
+            'publish, so add the ones you do not need on a cellular plan. Positions ' +
+            'are never logged: the track comes from the boat, through the privacy ' +
+            'zones.',
+          default: DEFAULT_INSTRUMENT_LOG_EXCLUDE.join('\n'),
         },
         hours: {
           type: 'number',
@@ -954,7 +946,7 @@ export const configSchema = {
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
-  instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
+  instrumentLog: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 10 } } },
   notifications: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } } },
   overrides: {
     // Each typed box directly under its own checkbox. A name the schema does
@@ -1273,6 +1265,18 @@ function notificationExclude(
   return value === undefined ? [...DEFAULT_NOTIFICATION_EXCLUDE] : parsePathList(value);
 }
 
+/**
+ * Instrument paths never logged.
+ *
+ * Empty is a real answer here too: log everything the provider has. The
+ * allowlist this replaced, `instrumentLog.paths`, is not read — an opt-in list
+ * carried over as an opt-out one would exclude exactly the paths it named.
+ */
+function instrumentLogExclude(instrumentLog: Record<string, any>): string[] {
+  const value = instrumentLog.exclude;
+  return value === undefined ? [...DEFAULT_INSTRUMENT_LOG_EXCLUDE] : parsePathList(value);
+}
+
 /** The track timezone: the server's, unless the override is ticked. */
 export function resolveTimezone(overrides: Record<string, unknown>): string {
   if (overrides.overrideTimezone === true) return str(overrides.timezone) || serverTimezone();
@@ -1399,8 +1403,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
 
   if (problems.length) return { ok: false, problems, warnings };
 
-  const paths = parsePathList(instrumentLog.paths);
-
   const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
   const hours = resolveInstrumentLogHours(instrumentLog, history);
   const { entries, resolutionSeconds } = instrumentLogShape(hours);
@@ -1432,7 +1434,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       privacyZones: zones,
       timezone: resolveTimezone(overrides),
       instrumentLog: {
-        paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
+        exclude: instrumentLogExclude(instrumentLog),
         entries,
       },
       polars: resolvePolars(overrides),
@@ -1456,10 +1458,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
       publishNotifications:
         (notifications.publish ?? input.publishNotifications) !== false,
-      // No fallback to the default when the box is empty. For the captured
-      // instrument paths an empty list means "nothing would be logged", so
-      // the default stands in; for a blacklist it means "publish all of
-      // them", which is a choice the adopter is allowed to make.
+      // No fallback to the default when the box is empty: for a blacklist it
+      // means "publish all of them", which is a choice the adopter is
+      // allowed to make. The instrument log exclusions follow the same rule.
       notificationExclude: notificationExclude(notifications, input),
       site: {
         url: siteUrlResult.url,

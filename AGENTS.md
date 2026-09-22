@@ -228,11 +228,25 @@ Run `npm test` and `npm run typecheck` before committing.
   position and a public repository. The instrument log is the opposite: a
   projection of the database, rebuilt every cycle, never accumulated. Do not
   move either one to the other side without a reason bigger than symmetry.
-- **Never ask a provider for a position.** `isPositionPath` drops
-  `navigation.position` and its members from the query and from the response,
-  so a wildcard in the captured-path list cannot put a raw position into a
-  published file that nothing redacts. The privacy zones guard the track's
-  path, not this one.
+- **Never ask a provider for a position.** `isPositionPath` drops any path
+  with a `position` segment from the query and from the response, and a
+  value carrying `latitude`/`longitude` is dropped whatever its path is
+  called. It used to cover `navigation.position` alone, which was enough while
+  the log was an allowlist; once it logs whatever the provider has stored,
+  `navigation.anchor.position` and `navigation.course.previousPoint.position`
+  — the drop point and the slip just left — would have gone into a published
+  file that nothing redacts. The privacy zones guard the track's path, not
+  this one.
+- **The instrument log is an exclusion list, and "found" means found on the
+  boat.** Every path the provider has stored *and* the self tree currently
+  carries a number for is logged, less `instrumentLog.exclude`
+  (`DEFAULT_INSTRUMENT_LOG_EXCLUDE`: design, course calculations, GNSS
+  housekeeping and the like). The provider alone is not enough: it keeps
+  every path it has ever stored, and asking for all of them was once ~167
+  paths a bucket, a megabyte a file and 40 MB an hour underway. The old
+  allowlist, `instrumentLog.paths`, is not read — carried over as an
+  exclusion list it would have excluded exactly what it named. An empty
+  exclusion list is a real answer, like the notification one.
 - **Units, names and descriptions come from `meta`, like the zones do.**
   The published snapshot is the whole self tree, so every path's `units`,
   `displayName` and `description` are already there; the page used to read
@@ -246,8 +260,8 @@ Run `npm test` and `npm run typecheck` before committing.
   sensor") are gone: this plugin runs on other people's boats, and the server
   knows what the sensor is.
 - **A logged path that no panel draws still gets drawn.**
-  `instrumentLog.paths` is configurable, so a boat can capture something this
-  release has never seen; those paths were fetched from the provider,
+  The instrument log carries whatever the boat reports, so a boat logs things
+  this release has never seen; those paths were fetched from the provider,
   uploaded in full on every publish, and then rendered by nothing.
   `paintOtherInstruments` renders them into `#other-grid` from metadata
   alone, and `initInlineSparklines` picks them up like any other
@@ -309,7 +323,7 @@ Run `npm test` and `npm run typecheck` before committing.
   `events`. Adding a pattern has to take the path off the site on the next
   cycle *including the counts it had already collected* — leaving a day of
   firings attributed to a path the page no longer lists is worse than
-  either publishing it or not. Unlike the captured instrument paths, an
+  either publishing it or not. Like the instrument log exclusions, an
   empty list is a real answer and must not fall back to the default:
   a blacklist that cannot be emptied is a bug.
 - **Notifications are not stale-filtered, on purpose.** `STALE_FILTER_KEYS`
@@ -427,11 +441,11 @@ Run `npm test` and `npm run typecheck` before committing.
   voyage in half.
 - **Past GPX days are frozen.** The position index holds 24 hours; rebuilding
   yesterday from what is left of it truncates a day that is already complete.
-- **Keep the instrument-log path list tight.** The API uploads whole files, not
-  deltas; this file is the entire bandwidth cost of a cycle. The list is now a
-  query rather than a filter, so a path that is not on it is never fetched
-  either. Every cycle logs the file's size and warns past
-  `INSTRUMENT_LOG_WARN_BYTES`.
+- **The instrument log is the bandwidth.** The API uploads whole files, not
+  deltas; this file is the entire bandwidth cost of a cycle, and with an
+  exclusion list its size follows the boat rather than the config page. Every
+  cycle logs the file's size and warns past `INSTRUMENT_LOG_WARN_BYTES`; the
+  fix is a longer exclusion list or a shorter window.
 - **The boat's own details come from the tree, every cycle.** Name, MMSI,
   callsign, registrations and dimensions are read in `runCycle`, not once in
   `start`: a cold boot publishes its first cycle before the first
@@ -580,7 +594,7 @@ Run `npm test` and `npm run typecheck` before committing.
   working, so an unset icon falls straight to the bundled generic
   `assets/icon.svg`.
 - **Default the operational numbers, never the boat.** Intervals, retention,
-  stale cutoff, log length and the path list all have defaults — the values
+  stale cutoff, log length and the exclusion lists all have defaults — the values
   this tracker has run on for years — so a fresh install works. Privacy zones,
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a

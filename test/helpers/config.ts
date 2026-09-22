@@ -16,10 +16,7 @@ export const COMPLETE_FORM = {
     timezone: 'America/Los_Angeles',
   },
   interval: { underwayMinutes: 2, stationaryMinutes: 60 },
-  instrumentLog: {
-    paths: 'navigation.speedOverGround\nelectrical.batteries.*.voltage\n',
-    hours: 2,
-  },
+  instrumentLog: { hours: 2 },
   track: { detailMeters: 15 },
   staleMaxAgeMinutes: 60,
   privacyZones: [],

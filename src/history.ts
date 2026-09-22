@@ -21,7 +21,7 @@
  * wedged query costs one cycle's sparklines, never the publish.
  */
 import { Temporal } from '@js-temporal/polyfill';
-import { pathMatches, type InstrumentLogEntry } from './instrumentLog';
+import { isExcludedPath, type InstrumentLogEntry } from './instrumentLog';
 import type { SignalKApp } from './signalk';
 import { parseTimestamp } from './time';
 
@@ -92,7 +92,7 @@ export type HistoryResult =
   | {
       status: 'ok';
       entries: InstrumentLogEntry[];
-      /** Paths actually asked for, after wildcard expansion. */
+      /** Paths actually asked for: stored, live on the boat, and not excluded. */
       requestedPaths: string[];
       /** Provider the values came from, for the log line. */
       providerId: string;
@@ -103,13 +103,22 @@ export type HistoryResult =
 /**
  * Never ask a provider for a position.
  *
- * `navigation.position` and anything under it is the one path whose history
- * this plugin does not want: the track comes from the tree, through the
- * privacy zones. A wildcard in the captured-path list could otherwise match
- * it and put raw positions into a published file that nothing redacts.
+ * The track comes from the tree, through the privacy zones; a position read
+ * back from the database would reach a published file that nothing redacts.
+ * Any path with a `position` segment is one: `navigation.position`, but also
+ * `navigation.anchor.position` (the drop point, often inside the zone) and
+ * `navigation.course.previousPoint.position` (the slip the boat just left).
+ * With the instrument log capturing everything the provider has stored, the
+ * old rule — `navigation.position` alone — would have published both.
+ * `hasCoordinates` catches the positions that are not named as one.
  */
 export function isPositionPath(path: string): boolean {
-  return path === 'navigation.position' || path.startsWith('navigation.position.');
+  return path.split('.').includes('position');
+}
+
+/** A value shaped like a position, whatever its path is called. */
+function hasCoordinates(value: object): boolean {
+  return 'latitude' in value || 'longitude' in value;
 }
 
 /** Index a row by path, taking the first non-null value for a repeated path. */
@@ -145,6 +154,7 @@ export function instrumentEntriesFromHistory(
       // A composite value (attitude) contributes one path per numeric member,
       // which is the shape the frontend's sparklines already read.
       if (value && typeof value === 'object' && !Array.isArray(value)) {
+        if (hasCoordinates(value)) continue;
         for (const [key, member] of Object.entries(value as Record<string, unknown>)) {
           if (typeof member === 'number' && isFinite(member)) values[`${path}.${key}`] = member;
         }
@@ -159,26 +169,69 @@ export function instrumentEntriesFromHistory(
 }
 
 /**
- * Resolve the configured path patterns against what the provider has stored.
+ * Every path the provider has stored, less the excluded ones and positions.
  *
- * The allowlist takes `*` for one segment (`electrical.batteries.*.voltage`);
- * the History API takes literal paths. Patterns without a `*` are passed
- * through untouched — a path the provider has never seen costs one column of
- * nulls, which is cheaper than failing to ask for a sensor that came online
- * five minutes ago. Positions are dropped from both halves.
+ * The instrument log used to be an allowlist, so a sensor someone added —
+ * a second battery bank, a fridge thermometer — had history in the database
+ * and no sparkline until someone also typed its path into the config page.
+ * Now what the provider has is what the site gets, and the config page lists
+ * what to leave out.
  */
-export function expandPathPatterns(patterns: string[], available: string[]): string[] {
-  const resolved = new Set<string>();
-  for (const pattern of patterns) {
-    if (!pattern.includes('*')) {
-      if (!isPositionPath(pattern)) resolved.add(pattern);
-      continue;
+export function selectInstrumentPaths(
+  available: string[],
+  exclude: string[],
+  live?: ReadonlySet<string>,
+): string[] {
+  return [...new Set(available)]
+    .filter(
+      (path) =>
+        !isPositionPath(path) &&
+        !isExcludedPath(path, exclude) &&
+        (live === undefined || live.has(path)),
+    )
+    .sort();
+}
+
+/**
+ * The paths the boat is reporting a number for right now.
+ *
+ * "Found" means found on the boat, not merely in the database: a provider
+ * keeps every path it has ever stored, including the sensor that was
+ * unplugged in March, and asking for all of them was once ~167 paths a bucket
+ * and a megabyte a file. A path with a numeric value on the self tree — or an
+ * object of numbers, like attitude — is one the site can show beside its
+ * sparkline, so it is the one worth its bytes.
+ */
+export function liveNumericPaths(tree: unknown): Set<string> {
+  const found = new Set<string>();
+  const walk = (node: unknown, path: string[]): void => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    const record = node as Record<string, unknown>;
+    if ('value' in record) {
+      const value = record.value;
+      const numeric =
+        (typeof value === 'number' && Number.isFinite(value)) ||
+        (!!value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          Object.values(value as Record<string, unknown>).some(
+            (member) => typeof member === 'number' && Number.isFinite(member),
+          ));
+      if (numeric && path.length) {
+        found.add(path.join('.'));
+        // A provider may store a composite by its members instead.
+        if (value && typeof value === 'object') {
+          for (const key of Object.keys(value as object)) found.add([...path, key].join('.'));
+        }
+      }
     }
-    for (const path of available) {
-      if (!isPositionPath(path) && pathMatches(pattern, path)) resolved.add(path);
+    for (const [key, child] of Object.entries(record)) {
+      if (key === 'value' || key === 'meta' || key === 'values' || key.startsWith('$')) continue;
+      walk(child, [...path, key]);
     }
-  }
-  return [...resolved];
+  };
+  walk(tree, []);
+  return found;
 }
 
 /** Reject rather than hang: a provider query is a database call. */
@@ -245,8 +298,8 @@ export async function listHistoryProviders(
 export interface HistoryReaderDeps {
   app: HistoryHost;
   history: HistoryConfig;
-  /** The captured-path patterns from the config page. */
-  instrumentPaths: string[];
+  /** Paths never logged, from the config page. Positions are never logged either. */
+  exclude: string[];
   /** Rolling length of the log, which is also the query window in buckets. */
   instrumentEntries: number;
   log: (message: string) => void;
@@ -268,13 +321,18 @@ export class HistoryReader {
     return this.deps.history.enabled && typeof this.deps.app.getHistoryApi === 'function';
   }
 
-  /** The instrument history behind one publish cycle. */
-  async read(now: Date): Promise<HistoryResult> {
+  /**
+   * The instrument history behind one publish cycle.
+   *
+   * `tree` is the self tree this cycle publishes; only paths it carries a
+   * number for are asked for. Left out, every stored path not excluded is.
+   */
+  async read(now: Date, tree?: unknown): Promise<HistoryResult> {
     if (!this.configured) return { status: 'none' };
     const { history, log } = this.deps;
     try {
       const api = await this.resolveApi();
-      const { entries, requestedPaths } = await this.readInstruments(api, now);
+      const { entries, requestedPaths } = await this.readInstruments(api, now, tree);
       this.announce(true);
       return {
         status: 'ok',
@@ -330,10 +388,15 @@ export class HistoryReader {
   private async readInstruments(
     api: HistoryApiLike,
     now: Date,
+    tree?: unknown,
   ): Promise<{ entries: InstrumentLogEntry[]; requestedPaths: string[] }> {
-    const { history, instrumentPaths, instrumentEntries } = this.deps;
+    const { history, exclude, instrumentEntries } = this.deps;
     const available = await this.availablePaths(api, now);
-    const requestedPaths = expandPathPatterns(instrumentPaths, available);
+    const requestedPaths = selectInstrumentPaths(
+      available,
+      exclude,
+      tree === undefined ? undefined : liveNumericPaths(tree),
+    );
     if (requestedPaths.length === 0) return { entries: [], requestedPaths };
 
     // The log holds `entries` readings at the configured bucket width, so the
@@ -361,19 +424,21 @@ export class HistoryReader {
   }
 
   /**
-   * Paths the provider has stored, for expanding `*` patterns.
+   * Paths the provider has stored: the list the instrument log is built from.
    *
    * Listed over the last day rather than the log window: a bank that was
    * quiet for the last hour is still a bank, and the listing is cached so
-   * this costs one query every 15 minutes, not one per cycle.
+   * this costs one query every 15 minutes, not one per cycle. A provider that
+   * cannot list its paths gives the site no sparklines, and says so.
    */
   private async availablePaths(api: HistoryApiLike, now: Date): Promise<string[]> {
-    const { history, instrumentPaths, log } = this.deps;
-    if (!instrumentPaths.some((pattern) => pattern.includes('*'))) return [];
+    const { history, exclude, log } = this.deps;
     if (this.pathCache && now.getTime() - this.pathCache.at < PATH_CACHE_MS) {
       return this.pathCache.paths;
     }
-    if (typeof api.getPaths !== 'function') return [];
+    if (typeof api.getPaths !== 'function') {
+      throw new Error('the history provider cannot list the paths it has stored');
+    }
     const paths = await withTimeout(
       api.getPaths({ ...this.range(now, 24 * 3600) }),
       history.timeoutMs,
@@ -381,7 +446,11 @@ export class HistoryReader {
     );
     const list = Array.isArray(paths) ? paths.filter((path) => typeof path === 'string') : [];
     this.pathCache = { paths: list, at: now.getTime() };
-    log(`History: ${list.length} path(s) stored, expanding the wildcard patterns against them.`);
+    const logged = selectInstrumentPaths(list, exclude).length;
+    log(
+      `History: ${list.length} path(s) stored; logging ${logged}, leaving out ` +
+        `${list.length - logged} excluded or position path(s).`,
+    );
     return list;
   }
 }

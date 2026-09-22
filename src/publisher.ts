@@ -171,7 +171,7 @@ export interface CycleResult {
  *
  * Every publish uploads this file in full, base64-encoded (~4/3 the size on
  * the wire), so half a megabyte every two minutes is ~20 MB an hour underway.
- * The fix is always the same: shorten the path list.
+ * The fix is always the same: exclude paths, or shorten the window.
  */
 export const INSTRUMENT_LOG_WARN_BYTES = 512 * 1024;
 
@@ -535,7 +535,7 @@ export class Publisher {
         `Instrument log is ${kb(bytes)} and is uploaded in full on ` +
           `every publish. At the underway cadence of ${config.interval.underway}s ` +
           `that is about ${kb((bytes * 4) / 3 * (3600 / config.interval.underway))} ` +
-          'per hour. Shorten the captured-path list or the entries retained.',
+          'per hour. Add paths to Never logged, or shorten the history window.',
       );
     }
     return [{ path: INSTRUMENT_LOG_PATH, content: contents }];

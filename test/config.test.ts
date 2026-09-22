@@ -9,7 +9,7 @@ import {
   instrumentLogShape,
   POLARS_FIELD_DESCRIPTION,
   DEFAULT_INSTRUMENT_LOG_HOURS,
-  DEFAULT_INSTRUMENT_LOG_PATHS,
+  DEFAULT_INSTRUMENT_LOG_EXCLUDE,
   DEFAULT_INTERVAL_STATIONARY,
   DEFAULT_INTERVAL_UNDERWAY,
   DEFAULT_BRANCH,
@@ -46,7 +46,7 @@ describe('resolveConfig', () => {
     });
     expect(resolved.config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
     expect(resolved.config.staleMaxAgeMinutes).toBe(DEFAULT_STALE_MAX_AGE_MINUTES);
-    expect(resolved.config.instrumentLog.paths).toEqual(DEFAULT_INSTRUMENT_LOG_PATHS);
+    expect(resolved.config.instrumentLog.exclude).toEqual(DEFAULT_INSTRUMENT_LOG_EXCLUDE);
     expect(resolved.config.instrumentLog.entries).toBe(
       instrumentLogShape(DEFAULT_INSTRUMENT_LOG_HOURS).entries,
     );
@@ -672,8 +672,25 @@ describe('parsePathList', () => {
 });
 
 describe('the instrument log settings', () => {
+  it('logs everything but an exclusion list, and an empty list is an answer', () => {
+    expect(makeConfig({ instrumentLog: {} }).instrumentLog.exclude).toEqual(
+      DEFAULT_INSTRUMENT_LOG_EXCLUDE,
+    );
+    expect(makeConfig({ instrumentLog: { exclude: '' } }).instrumentLog.exclude).toEqual([]);
+    expect(
+      makeConfig({ instrumentLog: { exclude: 'design\n# a comment\nenvironment.rpi' } })
+        .instrumentLog.exclude,
+    ).toEqual(['design', 'environment.rpi']);
+    // The allowlist this replaced is not carried over as an exclusion list.
+    expect(
+      makeConfig({ instrumentLog: { paths: 'navigation.speedOverGround' } }).instrumentLog
+        .exclude,
+    ).toEqual(DEFAULT_INSTRUMENT_LOG_EXCLUDE);
+    expect((configSchema.properties as any).instrumentLog.properties.paths).toBeUndefined();
+  });
+
   it('defaults to an hour from whichever provider the server has', () => {
-    const config = makeConfig({ instrumentLog: { paths: 'navigation.speedOverGround' } });
+    const config = makeConfig({ instrumentLog: {} });
     expect(config.history).toEqual({
       enabled: true,
       providerId: '',

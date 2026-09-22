@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  expandPathPatterns,
+  liveNumericPaths,
+  selectInstrumentPaths,
   HistoryReader,
   instrumentEntriesFromHistory,
   isPositionPath,
@@ -89,47 +90,91 @@ describe('instrumentEntriesFromHistory', () => {
 });
 
 describe('isPositionPath', () => {
-  it('covers the path and its members', () => {
+  it('covers every path with a position segment, not just the vessel', () => {
     expect(isPositionPath('navigation.position')).toBe(true);
     expect(isPositionPath('navigation.position.latitude')).toBe(true);
+    // The anchor drop point and the slip the boat just left.
+    expect(isPositionPath('navigation.anchor.position')).toBe(true);
+    expect(isPositionPath('navigation.course.previousPoint.position')).toBe(true);
     expect(isPositionPath('navigation.positionAccuracy')).toBe(false);
     expect(isPositionPath('navigation.speedOverGround')).toBe(false);
   });
+
+  it('drops a coordinate pair whatever its path is called', () => {
+    const entries = instrumentEntriesFromHistory(
+      {
+        values: [
+          { path: 'navigation.destination.waypoint', method: 'first' },
+          { path: 'navigation.speedOverGround', method: 'average' },
+        ],
+        data: [
+          ['2026-03-01T19:58:00.000Z', { latitude: 37.78, longitude: -122.38 }, 4.2],
+        ],
+      },
+      { entries: 10 },
+    );
+    expect(entries[0]!.values).toEqual({ 'navigation.speedOverGround': 4.2 });
+  });
 });
 
-describe('expandPathPatterns', () => {
-  it('expands a wildcard against the paths the provider has stored', () => {
-    expect(
-      expandPathPatterns(
-        ['electrical.batteries.*.voltage', 'navigation.speedOverGround'],
-        [
-          'electrical.batteries.house.voltage',
-          'electrical.batteries.start.voltage',
-          'electrical.batteries.house.current',
-        ],
-      ),
-    ).toEqual([
+describe('selectInstrumentPaths', () => {
+  const STORED = [
+    'electrical.batteries.house.voltage',
+    'electrical.batteries.fridge.voltage',
+    'environment.inside.fridge.temperature',
+    'design.length',
+    'navigation.course.calcValues.distance',
+    'navigation.position',
+    'navigation.anchor.position',
+    'navigation.speedOverGround',
+  ];
+
+  it('logs every stored path the exclusions do not name', () => {
+    expect(selectInstrumentPaths(STORED, ['design', 'navigation.course'])).toEqual([
+      'electrical.batteries.fridge.voltage',
       'electrical.batteries.house.voltage',
-      'electrical.batteries.start.voltage',
+      'environment.inside.fridge.temperature',
       'navigation.speedOverGround',
     ]);
   });
 
-  it('keeps a literal path the provider has never seen', () => {
-    // A sensor that came online five minutes ago is not in the listing yet;
-    // asking for it costs one column of nulls.
-    expect(expandPathPatterns(['tanks.fuel.0.currentLevel'], [])).toEqual([
-      'tanks.fuel.0.currentLevel',
+  it('takes wildcards and exact paths, and an empty list excludes nothing but positions', () => {
+    expect(
+      selectInstrumentPaths(STORED, ['electrical.batteries.*.voltage', 'design.length']),
+    ).toEqual([
+      'environment.inside.fridge.temperature',
+      'navigation.course.calcValues.distance',
+      'navigation.speedOverGround',
     ]);
+    expect(selectInstrumentPaths(STORED, [])).not.toContain('navigation.anchor.position');
   });
 
-  it('never asks for a position, by name or through a wildcard', () => {
-    expect(
-      expandPathPatterns(
-        ['navigation.position', 'navigation.*'],
-        ['navigation.position', 'navigation.speedOverGround'],
-      ),
-    ).toEqual(['navigation.speedOverGround']);
+  it('asks only for what the boat is reporting now, when it has the tree', () => {
+    const tree = {
+      electrical: { batteries: { house: { voltage: { value: 12.7, meta: { units: 'V' } } } } },
+      environment: { inside: { fridge: { temperature: { value: 277.1 } } } },
+      navigation: {
+        speedOverGround: { value: 3.1 },
+        attitude: { value: { roll: 0.1, pitch: 0.02, yaw: null } },
+        state: { value: 'sailing' },
+      },
+    };
+    const live = liveNumericPaths(tree);
+    expect([...live].sort()).toEqual([
+      'electrical.batteries.house.voltage',
+      'environment.inside.fridge.temperature',
+      'navigation.attitude',
+      'navigation.attitude.pitch',
+      'navigation.attitude.roll',
+      'navigation.attitude.yaw',
+      'navigation.speedOverGround',
+    ]);
+    // The fridge bank was unplugged: stored, but not on the boat any more.
+    expect(selectInstrumentPaths(STORED, [], live)).toEqual([
+      'electrical.batteries.house.voltage',
+      'environment.inside.fridge.temperature',
+      'navigation.speedOverGround',
+    ]);
   });
 });
 
@@ -149,7 +194,7 @@ describe('HistoryReader', () => {
     const reader = new HistoryReader({
       app: api ? { getHistoryApi: async () => api as HistoryApiLike } : {},
       history: config,
-      instrumentPaths: ['navigation.speedOverGround'],
+      exclude: [],
       instrumentEntries: 10,
       log: (message: string) => logs.push(message),
       ...overrides,
@@ -179,7 +224,11 @@ describe('HistoryReader', () => {
         queries.push(query);
         return { values: [], data: [] };
       },
-      getPaths: async () => [],
+      getPaths: async () => [
+        'navigation.speedOverGround',
+        'navigation.position',
+        'navigation.anchor.position',
+      ],
     });
     const result = await reader.read(NOW);
 
@@ -195,7 +244,7 @@ describe('HistoryReader', () => {
     expect(queries[0].from.toString()).toBe('2026-03-01T19:50:00Z');
   });
 
-  it('expands wildcards through getPaths and caches the listing', async () => {
+  it('logs every stored path not excluded, and caches the listing', async () => {
     let pathCalls = 0;
     const asked: string[][] = [];
     const { reader } = makeReader(
@@ -206,10 +255,14 @@ describe('HistoryReader', () => {
         },
         getPaths: async () => {
           pathCalls += 1;
-          return ['electrical.batteries.house.voltage', 'electrical.batteries.start.voltage'];
+          return [
+            'electrical.batteries.house.voltage',
+            'electrical.batteries.start.voltage',
+            'design.length',
+          ];
         },
       },
-      { instrumentPaths: ['electrical.batteries.*.voltage'] },
+      { exclude: ['design'] },
     );
 
     await reader.read(NOW);
@@ -224,7 +277,7 @@ describe('HistoryReader', () => {
   it('reports unavailable when a query hangs', async () => {
     const { reader, logs } = makeReader({
       getValues: () => new Promise(() => {}),
-      getPaths: async () => [],
+      getPaths: async () => ['navigation.speedOverGround'],
     });
     const result = await reader.read(NOW);
     expect(result.status).toBe('unavailable');
@@ -241,7 +294,7 @@ describe('HistoryReader', () => {
           data: [['2026-03-01T19:58:00.000Z', 4.2]],
         };
       },
-      getPaths: async () => [],
+      getPaths: async () => ['navigation.speedOverGround'],
     });
 
     expect((await reader.read(NOW)).status).toBe('unavailable');
@@ -253,5 +306,12 @@ describe('HistoryReader', () => {
       requestedPaths: ['navigation.speedOverGround'],
     });
     expect(result.status === 'ok' && result.entries).toHaveLength(1);
+  });
+
+  it('reports unavailable when the provider cannot list its paths', async () => {
+    const { reader } = makeReader({ getValues: async () => ({ values: [], data: [] }) });
+    const result = await reader.read(NOW);
+    expect(result).toMatchObject({ status: 'unavailable' });
+    expect(result.status === 'unavailable' && result.reason).toMatch(/cannot list/);
   });
 });
