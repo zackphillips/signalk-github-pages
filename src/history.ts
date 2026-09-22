@@ -197,6 +197,51 @@ async function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promi
   }
 }
 
+/** The members `listHistoryProviders` reads, all optional on older servers. */
+export type ProviderListHost = HistoryHost & Partial<Pick<SignalKApp, 'getPluginsList' | 'config'>>;
+
+/**
+ * The history providers registered on the server, for the config page's
+ * dropdown.
+ *
+ * The server keeps its registry private — the only published way to read it
+ * is an HTTP route that may need a login — so each enabled plugin is asked
+ * for in turn: `getHistoryApi(id)` resolves for a provider and rejects for
+ * anything else. In-process, so a whole plugin list costs a few microtasks.
+ *
+ * Null means the question cannot be asked on this server (no History API, or
+ * no plugin list), which the page renders as a bare "Server default".
+ */
+export async function listHistoryProviders(
+  app: ProviderListHost,
+): Promise<{ ids: string[]; defaultId?: string } | null> {
+  if (typeof app.getHistoryApi !== 'function' || typeof app.getPluginsList !== 'function') {
+    return null;
+  }
+  let plugins: Array<{ id: string }>;
+  try {
+    plugins = await app.getPluginsList(true);
+  } catch {
+    return null;
+  }
+  const ids: string[] = [];
+  for (const plugin of plugins ?? []) {
+    if (!plugin || typeof plugin.id !== 'string') continue;
+    const found = await withTimeout(app.getHistoryApi(plugin.id), 2_000, 'provider probe').then(
+      () => true,
+      () => false,
+    );
+    if (found) ids.push(plugin.id);
+  }
+  // The server's own rule: the configured provider when it is registered,
+  // otherwise whichever registered first. Registration order is not
+  // visible from here, so a lone provider is the only other certain answer.
+  const configured = app.config?.settings?.historyApi?.defaultProvider;
+  const defaultId =
+    configured && ids.includes(configured) ? configured : ids.length === 1 ? ids[0] : undefined;
+  return { ids: ids.sort(), defaultId };
+}
+
 export interface HistoryReaderDeps {
   app: HistoryHost;
   history: HistoryConfig;

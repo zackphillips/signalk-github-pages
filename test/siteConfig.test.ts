@@ -122,13 +122,15 @@ describe('the vessel logo', () => {
 });
 
 describe('the tide station override', () => {
-  it('writes tide_station_override, which is what the site queries before a fix', () => {
-    const config = makeConfig({ site: { tideStationOverride: '9414290' } });
+  it('writes tide_station_override, which the site queries instead of the nearest', () => {
+    const config = makeConfig({
+      overrides: { overrideTideStation: true, tideStation: '9414290' },
+    });
     const parsed = render(config, IDENTITY, null);
     expect(parsed.tide_station_override).toBe('9414290');
   });
 
-  it('leaves it out when it is not set, so the frontend waits for a fix', () => {
+  it('leaves it out when it is not set, so the frontend picks the nearest', () => {
     const parsed = render(makeConfig(), IDENTITY, null);
     expect(parsed.tide_station_override).toBeUndefined();
   });
@@ -238,7 +240,7 @@ describe('what is read from Signal K versus typed on the config page', () => {
 
   it('publishes the two numbers derived from the tree, and no more of it', () => {
     // The USCG and hull numbers are here because picking them out of a
-    // `registrations` tree is a judgement, and the frontend should not make
+    // `registrations` tree is a judgment, and the frontend should not make
     // it a second time. Everything else the tree carries — the callsign, the
     // dimensions, the registrations themselves — is in the snapshot already.
     const parsed = render(makeConfig(), FROM_SIGNALK, null);

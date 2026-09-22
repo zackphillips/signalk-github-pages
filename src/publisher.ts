@@ -29,7 +29,6 @@ import {
 } from './docsIndex';
 import {
   assertDocsPath,
-  engineHours,
   insertMaintenanceEntry,
   loadDocsSeed,
   MAINTENANCE_LOG_PATH,
@@ -51,6 +50,7 @@ import {
   buildPositionEntry,
   parsePositionIndex,
   pruneAndSort,
+  redactStoredEntry,
   renderPositionIndex,
   type PositionEntry,
 } from './positions';
@@ -63,9 +63,16 @@ import {
   type PositionFix,
   type Tree,
 } from './snapshot';
-import type { PluginConfig } from './config';
-import { StateStore } from './state';
-import { parseTracksIndex, renderTracksIndex, updateTracks, type TrackMeta } from './gpx';
+import type { PluginConfig, PrivacyZone } from './config';
+import { StateStore, type PersistedState } from './state';
+import {
+  makeTrackMeta,
+  parseTracksIndex,
+  renderTracksIndex,
+  trimPrivatePoints,
+  updateTracks,
+  type TrackMeta,
+} from './gpx';
 import { POLARS_PATH } from './polars';
 import {
   mergeVesselIdentity,
@@ -83,6 +90,21 @@ const TRACKS_INDEX_PATH = `${TELEMETRY_DIR}/tracks_index.json`;
 const SITE_CONFIG_PATH = 'data/vessel/site.json';
 
 export const SNAPSHOT_SCHEMA_VERSION = 1;
+
+/** A published day's GPX file, capturing the day. */
+const TRACK_FILE = /^data\/telemetry\/tracks\/(\d{4}-\d{2}-\d{2})\.gpx$/;
+
+/**
+ * The zones as the privacy audit compares them: order and names do not
+ * change what is hidden, so neither changes the fingerprint.
+ */
+export function privacyZoneFingerprint(zones: PrivacyZone[]): string {
+  return JSON.stringify(
+    zones
+      .map((zone) => [zone.lat, zone.lon, zone.radius_m])
+      .sort((a, b) => a.join(',').localeCompare(b.join(','))),
+  );
+}
 
 /**
  * What a cycle needs that is not in the tree.
@@ -312,7 +334,7 @@ export class Publisher {
     const { vesselZone: zone, redacted } = redactPositions(tree, config.privacyZones);
     if (redacted.length) {
       log(
-        `Privacy: ${redacted.length} position(s) moved to a zone centre ` +
+        `Privacy: ${redacted.length} position(s) moved to a zone center ` +
           `(${redacted.join(', ')}).`,
       );
     }
@@ -333,20 +355,29 @@ export class Publisher {
     //
     // The tree fix is the fallback, not an addition: the recorder already
     // keeps one fix per publish interval, so appending the tree's as well
-    // would put a near-duplicate a metre away beside every recorded point.
+    // would put a near-duplicate a meter away beside every recorded point.
     // With no recorder — an older server, or one whose streams this plugin
     // could not subscribe to — the tree fix is the whole track, exactly as
     // it was before deltas.
     const recorded = input.fixes ?? [];
     const newFixes = recorded.length ? recorded : fix ? [fix] : [];
+    // Stored entries go through the current zones again: they were redacted
+    // against whatever zones were in force when each fix was taken, and a
+    // zone corrected since then has to cover the day already recorded too.
     const positions = pruneAndSort(
       [
-        ...parsePositionIndex(await store.readText('positions_index.json')),
+        ...parsePositionIndex(await store.readText('positions_index.json')).map((entry) =>
+          redactStoredEntry(entry, config.privacyZones),
+        ),
         ...newFixes.map((entry) => buildPositionEntry(entry, config.privacyZones, now)),
       ],
       now,
       config.positionRetentionHours,
     );
+    // Before the track files, so today's rebuild starts from the audited
+    // index and wins over the audit's copy of the same file.
+    const audit = await this.privacyAudit(state);
+    files.push(...audit.files);
     if (recorded.length > 1) {
       log(`Track: ${recorded.length} fixes recorded from deltas since the last cycle.`);
     }
@@ -355,7 +386,13 @@ export class Publisher {
       await store.writeText('positions_index.json', rendered);
       files.push({ path: POSITIONS_PATH, content: rendered });
       files.push(
-        ...(await this.updateTrackFiles(positions, now, state.publishedDays ?? [], identity)),
+        ...(await this.updateTrackFiles(
+          positions,
+          now,
+          state.publishedDays ?? [],
+          identity,
+          state.removedDays ?? [],
+        )),
       );
     }
 
@@ -375,14 +412,22 @@ export class Publisher {
     );
     files.push(...frontend.files);    files.push(...(await this.docsIndexFiles()));
 
-    const { owned, rejected } = partitionOwned(files, this.manifestOptions(polars));
+    // One entry per path, the last one written winning: the audit and the
+    // track rebuild can both produce today's GPX, and the rebuild is newer.
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const { owned, rejected } = partitionOwned([...byPath.values()], this.manifestOptions(polars));
     for (const file of rejected) {
       // Should be unreachable: a path here means a generator started writing
       // outside the manifest, which is exactly what the manifest is for.
       log(`Refusing to publish unowned path: ${file.path}`);
     }
 
-    const deletions = await this.retirementDeletions(state.retired ?? []);
+    const retiring = await this.retirementDeletions(state.retired ?? []);
+    const auditDeletions = partitionOwned(
+      audit.deletions.filter((path) => !byPath.has(path)).map((path) => ({ path })),
+      this.manifestOptions(polars),
+    ).owned.map((file) => file.path);
+    const deletions = [...retiring, ...auditDeletions];
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -407,8 +452,12 @@ export class Publisher {
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
       // Only once the commit carrying them actually landed: a failed publish
       // must leave the work to be retried, not recorded as done.
-      ...(result && deletions.length ? { retired: [...(state.retired ?? []), ...deletions] } : {}),
+      ...(result && retiring.length ? { retired: [...(state.retired ?? []), ...retiring] } : {}),
       ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
+      // A cycle with nothing to commit has nothing the audit needed either.
+      ...(audit.fingerprint && (result || (!audit.files.length && !auditDeletions.length))
+        ? { privacyAudit: audit.fingerprint }
+        : {}),
     });
 
     if (result) {
@@ -619,9 +668,18 @@ export class Publisher {
     await store.writeText('tracks_index.json', index);
     const removed = new Set(plan.remove.map((track) => track.date));
     const state = await store.readState();
-    await store.mergeState({
-      publishedDays: (state.publishedDays ?? []).filter((day) => !removed.has(day)),
-    });
+    if (request.date) {
+      // One day, removed by hand: it stays gone. Yesterday's points are still
+      // in the position index for most of today, and letting the day "return"
+      // the way a bulk prune does would put a truncated copy straight back.
+      await store.mergeState({
+        removedDays: [...new Set([...(state.removedDays ?? []), ...removed])].sort(),
+      });
+    } else {
+      await store.mergeState({
+        publishedDays: (state.publishedDays ?? []).filter((day) => !removed.has(day)),
+      });
+    }
     log(`Pruned ${description}; ${plan.keep.length} left on the site.`);
     return { plan, commitSha: result?.commitSha };
   }
@@ -764,11 +822,6 @@ export class Publisher {
     };
   }
 
-  /** Engine hours the console's form offers as a starting value. */
-  engineHours(tree: Tree): Array<{ engine: string; hours: number }> {
-    return engineHours(tree);
-  }
-
   /** The adopter's values, substituted into the starter documents. */
   private seedContext(): SeedContext {
     const { config, identity } = this.deps;
@@ -789,11 +842,101 @@ export class Publisher {
     return `Telemetry ${stamp}Z${navState ? ` (${navState})` : ''}`;
   }
 
+  /**
+   * Check every published GPX file against the current privacy zones, and
+   * trim what falls inside one.
+   *
+   * The zones are applied as a track is recorded, which protects the future
+   * and nothing else: a zone drawn in the wrong place, or too small to cover
+   * the slip, leaves every track recorded under it on the site, and a past
+   * day's file is never rebuilt. So whenever the zones differ from the ones
+   * the repository was last checked against — including the first cycle
+   * after an upgrade, when nothing has been checked — every GPX file in the
+   * repository is read and checked point by point. A file with points inside
+   * a zone loses them; a file with nothing left is deleted and leaves the
+   * index. The index also drops rows whose file is not in the repository,
+   * which is what a day removed by hand on GitHub looks like.
+   *
+   * The repository is the thing checked, not the index, because an index row
+   * can go missing while its file stays published — and a failed commit must
+   * leave the next cycle able to find the same files again.
+   *
+   * The cost is one tree listing and one blob read per track file, once per
+   * change of zones. The fingerprint comes back rather than being stored
+   * here, and `runCycle` records it once the commit carrying the trims is in.
+   */
+  private async privacyAudit(
+    state: PersistedState,
+  ): Promise<{ files: PublishFile[]; deletions: string[]; fingerprint: string | null }> {
+    const { client, store, config, log } = this.deps;
+    const fingerprint = privacyZoneFingerprint(config.privacyZones);
+    const none = { files: [], deletions: [], fingerprint: null };
+    if (state.privacyAudit === fingerprint) return none;
+    // Nothing to check against: a boat with no zones hides nothing, and the
+    // audit would only drop orphaned index rows. Record it and move on.
+    if (!config.privacyZones.length) return { files: [], deletions: [], fingerprint };
+
+    const listing = await client.listTree();
+    if (listing.truncated) {
+      log(
+        'Privacy check skipped: the repository tree is too large to list in full, so ' +
+          'published tracks cannot all be found. Trim them by hand.',
+      );
+      return none;
+    }
+    const tracks = listing.paths.filter(
+      (node) => node.type === 'blob' && TRACK_FILE.test(node.path),
+    );
+
+    const files: PublishFile[] = [];
+    const deletions: string[] = [];
+    const trimmed = new Map<string, TrackMeta>();
+    const emptied = new Set<string>();
+    let removedPoints = 0;
+    for (const node of tracks) {
+      const day = TRACK_FILE.exec(node.path)![1]!;
+      const trim = trimPrivatePoints(await client.getBlobText(node.sha), config.privacyZones);
+      if (!trim.removed) continue;
+      removedPoints += trim.removed;
+      if (!trim.kept.length || !trim.content) {
+        deletions.push(node.path);
+        emptied.add(day);
+      } else {
+        files.push({ path: node.path, content: trim.content });
+        trimmed.set(day, makeTrackMeta(day, trim.kept));
+      }
+    }
+
+    const present = new Set(tracks.map((node) => TRACK_FILE.exec(node.path)![1]!));
+    const before = parseTracksIndex(await store.readText('tracks_index.json'));
+    const index = before
+      .filter((track) => present.has(track.date) && !emptied.has(track.date))
+      .map((track) => trimmed.get(track.date) ?? track);
+    if (JSON.stringify(index) !== JSON.stringify(before)) {
+      const rendered = renderTracksIndex(index);
+      await store.writeText('tracks_index.json', rendered);
+      files.push({ path: TRACKS_INDEX_PATH, content: rendered });
+    }
+
+    const orphans = before.filter((track) => !present.has(track.date)).length;
+    log(
+      `Privacy check of ${tracks.length} published track(s) against ` +
+        `${config.privacyZones.length} zone(s): ` +
+        (removedPoints
+          ? `${removedPoints} point(s) inside a zone, ${trimmed.size} file(s) trimmed, ` +
+            `${deletions.length} removed.`
+          : 'no point inside a zone.') +
+        (orphans ? ` ${orphans} index row(s) with no file dropped.` : ''),
+    );
+    return { files, deletions, fingerprint };
+  }
+
   private async updateTrackFiles(
     entries: PositionEntry[],
     now: Date,
     publishedDays: string[],
     identity: VesselIdentity,
+    removedDays: string[] = [],
   ): Promise<PublishFile[]> {
     const { store, config } = this.deps;
     const existingIndex: TrackMeta[] = parseTracksIndex(
@@ -806,6 +949,7 @@ export class Publisher {
       now,
       existingIndex,
       publishedDays: new Set(publishedDays),
+      removedDays: new Set(removedDays),
     });
 
     const files: PublishFile[] = [];

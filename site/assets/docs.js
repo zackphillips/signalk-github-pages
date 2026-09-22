@@ -441,7 +441,7 @@ async function showDoc(slug, { scrollToHash = true } = {}) {
 /**
  * What the Docs page says before there are any documents.
  *
- * A published site with an empty `docs/` used to render one grey line — "No
+ * A published site with an empty `docs/` used to render one gray line — "No
  * documents yet. Add a Markdown file under docs/" — which is true and tells
  * nobody what to do next. The plugin has a button for exactly this, and the
  * starter set it writes includes the AGENTS.md that makes an agent useful

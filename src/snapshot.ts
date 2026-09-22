@@ -7,7 +7,7 @@
  * freeze the site on stale data.
  */
 import type { PrivacyZone } from './config';
-import { privacyZoneCentre, type ZoneCentre } from './privacy';
+import { privacyZoneCenter, type ZoneCenter } from './privacy';
 import type { SignalKApp } from './signalk';
 
 export type Tree = Record<string, any>;
@@ -164,26 +164,26 @@ function isPositionValue(node: unknown): node is { latitude: number; longitude: 
 
 export interface RedactionResult {
   /** The zone the vessel itself is in, for the log line and the cadence. */
-  vesselZone: ZoneCentre | null;
-  /** Every path that was moved to a zone centre, for the log. */
+  vesselZone: ZoneCenter | null;
+  /** Every path that was moved to a zone center, for the log. */
   redacted: string[];
 }
 
 /**
- * Move every position inside a privacy zone to that zone's centre.
+ * Move every position inside a privacy zone to that zone's center.
  *
  * The rule used to be "if the vessel is inside a zone, rewrite
  * `navigation.position`", which guarded exactly one path out of a tree that
  * has several. `navigation.anchor.position` is the one that mattered: anchor
- * inside a privacy zone and the site showed the zone centre for the boat
+ * inside a privacy zone and the site showed the zone center for the boat
  * while publishing the true anchor drop coordinates a few keys away in the
  * same file — the frontend even reads it, to draw the anchor marker. An
  * allowlist of known paths would need extending every time the spec or a
  * plugin grew another one, so this walks the tree instead.
  *
  * The rule is now per-position rather than per-vessel: *any* published
- * position that falls inside a privacy zone becomes that zone's centre,
- * wherever it sits in the tree. That generalises the old behaviour rather
+ * position that falls inside a privacy zone becomes that zone's center,
+ * wherever it sits in the tree. That generalises the old behavior rather
  * than special-casing, and it is deliberately not "redact everything while
  * the vessel is home" — a destination in `navigation.course.nextPoint` is
  * where the boat is going, not where it is, and snapping it to the home dock
@@ -204,10 +204,10 @@ export function redactPositions(blob: Tree, zones: PrivacyZone[]): RedactionResu
       return;
     }
     if (isPositionValue(node)) {
-      const centre = privacyZoneCentre(zones, node.latitude, node.longitude);
-      if (centre) {
-        node.latitude = centre.lat;
-        node.longitude = centre.lon;
+      const center = privacyZoneCenter(zones, node.latitude, node.longitude);
+      if (center) {
+        node.latitude = center.lat;
+        node.longitude = center.lon;
         redacted.push(path);
       }
       // A position has no children worth walking, and `altitude` is not one
@@ -221,10 +221,10 @@ export function redactPositions(blob: Tree, zones: PrivacyZone[]): RedactionResu
   visit(blob, '');
 
   // Read after the walk: the vessel's own position has been moved to the
-  // centre by now, and asking which zone that centre is in gives the same
+  // center by now, and asking which zone that center is in gives the same
   // answer as asking before.
   const fix = extractPositionFix(blob);
-  const vesselZone = fix ? privacyZoneCentre(zones, fix.latitude, fix.longitude) : null;
+  const vesselZone = fix ? privacyZoneCenter(zones, fix.latitude, fix.longitude) : null;
   return { vesselZone, redacted };
 }
 

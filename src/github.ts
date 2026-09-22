@@ -58,8 +58,7 @@ export function tokenHint(status: number | undefined, repo: string): string {
   if (status === 403) {
     return (
       ` The token can reach GitHub but may not write ${repo}. A fine-grained token needs` +
-      ' Contents: Read and write on this repository, and an organisation-owned repository' +
-      " needs an owner to approve the token; a classic token needs the 'repo' scope."
+      " Contents: Read and write on this repository; a classic token needs the 'repo' scope."
     );
   }
   if (status === 404) {

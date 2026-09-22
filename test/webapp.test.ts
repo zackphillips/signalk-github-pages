@@ -293,7 +293,8 @@ describe('the docs routes', () => {
     const result = await router.call('get', '/docs');
     expect(result.body.initialized).toBe(false);
     expect(result.body.missing).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-    expect(result.body.engineHours).toEqual([{ engine: 'main', hours: 1204.5 }]);
+    // The engine-hours box left the form, and its prefill with it.
+    expect(result.body.engineHours).toBeUndefined();
     expect(result.body.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(result.body.docsUrl).toBe('https://owner.github.io/site/docs.html');
   });

@@ -445,7 +445,7 @@ body.map-fills .footer {
 /* The theme is never named "dark": the cycle is marine / amber / bright and
    the first two are the dark ones. These used to be keyed on [data-theme="dark"]
    and therefore never matched, which left every warn and alert painted in the
-   light-theme colour on a dark background. It matters more now that zones are
+   light-theme color on a dark background. It matters more now that zones are
    the only thing that sets these classes. */
 [data-theme="marine"] .value-ok,
 [data-theme="amber"] .value-ok    { color: #6dbb8a; }
@@ -1721,7 +1721,7 @@ body.map-fills .footer {
 .docs-error__hint { color: var(--text-muted); font-size: 0.9em; }
 
 /* The page with nothing on it yet: instructions, not an apology. Styled as
-   prose rather than as a grey note, because it is the first thing a new site
+   prose rather than as a gray note, because it is the first thing a new site
    shows and it is asking the reader to do something. */
 .docs-empty { max-width: 68ch; }
 .docs-empty h2 { margin-top: 0; }
@@ -1962,7 +1962,7 @@ body.map-fills .footer {
 
    Two surfaces. The banner sits above the tab strip, so an active alarm is on
    screen whichever tab is open; the table lives on the Data tab and carries
-   the firing counts. Both take their colours from the same --notif-* pair so
+   the firing counts. Both take their colors from the same --notif-* pair so
    the banner and a count cell agree about what "alert" looks like.
    ───────────────────────────────────────────────────────────────────────── */
 .notification-banner {

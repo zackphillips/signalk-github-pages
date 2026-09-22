@@ -64,7 +64,7 @@ describe('polarTableFromResource', () => {
     expect(table?.rows[0]?.speeds.map((speed) => Math.round(speed * 100) / 100)).toEqual([4.1, 5.8]);
   });
 
-  it('honours a document that declares knots and degrees rather than SI', () => {
+  it('honors a document that declares knots and degrees rather than SI', () => {
     const { table, problems } = polarTableFromResource({
       ...RESOURCE,
       units: { tws: 'kn', twa: 'deg', boatSpeed: 'kn' },

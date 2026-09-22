@@ -3,10 +3,10 @@
  * positions never leave the boat unredacted.
  *
  * Two rules:
- *  - the *latest* position inside a zone is published as the zone centre, so
+ *  - the *latest* position inside a zone is published as the zone center, so
  *    the site still shows "at the dock" without showing the slip;
  *  - track points inside a zone are dropped entirely, never snapped to the
- *    centre, so a day's GPX doesn't grow a spike of identical points.
+ *    center, so a day's GPX doesn't grow a spike of identical points.
  *
  * Every check walks the whole zone list. An early version checked only the
  * first zone, which redacted the map track while writing every other zone's
@@ -16,8 +16,8 @@ import type { PrivacyZone } from './config';
 
 const EARTH_RADIUS_M = 6_371_000;
 
-/** Great-circle distance in metres between two WGS-84 points. */
-export function haversineMetres(
+/** Great-circle distance in meters between two WGS-84 points. */
+export function haversineMeters(
   lat1: number,
   lon1: number,
   lat2: number,
@@ -34,20 +34,20 @@ export function haversineMetres(
   return EARTH_RADIUS_M * 2 * Math.asin(Math.sqrt(a));
 }
 
-export interface ZoneCentre {
+export interface ZoneCenter {
   lat: number;
   lon: number;
   name: string;
 }
 
-/** Centre of the first zone containing the point, or null when it is clear. */
-export function privacyZoneCentre(
+/** Center of the first zone containing the point, or null when it is clear. */
+export function privacyZoneCenter(
   zones: PrivacyZone[],
   lat: number,
   lon: number,
-): ZoneCentre | null {
+): ZoneCenter | null {
   for (const zone of zones) {
-    if (haversineMetres(lat, lon, zone.lat, zone.lon) <= zone.radius_m) {
+    if (haversineMeters(lat, lon, zone.lat, zone.lon) <= zone.radius_m) {
       return { lat: zone.lat, lon: zone.lon, name: zone.name };
     }
   }
@@ -59,5 +59,5 @@ export function isPositionPrivate(
   lat: number,
   lon: number,
 ): boolean {
-  return privacyZoneCentre(zones, lat, lon) !== null;
+  return privacyZoneCenter(zones, lat, lon) !== null;
 }

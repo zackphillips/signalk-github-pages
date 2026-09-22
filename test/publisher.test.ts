@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { GitHubClient } from '../src/github';
 import { DocsExistError, INSTRUMENT_LOG_WARN_BYTES, Publisher } from '../src/publisher';
+import { renderGpxDocument } from '../src/gpx';
 import { StateStore } from '../src/state';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
@@ -143,7 +144,7 @@ describe('Publisher', () => {
     expect(snapshot.environment.depth?.belowTransducer?.value).toBeUndefined();
   });
 
-  it('publishes the zone centre and no track at all from inside a privacy zone', async () => {
+  it('publishes the zone center and no track at all from inside a privacy zone', async () => {
     const publisher = makePublisher();
     const result = await publisher.runCycle(tree({ lat: HOME.lat + 0.0005, lon: HOME.lon }));
 
@@ -774,6 +775,162 @@ describe('Publisher', () => {
       fake.commitFile('docs/passage-notes.md', '# Notes');
       await publisher.pruneTracks({ olderThanDays: null });
       expect(fake.files.get('docs/passage-notes.md')).toBe('# Notes');
+    });
+
+    it('removes one day, and only that day, from the Remove button on its row', async () => {
+      const publisher = await seeded();
+      const { plan } = await publisher.pruneTracks({ olderThanDays: null, date: '2026-02-14' });
+      expect(plan.remove.map((t) => t.date)).toEqual(['2026-02-14']);
+      expect(fake.files.has('data/telemetry/tracks/2026-02-14.gpx')).toBe(false);
+      expect(fake.files.has('data/telemetry/tracks/2026-01-02.gpx')).toBe(true);
+      const index = JSON.parse(fake.files.get('data/telemetry/tracks_index.json')!);
+      expect(index.tracks.map((t: any) => t.date)).toEqual([
+        '2026-01-02',
+        '2026-02-28',
+        '2026-03-01',
+      ]);
+    });
+
+    it('keeps a day removed by hand from coming back out of the position index', async () => {
+      // Yesterday's points stay in the 24-hour index for most of today; a day
+      // removed from its row must not be rebuilt, truncated, on the next cycle.
+      await makePublisher({}, '2026-03-01T20:00:00Z').runCycle(
+        tree({ timestamp: '2026-03-01T20:00:00Z' }),
+      );
+      await makePublisher({}, '2026-03-02T19:00:00Z').runCycle(
+        tree({ timestamp: '2026-03-02T19:00:00Z', lat: 37.93 }),
+      );
+      expect(fake.files.has('data/telemetry/tracks/2026-03-01.gpx')).toBe(true);
+
+      const later = makePublisher({}, '2026-03-02T19:30:00Z');
+      await later.pruneTracks({ olderThanDays: null, date: '2026-03-01' });
+      expect((await store.readState()).removedDays).toEqual(['2026-03-01']);
+      await later.runCycle(tree({ timestamp: '2026-03-02T19:30:00Z', lat: 37.94 }));
+
+      expect(fake.files.has('data/telemetry/tracks/2026-03-01.gpx')).toBe(false);
+      const index = JSON.parse(fake.files.get('data/telemetry/tracks_index.json')!);
+      expect(index.tracks.map((t: any) => t.date)).toEqual(['2026-03-02']);
+    });
+
+    it('never removes today, even when asked for it by name', async () => {
+      const publisher = await seeded();
+      const { plan, commitSha } = await publisher.pruneTracks({
+        olderThanDays: null,
+        date: '2026-03-01',
+      });
+      expect(plan.remove).toEqual([]);
+      expect(commitSha).toBeUndefined();
+    });
+  });
+
+  describe('the privacy check of published tracks', () => {
+    // The slip, inside HOME; the channel just outside it; open water.
+    const SLIP = { lat: 37.7805, lon: -122.3858 };
+    const CHANNEL = { lat: 37.7835, lon: -122.3830 };
+    const BAY = { lat: 37.80, lon: -122.40 };
+    const point = (at: { lat: number; lon: number }, time: string, speed = 2) => ({
+      timestamp: time,
+      latitude: at.lat,
+      longitude: at.lon,
+      speed_ms: speed,
+      course_rad: null,
+    });
+    const WIDER = { ...HOME, radius_m: 600 };
+
+    /** Two published days recorded under a zone too small for the slip. */
+    const published = async () => {
+      const leaky = renderGpxDocument(
+        [
+          point(SLIP, '2026-02-20T18:00:00Z', 0),
+          point(CHANNEL, '2026-02-20T18:10:00Z'),
+          point(BAY, '2026-02-20T19:00:00Z'),
+        ],
+        '2026-02-20',
+        'S.V.Mermug',
+      );
+      const atDock = renderGpxDocument(
+        [point(SLIP, '2026-02-21T08:00:00Z', 0), point(SLIP, '2026-02-21T09:00:00Z', 0)],
+        '2026-02-21',
+        'S.V.Mermug',
+      );
+      const clean = renderGpxDocument(
+        [point(BAY, '2026-02-22T18:00:00Z'), point(BAY, '2026-02-22T19:00:00Z')],
+        '2026-02-22',
+        'S.V.Mermug',
+      );
+      fake.commitFile('data/telemetry/tracks/2026-02-20.gpx', leaky);
+      fake.commitFile('data/telemetry/tracks/2026-02-21.gpx', atDock);
+      fake.commitFile('data/telemetry/tracks/2026-02-22.gpx', clean);
+      const index = {
+        schema_version: 1,
+        tracks: ['2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22'].map((date) => ({
+          date,
+          file: `tracks/${date}.gpx`,
+          start: `${date}T18:00:00Z`,
+          end: `${date}T19:00:00Z`,
+          duration_hours: 1,
+          points: 3,
+          max_speed_kts: 4,
+          distance_nm: 2,
+        })),
+      };
+      fake.commitFile('data/telemetry/tracks_index.json', JSON.stringify(index));
+      await store.writeText('tracks_index.json', JSON.stringify(index));
+      await store.mergeState({ publishedDays: index.tracks.map((t) => t.date) });
+      return { clean };
+    };
+
+    it('trims what a corrected zone covers from every published day', async () => {
+      const { clean } = await published();
+      await makePublisher({ privacyZones: [WIDER] }).runCycle(tree());
+
+      const trimmed = fake.files.get('data/telemetry/tracks/2026-02-20.gpx')!;
+      expect(trimmed).not.toContain(`lat="${SLIP.lat.toFixed(6)}"`);
+      expect(trimmed).not.toContain(`lat="${CHANNEL.lat.toFixed(6)}"`);
+      expect(trimmed).toContain(`lat="${BAY.lat.toFixed(6)}"`);
+      // The metadata time follows the first point left.
+      expect(trimmed).toContain('<metadata>\n    <name>S.V.Mermug — 2026-02-20</name>\n    <time>2026-02-20T19:00:00Z</time>');
+      // A day that was nothing but the dock goes altogether.
+      expect(fake.files.has('data/telemetry/tracks/2026-02-21.gpx')).toBe(false);
+      // A day that never went near the zone is left byte for byte.
+      expect(fake.files.get('data/telemetry/tracks/2026-02-22.gpx')).toBe(clean);
+
+      const index = JSON.parse(fake.files.get('data/telemetry/tracks_index.json')!);
+      // 02-19 had no file at all; 02-21 was emptied.
+      expect(index.tracks.map((t: any) => t.date)).toEqual(['2026-02-20', '2026-02-22', '2026-03-01']);
+      expect(index.tracks[0].points).toBe(1);
+      expect(logs.join(' ')).toContain('4 point(s) inside a zone, 1 file(s) trimmed, 1 removed');
+    });
+
+    it('checks once per change of zones, not on every cycle', async () => {
+      await published();
+      const publisher = makePublisher({ privacyZones: [WIDER] });
+      await publisher.runCycle(tree());
+      const blobReads = () => fake.requests.filter((r) => r.path.includes('/git/blobs/')).length;
+      const after = blobReads();
+      await publisher.runCycle(tree({ lat: 37.93 }));
+      expect(blobReads()).toBe(after);
+
+      // A different set of zones is a different question.
+      await makePublisher({ privacyZones: [{ ...WIDER, radius_m: 700 }] }).runCycle(tree({ lat: 37.94 }));
+      expect(blobReads()).toBeGreaterThan(after);
+    });
+
+    it('snaps a position recorded under the old zone to the new zone center', async () => {
+      // The index holds a day; a zone corrected this afternoon has to cover
+      // this morning's fixes too, not just the ones taken after the change.
+      await makePublisher({ privacyZones: [] }, '2026-03-01T19:00:00Z').runCycle(
+        tree({ lat: SLIP.lat, lon: SLIP.lon, timestamp: '2026-03-01T19:00:00Z' }),
+      );
+      const leaked = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+      expect(leaked.positions[0].values[0].value.latitude).toBe(SLIP.lat);
+
+      await makePublisher({ privacyZones: [WIDER] }).runCycle(tree());
+      const index = JSON.parse(fake.files.get('data/telemetry/positions_index.json')!);
+      expect(index.positions[0].values).toEqual([
+        { path: 'navigation.position', value: { latitude: HOME.lat, longitude: HOME.lon } },
+      ]);
+      expect(fake.files.get('data/telemetry/positions_index.json')).not.toContain(String(SLIP.lat));
     });
   });
 

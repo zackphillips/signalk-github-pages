@@ -1,5 +1,5 @@
 /**
- * `docs/index.json` — the catalogue behind `docs.html`.
+ * `docs/index.json` — the catalog behind `docs.html`.
  *
  * A static site cannot list a directory, so the reader needs a manifest of the
  * Markdown in `docs/`. The documents themselves are never the plugin's: the
@@ -212,7 +212,7 @@ export function renderDocsIndex(index: DocsIndex): string {
 }
 
 /**
- * True when the catalogue actually changed.
+ * True when the catalog actually changed.
  *
  * `generated` is deliberately excluded: rewriting the file just to bump a
  * timestamp would put an empty commit in the repository on every cycle.

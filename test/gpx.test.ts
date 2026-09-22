@@ -34,7 +34,7 @@ const entry = (timestamp: string, lat: number, lon: number): PositionEntry => ({
 });
 
 describe('formatGpxTime', () => {
-  it('normalises an offset to UTC', () => {
+  it('normalizes an offset to UTC', () => {
     expect(formatGpxTime('2026-03-01T10:00:00-08:00')).toBe('2026-03-01T18:00:00Z');
   });
 
@@ -159,7 +159,7 @@ describe('groupPointsByDay', () => {
     expect([...byDay.keys()].sort()).toEqual(['2026-03-01', '2026-03-02']);
   });
 
-  it('drops points inside a privacy zone instead of snapping them to the centre', () => {
+  it('drops points inside a privacy zone instead of snapping them to the center', () => {
     const entries = [
       entry('2026-03-01T18:00:00Z', HOME.lat, HOME.lon),
       entry('2026-03-01T19:00:00Z', 37.9, -122.5),

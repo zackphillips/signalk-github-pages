@@ -28,6 +28,11 @@ export interface PruneRequest {
    * every day except today.
    */
   olderThanDays: number | null;
+  /**
+   * One day, `YYYY-MM-DD`, and nothing else — the console's per-voyage
+   * Remove button. Takes precedence over `olderThanDays`.
+   */
+  date?: string;
 }
 
 export interface PrunePlan {
@@ -60,7 +65,10 @@ export function planPrune(
   // The cutoff is a local calendar day, not a timestamp: tracks are grouped by
   // local day, so the boundary has to be drawn in the same units or "older
   // than 7 days" lands mid-afternoon and takes half of an eighth day with it.
-  const cutoff = days > 0 ? localDay(new Date(options.now.getTime() - days * 86_400_000), options.timezone) : null;
+  const cutoff =
+    !options.request.date && days > 0
+      ? localDay(new Date(options.now.getTime() - days * 86_400_000), options.timezone)
+      : null;
 
   const sorted = [...tracks]
     .filter((track) => track && typeof track.date === 'string')
@@ -68,9 +76,10 @@ export function planPrune(
 
   const remove: TrackMeta[] = [];
   const keep: TrackMeta[] = [];
+  const only = options.request.date;
   for (const track of sorted) {
-    const old = cutoff === null ? true : track.date < cutoff;
-    if (old && track.date !== today) remove.push(track);
+    const chosen = only ? track.date === only : cutoff === null ? true : track.date < cutoff;
+    if (chosen && track.date !== today) remove.push(track);
     else keep.push(track);
   }
 

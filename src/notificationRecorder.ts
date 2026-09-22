@@ -82,7 +82,7 @@ export class NotificationRecorder {
     // that ("if it is not provided the returned stream produces values for
     // all paths") while `@signalk/server-api` types the parameter as
     // required. The cast is that documented gap, not a guess about
-    // behaviour; the server-api header says its typing is incomplete.
+    // behavior; the server-api header says its typing is incomplete.
     const streambundle = this.options.app.streambundle;
     const getSelfBus = streambundle?.getSelfBus as
       | ((path?: unknown) => { onValue?: (cb: (delta: unknown) => unknown) => unknown | (() => void) })

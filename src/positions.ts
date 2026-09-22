@@ -6,7 +6,7 @@
  * from one it does not.
  */
 import type { PrivacyZone } from './config';
-import { privacyZoneCentre } from './privacy';
+import { privacyZoneCenter } from './privacy';
 import type { PositionFix } from './snapshot';
 import { parseTimestamp } from './time';
 
@@ -51,25 +51,25 @@ export function renderPositionIndex(entries: PositionEntry[]): string {
 /**
  * Build the index entry for one fix.
  *
- * Inside a privacy zone the entry carries the zone centre and nothing else:
- * speed and course would leak that the boat is manoeuvring in the harbour.
+ * Inside a privacy zone the entry carries the zone center and nothing else:
+ * speed and course would leak that the boat is maneuvering in the harbor.
  */
 export function buildPositionEntry(
   fix: PositionFix,
   zones: PrivacyZone[],
   now: Date,
 ): PositionEntry {
-  const centre = privacyZoneCentre(zones, fix.latitude, fix.longitude);
+  const center = privacyZoneCenter(zones, fix.latitude, fix.longitude);
   const timestamp = parseTimestamp(fix.timestamp) ?? now;
   const values: PositionValue[] = [
     {
       path: 'navigation.position',
-      value: centre
-        ? { latitude: centre.lat, longitude: centre.lon }
+      value: center
+        ? { latitude: center.lat, longitude: center.lon }
         : { latitude: fix.latitude, longitude: fix.longitude },
     },
   ];
-  if (!centre) {
+  if (!center) {
     if (fix.speedOverGround !== null) {
       values.push({ path: 'navigation.speedOverGround', value: fix.speedOverGround });
     }
@@ -81,6 +81,33 @@ export function buildPositionEntry(
     }
   }
   return { timestamp: timestamp.toISOString(), values };
+}
+
+/**
+ * Apply today's privacy zones to an entry written under yesterday's.
+ *
+ * `buildPositionEntry` redacts against the zones in force when the fix was
+ * taken, and the index keeps its entries for a day. A zone that was wrong —
+ * misplaced, or too small to cover the slip — and is then corrected would
+ * otherwise go on publishing a day of positions the corrected zone covers,
+ * on every cycle, until they aged out. Every stored entry passes through here
+ * on its way back out, so the zones that apply are always the current ones.
+ * An entry already at a zone center is left as it is.
+ */
+export function redactStoredEntry(entry: PositionEntry, zones: PrivacyZone[]): PositionEntry {
+  const position = entry.values?.find((value) => value?.path === 'navigation.position')?.value;
+  const lat = position?.latitude;
+  const lon = position?.longitude;
+  if (typeof lat !== 'number' || typeof lon !== 'number') return entry;
+  const center = privacyZoneCenter(zones, lat, lon);
+  if (!center) return entry;
+  if (center.lat === lat && center.lon === lon && entry.values.length === 1) return entry;
+  return {
+    timestamp: entry.timestamp,
+    values: [
+      { path: 'navigation.position', value: { latitude: center.lat, longitude: center.lon } },
+    ],
+  };
 }
 
 /** Drop entries older than the retention window and keep the list ordered. */

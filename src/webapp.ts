@@ -110,7 +110,7 @@ const TYPES: Record<string, string> = {
 /**
  * Resolve a preview path inside `site/`, or null.
  *
- * The path comes off the wire, so it is rejected rather than normalised if it
+ * The path comes off the wire, so it is rejected rather than normalized if it
  * contains a `..` segment: this router runs inside the navigation server's
  * process, and a traversal here reads any file that process can read.
  */
@@ -238,9 +238,8 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
   });
 
   /**
-   * What `docs/` holds, and everything the maintenance form needs to open
-   * with sensible values: the boat's local day and the engine hours Signal K
-   * is reporting right now.
+   * What `docs/` holds, and the boat's local day for the maintenance form to
+   * open on.
    */
   router.get('/docs', async (_request, response) => {
     const current = running(response);
@@ -250,7 +249,6 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
       response.json({
         ...status,
         today: localDay(new Date(), current.config.timezone),
-        engineHours: current.publisher.engineHours(current.readTree()),
         repoUrl: `https://github.com/${current.config.github.repo}`,
         // config.site.url rather than deriving it here: it is the same value
         // unless a custom domain is set, and if one is, that is the address
@@ -431,7 +429,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
 }
 
 /**
- * `/prune/all` or `/prune/30`.
+ * `/prune/all`, `/prune/30`, or `/prune/2026-09-18` for one day.
  *
  * Anything else is rejected rather than read as a default. "All" is the most
  * destructive thing this plugin can be asked to do, and a typo in a URL is not
@@ -439,6 +437,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
  */
 export function parsePruneRequest(days: string | undefined): PruneRequest {
   if (days === 'all') return { olderThanDays: null };
+  if (days && /^\d{4}-\d{2}-\d{2}$/.test(days)) return { olderThanDays: null, date: days };
   const parsed = Number(days);
   if (!Number.isFinite(parsed) || parsed < 1) {
     throw new Error(`"${days}" is not a number of days or "all".`);

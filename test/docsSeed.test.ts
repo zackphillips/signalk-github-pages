@@ -2,7 +2,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   assertDocsPath,
-  engineHours,
   insertMaintenanceEntry,
   isCalendarDay,
   loadDocsSeed,
@@ -254,27 +253,5 @@ describe('the maintenance log', () => {
   it('keeps CRLF files readable rather than doubling the line endings', () => {
     const updated = insertMaintenanceEntry('# Log\r\n\r\n## 2026-08-01: Oil\r\n', entry);
     expect(updated).not.toContain('\r');
-  });
-});
-
-describe('engineHours', () => {
-  it('reads runTime off every engine, in hours', () => {
-    expect(
-      engineHours({
-        propulsion: {
-          port: { runTime: { value: 4_336_200 } },
-          main: { runTime: { value: 3600 } },
-        },
-      }),
-    ).toEqual([
-      { engine: 'main', hours: 1 },
-      { engine: 'port', hours: 1204.5 },
-    ]);
-  });
-
-  it('says nothing when the server has no hour meter', () => {
-    expect(engineHours({})).toEqual([]);
-    expect(engineHours({ propulsion: { main: { revolutions: { value: 20 } } } })).toEqual([]);
-    expect(engineHours(null)).toEqual([]);
   });
 });

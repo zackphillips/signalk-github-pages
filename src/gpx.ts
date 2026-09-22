@@ -8,7 +8,7 @@
  * ever be written per cycle.
  */
 import type { PrivacyZone } from './config';
-import { haversineMetres, isPositionPrivate } from './privacy';
+import { haversineMeters, isPositionPrivate } from './privacy';
 import type { PositionEntry, PositionValue } from './positions';
 import { formatGpxTime, localDay, parseTimestamp } from './time';
 
@@ -70,7 +70,7 @@ export function extractPosFromValues(values: PositionValue[] | undefined): {
   return { lat, lon, speed, course };
 }
 
-/** Serialise one day's points as a GPX 1.1 document (without the XML header). */
+/** Serialize one day's points as a GPX 1.1 document (without the XML header). */
 export function buildDayGpx(
   points: TrackPoint[],
   dateStr: string,
@@ -137,7 +137,7 @@ export function makeTrackMeta(dateStr: string, points: TrackPoint[]): TrackMeta 
     if (index > 0) {
       const previous = points[index - 1]!;
       totalNm +=
-        haversineMetres(
+        haversineMeters(
           previous.latitude,
           previous.longitude,
           point.latitude,
@@ -167,7 +167,7 @@ export function makeTrackMeta(dateStr: string, points: TrackPoint[]): TrackMeta 
  * Group position-index entries into local calendar days, dropping any point
  * that falls inside a privacy zone.
  *
- * Private points are dropped rather than snapped to the zone centre: a track
+ * Private points are dropped rather than snapped to the zone center: a track
  * that sat at the dock overnight would otherwise be a pile of identical
  * points, and "the boat was here" is exactly what the zone exists to hide.
  */
@@ -220,9 +220,15 @@ export function updateTracks(
     now: Date;
     existingIndex: TrackMeta[];
     publishedDays: ReadonlySet<string>;
+    /** Past days removed from the console, which stay removed. */
+    removedDays?: ReadonlySet<string>;
   },
 ): TrackUpdate {
   const byDay = groupPointsByDay(entries, options);
+  const today = localDay(options.now, options.timezone);
+  for (const day of options.removedDays ?? []) {
+    if (day !== today) byDay.delete(day);
+  }
   const files: Record<string, string> = {};
   const index = new Map<string, TrackMeta>(
     options.existingIndex.filter((track) => track && track.date).map((track) => [track.date, track]),
@@ -231,7 +237,6 @@ export function updateTracks(
     return { files, index: [...index.values()].sort((a, b) => a.date.localeCompare(b.date)) };
   }
 
-  const today = localDay(options.now, options.timezone);
   for (const [day, points] of byDay) {
     points.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     if (day !== today && options.publishedDays.has(day)) {
@@ -250,6 +255,67 @@ export function updateTracks(
     files,
     index: [...index.values()].sort((a, b) => a.date.localeCompare(b.date)),
   };
+}
+
+/** One `<trkpt>` block, with the whitespace and newline around it. */
+const TRKPT_BLOCK = /[ \t]*<trkpt\b[^>]*>[\s\S]*?<\/trkpt>[ \t]*\r?\n?/g;
+
+/** Read one `<trkpt>` block back into a point, or null if it will not parse. */
+function parseTrackPoint(block: string): TrackPoint | null {
+  const lat = Number(/\blat="([^"]+)"/.exec(block)?.[1]);
+  const lon = Number(/\blon="([^"]+)"/.exec(block)?.[1]);
+  const timestamp = /<time>([^<]+)<\/time>/.exec(block)?.[1]?.trim();
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !timestamp) return null;
+  const speed = Number(/<gpxtpx:speed>([^<]+)</.exec(block)?.[1]);
+  const course = Number(/<gpxtpx:course>([^<]+)</.exec(block)?.[1]);
+  return {
+    timestamp,
+    latitude: lat,
+    longitude: lon,
+    speed_ms: Number.isFinite(speed) ? speed : null,
+    course_rad: Number.isFinite(course) ? (course * Math.PI) / 180 : null,
+  };
+}
+
+export interface GpxTrim {
+  /** The document with the private points taken out, or null if none were. */
+  content: string | null;
+  /** Points left, in file order. Empty means the whole day was private. */
+  kept: TrackPoint[];
+  removed: number;
+}
+
+/**
+ * Take every point inside a privacy zone out of a published GPX file.
+ *
+ * The file is edited rather than rebuilt: everything but the private
+ * `<trkpt>` blocks is left byte for byte, including the older files' track
+ * names, so what changes in the repository is exactly the points that should
+ * never have been there. The metadata time follows the first point kept. A
+ * point that will not parse is kept — this removes what it can prove is
+ * inside a zone, and nothing else.
+ */
+export function trimPrivatePoints(xml: string, zones: PrivacyZone[]): GpxTrim {
+  const kept: TrackPoint[] = [];
+  let removed = 0;
+  const trimmed = xml.replace(TRKPT_BLOCK, (block) => {
+    const point = parseTrackPoint(block);
+    if (point && isPositionPrivate(zones, point.latitude, point.longitude)) {
+      removed += 1;
+      return '';
+    }
+    if (point) kept.push(point);
+    return block;
+  });
+  if (removed === 0) return { content: null, kept, removed };
+  const first = kept[0];
+  const content = first
+    ? trimmed.replace(
+        /(<metadata>[\s\S]*?<time>)[^<]*(<\/time>)/,
+        (_match, open: string, close: string) => `${open}${formatGpxTime(first.timestamp)}${close}`,
+      )
+    : trimmed;
+  return { content, kept, removed };
 }
 
 export function parseTracksIndex(raw: string | null | undefined): TrackMeta[] {

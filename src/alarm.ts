@@ -3,7 +3,7 @@
  *
  * Everything this plugin reports goes to `app.debug`, `app.error` and the
  * plugin status line, which are all in the Signal K admin UI — a browser tab
- * nobody has open at sea. A token that expired, an organisation that revoked
+ * nobody has open at sea. A token that expired, an organization that revoked
  * it, a repository renamed: the site simply stops updating, and the first
  * anyone ashore knows is that the boat appears to have stopped.
  *

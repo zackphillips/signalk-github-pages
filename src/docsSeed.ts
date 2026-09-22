@@ -289,22 +289,3 @@ export function insertMaintenanceEntry(existing: string, entry: MaintenanceEntry
   const after = lines.slice(insertAt).join('\n');
   return `${before}\n\n${block}\n${after.replace(/^\n+/, '')}`;
 }
-
-/**
- * Engine hours off the self tree, for the form's prefill.
- *
- * Signal K carries `propulsion.<id>.runTime` in seconds. The form is a text
- * box either way: this is a starting value to correct, not a reading to
- * trust, and an engine whose hour meter was replaced will disagree with it.
- */
-export function engineHours(tree: unknown): Array<{ engine: string; hours: number }> {
-  const propulsion = (tree as any)?.propulsion;
-  if (!propulsion || typeof propulsion !== 'object') return [];
-  const found: Array<{ engine: string; hours: number }> = [];
-  for (const [engine, values] of Object.entries(propulsion as Record<string, any>)) {
-    const seconds = values?.runTime?.value ?? values?.runTime;
-    if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) continue;
-    found.push({ engine, hours: Math.round((seconds / 3600) * 10) / 10 });
-  }
-  return found.sort((a, b) => a.engine.localeCompare(b.engine));
-}

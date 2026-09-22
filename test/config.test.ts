@@ -12,7 +12,9 @@ import {
   DEFAULT_INSTRUMENT_LOG_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
   DEFAULT_INTERVAL_UNDERWAY,
+  DEFAULT_BRANCH,
   DEFAULT_POSITION_RETENTION_HOURS,
+  DEFAULT_TRACK_DETAIL_METERS,
   DEFAULT_STALE_MAX_AGE_MINUTES,
   pagesUrl,
   parsePathList,
@@ -29,7 +31,7 @@ describe('resolveConfig', () => {
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
     expect(resolved.problems).toEqual([
-      'GitHub repository owner is not set (your username, or the organisation).',
+      'GitHub repository owner is not set (your username, or the organization).',
       'GitHub personal access token is not set.',
     ]);
   });
@@ -60,11 +62,30 @@ describe('resolveConfig', () => {
 
   it('falls back rather than accepting zero or a negative number', () => {
     const config = makeConfig({
-      track: { positionRetentionHours: 0 },
+      track: { detailMeters: 0 },
       interval: { underwayMinutes: -5 },
     });
-    expect(config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
+    expect(config.track.detailMeters).toBe(DEFAULT_TRACK_DETAIL_METERS);
     expect(config.interval.underway).toBe(DEFAULT_INTERVAL_UNDERWAY);
+  });
+
+  it('keeps positions for a day whatever an old config said', () => {
+    // The retention setting left the page; a value saved before that would
+    // otherwise go on applying with no box left to change it.
+    for (const form of [
+      { track: { positionRetentionHours: 72 } },
+      { positionRetentionHours: 6 },
+    ]) {
+      expect(makeConfig(form).positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
+    }
+    expect((configSchema.properties as any).track.properties.positionRetentionHours)
+      .toBeUndefined();
+  });
+
+  it('reads the track detail saved under its old spelling', () => {
+    expect(makeConfig({ track: { detailMetres: 40 } }).track.detailMeters).toBe(40);
+    expect(makeConfig({ track: { detailMeters: 25, detailMetres: 40 } }).track.detailMeters)
+      .toBe(25);
   });
 
   it('keeps a zero where zero is an answer rather than an empty box', () => {
@@ -78,31 +99,54 @@ describe('resolveConfig', () => {
   it('accepts the strings the admin UI hands back for number fields', () => {
     const config = makeConfig({
       staleMaxAgeMinutes: '45',
-      track: { positionRetentionHours: '12' },
+      track: { detailMeters: '12' },
     });
     expect(config.staleMaxAgeMinutes).toBe(45);
-    expect(config.positionRetentionHours).toBe(12);
+    expect(config.track.detailMeters).toBe(12);
   });
 
   it('derives the user site from the owner, so the name is one less box', () => {
-    const resolved = resolveConfig({ ...COMPLETE_FORM, github: { owner: 'zack', token: 't' } });
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      github: { owner: 'zack', token: 't' },
+      overrides: {},
+    });
     expect(resolved.ok).toBe(true);
     if (!resolved.ok) return;
     expect(resolved.config.github.name).toBe('zack.github.io');
     expect(resolved.config.github.repo).toBe('zack/zack.github.io');
+    expect(resolved.config.github.branch).toBe(DEFAULT_BRANCH);
   });
 
   it('takes the typed name only when the override is ticked', () => {
-    const form = { ...COMPLETE_FORM, github: { owner: 'zack', name: 'tracker', token: 't' } };
-    expect(makeConfig(form).github.repo).toBe('zack/zack.github.io');
-    expect(makeConfig({ github: { ...form.github, overrideName: true } }).github.repo)
-      .toBe('zack/tracker');
+    const github = { owner: 'zack', token: 't' };
+    expect(makeConfig({ github, overrides: { repository: 'tracker' } }).github.repo)
+      .toBe('zack/zack.github.io');
+    expect(
+      makeConfig({ github, overrides: { overrideRepository: true, repository: 'tracker' } })
+        .github.repo,
+    ).toBe('zack/tracker');
+  });
+
+  it('takes the typed branch only when the override is ticked', () => {
+    expect(makeConfig({ overrides: { branch: 'gh-pages' } }).github.branch).toBe('main');
+    expect(
+      makeConfig({ overrides: { overrideBranch: true, branch: ' gh-pages ' } }).github.branch,
+    ).toBe('gh-pages');
+    const resolved = resolveConfig({
+      ...COMPLETE_FORM,
+      overrides: { overrideBranch: true, branch: '' },
+    });
+    if (!resolved.ok) throw new Error('expected a resolved config');
+    expect(resolved.config.github.branch).toBe('main');
+    expect(resolved.warnings.join(' ')).toContain('Override branch is ticked');
   });
 
   it('names an override with nothing to override with', () => {
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
-      github: { owner: 'zack', overrideName: true, name: '', token: 't' },
+      github: { owner: 'zack', token: 't' },
+      overrides: { overrideRepository: true, repository: '' },
     });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
@@ -110,7 +154,7 @@ describe('resolveConfig', () => {
   });
 
   it('does not read the deprecated single repo field any more', () => {
-    // It was hidden on the config page and honoured behind the scenes, which
+    // It was hidden on the config page and honored behind the scenes, which
     // meant a config could publish to a repository neither box named.
     const resolved = resolveConfig({ ...COMPLETE_FORM, github: { repo: 'owner/site', token: 't' } });
     expect(resolved.ok).toBe(false);
@@ -122,7 +166,8 @@ describe('resolveConfig', () => {
     for (const owner of ['owner/site', 'https://github.com/owner/site', 'github.com/owner/site.git']) {
       const resolved = resolveConfig({
         ...COMPLETE_FORM,
-        github: { owner, overrideName: true, token: 't' },
+        github: { owner, token: 't' },
+        overrides: { overrideRepository: true },
       });
       expect(resolved.ok, owner).toBe(true);
       if (!resolved.ok) return;
@@ -133,11 +178,12 @@ describe('resolveConfig', () => {
   it('rejects a name that is not a GitHub name', () => {
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
-      github: { owner: 'own er', overrideName: true, name: 'si te', token: 't' },
+      github: { owner: 'own er', token: 't' },
+      overrides: { overrideRepository: true, repository: 'si te' },
     });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
-    expect(resolved.problems.join(' ')).toContain('is not a GitHub username or organisation');
+    expect(resolved.problems.join(' ')).toContain('is not a GitHub username or organization');
     expect(resolved.problems.join(' ')).toContain('is not a GitHub repository name');
   });
 
@@ -173,14 +219,47 @@ describe('resolveConfig', () => {
     expect(config.history.resolutionSeconds).toBe(60);
   });
 
-  it('takes the tide station override as a plain string, or leaves it empty', () => {
+  it('takes the tide station only when its override is ticked', () => {
+    const tide = (overrides: object) => makeConfig({ overrides }).site.tideStationOverride;
     expect(makeConfig().site.tideStationOverride).toBe('');
-    expect(makeConfig({ site: { tideStationOverride: '9414290' } }).site.tideStationOverride)
-      .toBe('9414290');
+    expect(tide({ tideStation: '9414290' })).toBe('');
+    expect(tide({ overrideTideStation: true, tideStation: '9414290' })).toBe('9414290');
     // Trimmed, like every other typed field: a stray space pasted in from a
     // NOAA station listing would otherwise fail to match the ID it names.
-    expect(makeConfig({ site: { tideStationOverride: '  9414290  ' } }).site.tideStationOverride)
-      .toBe('9414290');
+    expect(tide({ overrideTideStation: true, tideStation: '  9414290  ' })).toBe('9414290');
+  });
+
+  it('reads a config saved before the Overrides section as it was', () => {
+    // Every override used to sit in the section of the setting it overrode.
+    const resolved = resolveConfig({
+      github: {
+        owner: 'zack',
+        overrideName: true,
+        name: 'tracker',
+        branch: 'gh-pages',
+        token: 'ghp_x',
+      },
+      timezone: { override: true, zone: 'Pacific/Auckland' },
+      polars: { override: true, table: 'twa/tws;6\n52;4.1\n' },
+      site: { overrideUrl: true, url: 'example.com', tideStationOverride: '9414290' },
+    });
+    if (!resolved.ok) throw new Error(resolved.problems.join(' '));
+    const { config } = resolved;
+    expect(config.github.repo).toBe('zack/tracker');
+    expect(config.github.branch).toBe('gh-pages');
+    expect(config.timezone).toBe('Pacific/Auckland');
+    expect(config.polars).toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
+    expect(config.site.url).toBe('https://example.com/');
+    expect(config.site.tideStationOverride).toBe('9414290');
+  });
+
+  it('ignores the old fields once the Overrides section has been saved', () => {
+    const config = makeConfig({
+      github: { owner: 'zack', overrideName: true, name: 'tracker', branch: 'x', token: 't' },
+      overrides: {},
+    });
+    expect(config.github.repo).toBe('zack/zack.github.io');
+    expect(config.github.branch).toBe('main');
   });
 
   it('keeps custom buttons that have both a label and a URL', () => {
@@ -235,9 +314,12 @@ describe('resolveConfig', () => {
     // Unparsed here: polars.ts decides which table wins, because only it knows
     // what the server had.
     expect(makeConfig().polars).toEqual({ override: false, table: '' });
-    expect(makeConfig({ polars: { override: true, table: 'twa/tws;6\n52;4.1\n' } }).polars)
-      .toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
-    expect(makeConfig({ polars: { table: 'twa/tws;6\n52;4.1\n' } }).polars.override).toBe(false);
+    expect(
+      makeConfig({ overrides: { overridePolar: true, polar: 'twa/tws;6\n52;4.1\n' } }).polars,
+    ).toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
+    expect(makeConfig({ overrides: { polar: 'twa/tws;6\n52;4.1\n' } }).polars.override).toBe(
+      false,
+    );
   });
 
   it('ignores the field shapes an unreleased version once used', () => {
@@ -268,7 +350,8 @@ describe('resolveConfig', () => {
 
 describe('the timezone field', () => {
   const zone = () =>
-    (configSchema.properties as any).timezone.dependencies.override.oneOf[1].properties.zone;
+    (configSchema.properties as any).overrides.dependencies.overrideTimezone.oneOf[1].properties
+      .timezone;
 
   it('offers IANA names, not a free-text box where "PST" looked reasonable', () => {
     expect(zone().enum).toContain('America/Los_Angeles');
@@ -280,14 +363,18 @@ describe('the timezone field', () => {
     expect(zone().default).toBe(serverTimezone());
     expect(zone().enum[0]).toBe('UTC');
     expect(zone().enumNames).toHaveLength(zone().enum.length);
-    expect(makeConfig({ timezone: undefined }).timezone).toBe(serverTimezone());
+    expect(makeConfig({ overrides: {} }).timezone).toBe(serverTimezone());
   });
 
   it('takes the picked zone only when the override is ticked', () => {
-    expect(makeConfig({ timezone: { override: false, zone: 'Pacific/Auckland' } }).timezone)
-      .toBe(serverTimezone());
-    expect(makeConfig({ timezone: { override: true, zone: 'Pacific/Auckland' } }).timezone)
-      .toBe('Pacific/Auckland');
+    expect(
+      makeConfig({ overrides: { overrideTimezone: false, timezone: 'Pacific/Auckland' } })
+        .timezone,
+    ).toBe(serverTimezone());
+    expect(
+      makeConfig({ overrides: { overrideTimezone: true, timezone: 'Pacific/Auckland' } })
+        .timezone,
+    ).toBe('Pacific/Auckland');
   });
 
   it('offers only names this runtime can group days by', () => {
@@ -296,22 +383,21 @@ describe('the timezone field', () => {
     }
   });
 });
-
 describe('buildConfigSchema', () => {
-  // What the checkbox says, and what the box it reveals holds.
-  const polarNote = (schema: any) => schema.properties.polars.properties.override.description;
-  const polarBox = (schema: any) =>
-    schema.properties.polars.dependencies.override.oneOf[1].properties.table;
+  // A checkbox's description, and the box it reveals.
+  const note = (schema: any, flag: string) => schema.properties.overrides.properties[flag].description;
+  const box = (schema: any, flag: string, field: string) =>
+    schema.properties.overrides.dependencies[flag].oneOf[1].properties[field];
 
-  it('says nothing about a polar before any cycle has run', () => {
-    expect(polarNote(buildConfigSchema({ polar: null }))).toBe(
-      (configSchema.properties as any).polars.properties.override.description,
+  it('says a polar has not been checked before any cycle has run', () => {
+    expect(note(buildConfigSchema({ polar: null }), 'overridePolar')).toContain('Not checked yet');
+    expect(box(buildConfigSchema(), 'overridePolar', 'polar').description).toBe(
+      POLARS_FIELD_DESCRIPTION,
     );
-    expect(polarBox(buildConfigSchema()).description).toBe(POLARS_FIELD_DESCRIPTION);
   });
 
-  it('names the polar it is publishing', () => {
-    const note = polarNote(
+  it('names the polar it found', () => {
+    const text = note(
       buildConfigSchema({
         polar: {
           source: 'resource',
@@ -319,13 +405,14 @@ describe('buildConfigSchema', () => {
           problems: [],
         },
       }),
+      'overridePolar',
     );
-    expect(note).toContain('mermug-orc');
-    expect(note).toContain('Publishing');
+    expect(text).toContain('✅ Found');
+    expect(text).toContain('mermug-orc');
   });
 
-  it('carries the last cycle complaint onto the page', () => {
-    const note = polarNote(
+  it('carries the last cycle complaint onto the page, marked not found', () => {
+    const text = note(
       buildConfigSchema({
         polar: {
           source: 'none',
@@ -333,45 +420,86 @@ describe('buildConfigSchema', () => {
           problems: ['Polar not found: x'],
         },
       }),
+      'overridePolar',
     );
-    expect(note).toContain('Publishing no polar');
-    expect(note).toContain('Polar not found: x');
+    expect(text).toContain('Not found');
+    expect(text).toContain('Polar not found: x');
   });
 
-  it('puts what is derived beside the checkbox, where saving cannot overwrite it', () => {
+  it('marks every override found, not found, or not checked', () => {
+    const found = buildConfigSchema({
+      repoName: 'owner.github.io',
+      siteUrl: 'https://owner.github.io/',
+      branch: { name: 'main', ok: true },
+      polar: { source: 'resource', summary: '"p"', problems: [] },
+      tideStation: { id: '9414290', name: 'San Francisco', distanceNm: 2.34 },
+    });
+    for (const flag of [
+      'overrideRepository',
+      'overrideBranch',
+      'overrideSiteUrl',
+      'overrideTimezone',
+      'overridePolar',
+      'overrideTideStation',
+    ]) {
+      expect(note(found, flag), flag).toMatch(/^✅ /);
+    }
+    expect(note(found, 'overrideRepository')).toContain('owner.github.io');
+    expect(note(found, 'overrideSiteUrl')).toContain('https://owner.github.io/');
+    expect(note(found, 'overrideTideStation')).toContain('San Francisco (station 9414290), 2.3 NM');
+
+    const missing = buildConfigSchema({
+      branch: { name: 'main', ok: false, detail: 'HTTP 404' },
+      tideStation: null,
+    });
+    expect(note(missing, 'overrideRepository')).toMatch(/^⚠/);
+    expect(note(missing, 'overrideBranch')).toContain('could not publish to main (HTTP 404)');
+    expect(note(missing, 'overrideTideStation')).toMatch(/^⚠/);
+    expect(note(buildConfigSchema(), 'overrideBranch')).toMatch(/^⏳/);
+  });
+
+  it('keeps what is derived out of the typed boxes, where saving would freeze it', () => {
     const built = buildConfigSchema({
       repoName: 'owner.github.io',
       siteUrl: 'https://owner.github.io/',
     }) as any;
-    expect(built.properties.github.properties.overrideName.description).toContain(
-      'owner.github.io',
-    );
-    expect(built.properties.site.properties.overrideUrl.description).toContain(
-      'https://owner.github.io/',
-    );
-    // The typed boxes themselves stay empty: a default is submitted with the
-    // form, and a derived value written into the config goes stale there.
-    expect(
-      built.properties.github.dependencies.overrideName.oneOf[1].properties.name.default,
-    ).toBe('');
-    expect(built.properties.site.dependencies.overrideUrl.oneOf[1].properties.url.default).toBe(
-      '',
-    );
+    expect(box(built, 'overrideRepository', 'repository').default).toBe('');
+    expect(box(built, 'overrideSiteUrl', 'siteUrl').default).toBe('');
   });
 
   it('starts a polar override off from the active polar', () => {
     const built = buildConfigSchema({ polarCsv: 'twa/tws;6\n52;4.1\n' }) as any;
-    expect(polarBox(built).default).toBe('twa/tws;6\n52;4.1\n');
+    expect(box(built, 'overridePolar', 'polar').default).toBe('twa/tws;6\n52;4.1\n');
   });
 
   it('never mutates the schema it was built from', () => {
     buildConfigSchema({ polarCsv: 'x', repoName: 'owner.github.io' });
-    const base = configSchema.properties as any;
-    expect(base.polars.dependencies.override.oneOf[1].properties.table.default).toBe('');
-    expect(base.polars.dependencies.override.oneOf[1].properties.table.description).toBe(
-      POLARS_FIELD_DESCRIPTION,
-    );
-    expect(base.github.properties.overrideName.description).not.toContain('owner.github.io');
+    expect(box(configSchema, 'overridePolar', 'polar').default).toBe('');
+    expect(note(configSchema, 'overrideRepository')).not.toContain('owner.github.io');
+    expect((configSchema.properties.instrumentLog.properties.providerId as any).enum)
+      .toBeUndefined();
+  });
+
+  it('offers the registered history providers as a list', () => {
+    const provider = (schema: any) => schema.properties.instrumentLog.properties.providerId;
+    const built = buildConfigSchema({
+      historyProviders: { ids: ['signalk-parquet', 'signalk-to-influxdb2'], defaultId: 'signalk-to-influxdb2' },
+    });
+    expect(provider(built).enum).toEqual(['', 'signalk-parquet', 'signalk-to-influxdb2']);
+    expect(provider(built).enumNames[0]).toBe('Server default (signalk-to-influxdb2)');
+
+    // A saved choice whose plugin is off right now stays selectable, so the
+    // form still validates and can be saved.
+    const saved = buildConfigSchema({
+      historyProviders: { ids: [] },
+      saved: { instrumentLog: { providerId: 'signalk-to-influxdb2' } },
+    });
+    expect(provider(saved).enum).toEqual(['', 'signalk-to-influxdb2']);
+    expect(provider(saved).enumNames).toEqual([
+      'Server default (none registered)',
+      'signalk-to-influxdb2 (not registered)',
+    ]);
+    expect(provider(buildConfigSchema()).enum).toEqual(['']);
   });
 
   it('opens a config written before a setting moved showing that config', () => {
@@ -382,7 +510,7 @@ describe('buildConfigSchema', () => {
       saved: {
         instrumentLog: { paths: 'navigation.speedOverGround', entries: 720 },
         history: { enabled: true, providerId: 'signalk-to-influxdb2', resolutionSeconds: 60 },
-        positionRetentionHours: 48,
+        track: { detailMetres: 30 },
         publishNotifications: false,
         notificationExclude: 'server\nsignalk-github-pages',
         notifyAfterFailureMinutes: 0,
@@ -391,12 +519,39 @@ describe('buildConfigSchema', () => {
     const properties = built.properties;
     expect(properties.instrumentLog.properties.hours.default).toBe(12);
     expect(properties.instrumentLog.properties.providerId.default).toBe('signalk-to-influxdb2');
-    expect(properties.track.properties.positionRetentionHours.default).toBe(48);
+    expect(properties.track.properties.detailMeters.default).toBe(30);
     expect(properties.notifications.properties.publish.default).toBe(false);
     expect(properties.notifications.properties.exclude.default).toBe(
       'server\nsignalk-github-pages',
     );
     expect(properties.notifications.properties.warnAfterMinutes.default).toBe(0);
+  });
+
+  it('opens an override ticked where the old config had it ticked', () => {
+    const built = buildConfigSchema({
+      saved: {
+        github: { owner: 'zack', overrideName: true, name: 'tracker', branch: 'gh-pages' },
+        timezone: { override: true, zone: 'Pacific/Auckland' },
+        site: { tideStationOverride: '9414290' },
+      },
+    }) as any;
+    const flags = built.properties.overrides.properties;
+    expect(flags.overrideRepository.default).toBe(true);
+    expect(flags.overrideBranch.default).toBe(true);
+    expect(flags.overrideTimezone.default).toBe(true);
+    expect(flags.overrideTideStation.default).toBe(true);
+    expect(flags.overrideSiteUrl.default).toBe(false);
+    expect(flags.overridePolar.default).toBe(false);
+    expect(box(built, 'overrideRepository', 'repository').default).toBe('tracker');
+    expect(box(built, 'overrideBranch', 'branch').default).toBe('gh-pages');
+    expect(box(built, 'overrideTimezone', 'timezone').default).toBe('Pacific/Auckland');
+    expect(box(built, 'overrideTideStation', 'tideStation').default).toBe('9414290');
+
+    // Once the Overrides section has been saved, it is the only answer.
+    const saved = buildConfigSchema({
+      saved: { github: { overrideName: true, name: 'tracker' }, overrides: {} },
+    }) as any;
+    expect(saved.properties.overrides.properties.overrideRepository.default).toBe(false);
   });
 
   it('leaves the defaults alone for a config that has the settings already', () => {
@@ -422,58 +577,71 @@ describe('buildConfigSchema', () => {
   });
 });
 
-describe('the repository fields', () => {
-  it('asks only for the owner, and offers the name behind an override', () => {
-    const github = (configSchema.properties as any).github;
-    expect(github.properties.owner.type).toBe('string');
-    expect(github.properties.overrideName.type).toBe('boolean');
-    expect(github.dependencies.overrideName.oneOf[1].properties.name.type).toBe('string');
-    expect(github.required).toEqual(['owner', 'token']);
+describe('the Overrides section', () => {
+  const overrides = (configSchema.properties as any).overrides;
+  const pairs = [
+    ['overrideRepository', 'repository'],
+    ['overrideBranch', 'branch'],
+    ['overrideSiteUrl', 'siteUrl'],
+    ['overrideTimezone', 'timezone'],
+    ['overridePolar', 'polar'],
+    ['overrideTideStation', 'tideStation'],
+  ] as const;
+
+  it('holds every override, and no other section has one', () => {
+    expect(Object.keys(overrides.properties)).toEqual(pairs.map(([flag]) => flag));
+    for (const [name, section] of Object.entries(configSchema.properties as any)) {
+      if (name === 'overrides') continue;
+      expect((section as any).dependencies, name).toBeUndefined();
+      for (const key of Object.keys((section as any).properties ?? {})) {
+        expect(key, `${name}.${key}`).not.toMatch(/^override/i);
+      }
+    }
   });
 
-  it('offers nothing left over from an old version', () => {
-    const github = (configSchema.properties as any).github.properties;
-    expect(Object.keys(github).sort()).toEqual(['branch', 'overrideName', 'owner', 'token']);
+  it('asks only for the owner and the token in the repository section', () => {
+    const github = (configSchema.properties as any).github;
+    expect(Object.keys(github.properties).sort()).toEqual(['owner', 'token']);
+    expect(github.required).toEqual(['owner', 'token']);
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
-  it('shows the name field only once the override is ticked', () => {
-    const dependencies = (configSchema.properties as any).github.dependencies;
-    const [off, on] = dependencies.overrideName.oneOf;
-    expect(off.properties.overrideName.enum).toEqual([false]);
-    expect(off.properties.name).toBeUndefined();
-    expect(on.properties.overrideName.enum).toEqual([true]);
-    expect(on.properties.name.type).toBe('string');
-  });
-
-  it('keeps every overridable field out of the form until its box is ticked', () => {
+  it('keeps every typed box out of the form until its checkbox is ticked', () => {
     // A field that is present but read-only is filled from a JSON Schema
     // default, and the admin UI submits defaults: the derived value of the day
-    // was saved and shown back for ever. Absent until ticked, there is nothing
+    // was saved and shown back forever. Absent until ticked, there is nothing
     // to save.
-    const properties = configSchema.properties as any;
-    for (const [section, flag, field] of [
-      ['github', 'overrideName', 'name'],
-      ['timezone', 'override', 'zone'],
-      ['polars', 'override', 'table'],
-      ['site', 'overrideUrl', 'url'],
-    ] as const) {
-      expect(properties[section].properties[field], `${section}.${field}`).toBeUndefined();
-      const [off, on] = properties[section].dependencies[flag].oneOf;
-      expect(off.properties[field], `${section}.${field}`).toBeUndefined();
-      expect(on.properties[field].title, `${section}.${field}`).toBeTruthy();
+    for (const [flag, field] of pairs) {
+      expect(overrides.properties[field], field).toBeUndefined();
+      const [off, on] = overrides.dependencies[flag].oneOf;
+      expect(off.properties[flag].enum, flag).toEqual([false]);
+      expect(off.properties[field], field).toBeUndefined();
+      expect(on.properties[flag].enum, flag).toEqual([true]);
+      expect(on.properties[field].title, field).toBeTruthy();
+      expect(overrides.properties[flag].default, flag).toBe(false);
     }
+  });
+
+  it('puts each typed box directly beneath its own checkbox', () => {
+    // The form appends dependency fields after every property, so without an
+    // order all six boxes would land under the last checkbox.
+    const order = (configUiSchema as any).overrides['ui:order'];
+    for (const [flag, field] of pairs) {
+      expect(order.indexOf(field), field).toBe(order.indexOf(flag) + 1);
+    }
+    expect(order[order.length - 1]).toBe('*');
   });
 
   it('says what to tick when making the token, and nothing more', () => {
     const description = (configSchema.properties as any).github.properties.token.description;
     expect(description).toContain('Contents');
     expect(description).toContain('Only select repositories');
-    expect(description).toContain('organisation');
+    expect(description).not.toMatch(/organi[sz]ation/i);
     // Trimmed to what the token will not work without.
-    expect(description.length).toBeLessThan(400);
+    expect(description.length).toBeLessThan(300);
   });
 });
+
 
 describe('parsePathList', () => {
   it('reads one path per line', () => {
