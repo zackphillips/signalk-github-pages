@@ -4,7 +4,7 @@
  *
  * This file used to be `info.yaml`, and it used to carry the boat as well:
  * name, MMSI, callsign, UUID, IMO, flag, home port, registrations and
- * dimensions, all read off the self tree, serialised to YAML, and published
+ * dimensions, all read off the self tree, serialized to YAML, and published
  * one directory away from `data/telemetry/signalk_latest.json`, which is the
  * whole self tree and already contains every one of them. The frontend even
  * preferred the snapshot and treated this as the fallback. So the duplicate
@@ -76,13 +76,13 @@ function leafString(node: unknown): string {
 }
 
 /**
- * A dimension, rounded to the millimetre.
+ * A dimension, rounded to the millimeter.
  *
  * Not cosmetic: `site.json` is rewritten whenever the rendered content changes,
  * so a draft reported as 2.1300000000000003 one cycle and 2.13 the next would
  * be a commit every two minutes for a number that did not move.
  */
-function metres(node: unknown): number | undefined {
+function meters(node: unknown): number | undefined {
   const value = leaf(node);
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return Math.round(value * 1000) / 1000;
@@ -155,14 +155,14 @@ export function readVesselDetails(tree: Tree): Partial<VesselIdentity> {
   const registrations = readRegistrations((tree as any).registrations);
 
   const dimensions: VesselDesign = {
-    length_overall_m: metres(length?.overall),
-    length_hull_m: metres(length?.hull),
-    length_waterline_m: metres(length?.waterline),
-    beam_m: metres(design.beam),
-    draft_max_m: metres(draft?.maximum),
-    draft_min_m: metres(draft?.minimum),
-    air_height_m: metres(design.airHeight),
-    displacement_kg: metres(design.displacement),
+    length_overall_m: meters(length?.overall),
+    length_hull_m: meters(length?.hull),
+    length_waterline_m: meters(length?.waterline),
+    beam_m: meters(design.beam),
+    draft_max_m: meters(draft?.maximum),
+    draft_min_m: meters(draft?.minimum),
+    air_height_m: meters(design.airHeight),
+    displacement_kg: meters(design.displacement),
     keel_type: typeof keel?.type === 'string' ? keel.type : undefined,
     ais_ship_type: typeof shipType?.name === 'string' ? shipType.name : undefined,
   };
@@ -250,7 +250,7 @@ export const SITE_CONFIG_SCHEMA_VERSION = 1;
  * registrations, dimensions — is left out, because it is already in the
  * published snapshot and a second copy can only disagree with the first. The
  * two numbers that do appear are here because picking a documentation number
- * out of a Signal K `registrations` tree is a judgement the plugin already
+ * out of a Signal K `registrations` tree is a judgment the plugin already
  * makes, and the frontend should not make it a second time.
  */
 export function renderSiteConfig(
@@ -276,7 +276,7 @@ export function renderSiteConfig(
     };  }
 
   // No override for either: they are picked out of `registrations` by
-  // `readVesselDetails`, which is a judgement the plugin already makes, and
+  // `readVesselDetails`, which is a judgment the plugin already makes, and
   // there is no longer a config-page field to disagree with it. A boat with
   // no matching registration simply publishes neither key, rather than
   // offering a typed box that would have to be kept in sync with Signal K by

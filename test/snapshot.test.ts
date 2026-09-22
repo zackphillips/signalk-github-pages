@@ -82,19 +82,19 @@ describe('extractPositionFix', () => {
 
 describe('redactPositions', () => {
   const zones = [{ name: 'Home', lat: 37.7802069, lon: -122.385804, radius_m: 200 }];
-  const centre = { latitude: 37.7802069, longitude: -122.385804 };
+  const center = { latitude: 37.7802069, longitude: -122.385804 };
 
-  it('replaces the vessel position with the zone centre', () => {
+  it('replaces the vessel position with the zone center', () => {
     const blob = {
       navigation: { position: { value: { latitude: 37.78025, longitude: -122.38585 } } },
     };
     const { vesselZone } = redactPositions(blob, zones);
     expect(vesselZone?.name).toBe('Home');
-    expect(blob.navigation.position.value).toEqual(centre);
+    expect(blob.navigation.position.value).toEqual(center);
   });
 
   it('replaces the anchor position too, which used to be published in full', () => {
-    // The bug: the site showed the zone centre for the boat while publishing
+    // The bug: the site showed the zone center for the boat while publishing
     // the true anchor drop coordinates a few keys away in the same file, and
     // the frontend reads navigation.anchor.position to draw the marker.
     const blob = {
@@ -107,7 +107,7 @@ describe('redactPositions', () => {
       },
     };
     const { redacted } = redactPositions(blob, zones);
-    expect(blob.navigation.anchor.position.value).toEqual(centre);
+    expect(blob.navigation.anchor.position.value).toEqual(center);
     expect(redacted).toContain('navigation.anchor.position.value');
   });
 
@@ -122,8 +122,8 @@ describe('redactPositions', () => {
       },
     };
     redactPositions(blob, zones);
-    expect(blob.somePlugin.lastSeen.value).toEqual(centre);
-    expect(blob.notifications.mob.value.position).toEqual(centre);
+    expect(blob.somePlugin.lastSeen.value).toEqual(center);
+    expect(blob.notifications.mob.value.position).toEqual(center);
   });
 
   it('leaves a position outside every zone untouched', () => {
@@ -164,7 +164,7 @@ describe('redactPositions', () => {
     };
     const { vesselZone } = redactPositions(blob, zones);
     expect(vesselZone).toBeNull();
-    expect(blob.navigation.anchor.position.value).toEqual(centre);
+    expect(blob.navigation.anchor.position.value).toEqual(center);
   });
 
   it('does nothing at all when no zones are configured', () => {

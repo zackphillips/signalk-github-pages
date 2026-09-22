@@ -45,7 +45,7 @@ describe('ownership', () => {
     expect(isOwnedPath('data/vessel/info.yaml', FULL)).toBe(false);
     expect(ownedPatterns(FULL)).not.toContain('data/vessel/info.yaml');
     expect(isRemovablePath('data/vessel/info.yaml', FULL)).toBe(true);
-    // A retirement is not a licence to delete the user's files.
+    // A retirement is not a license to delete the user's files.
     expect(isRemovablePath('docs/mob-procedure.md', FULL)).toBe(false);
     expect(isRemovablePath('assets/custom.css', FULL)).toBe(false);
   });

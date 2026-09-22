@@ -46,9 +46,9 @@ live `HEAD`.
 
 | | |
 |---|---|
-| **Live position** | With privacy zones: inside one, the site shows the zone centre and the track simply stops |
+| **Live position** | With privacy zones: inside one, the site shows the zone center and the track simply stops |
 | **Per-day GPX tracks** | Recorded from position deltas and thinned by shape, so a tack is a tack and a straight leg is cheap. Grouped by *your* local calendar day, not by UTC — a voyage does not get cut in half mid-afternoon |
-| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else. A path no panel knows about still gets drawn, labelled from the server's own metadata |
+| **Instrument sparklines** | A rolling log of exactly the paths you name, and nothing else. A path no panel knows about still gets drawn, labeled from the server's own metadata |
 | **Thresholds from the boat** | Good, warn and alert come from `meta.zones` on the Signal K path — the same zones the server's own alarms use. Nothing is hard-coded |
 | **Notifications** | Active Signal K notifications raised on the page, and how many times each has fired in the last 1, 3, 12 and 24 hours |
 | **Ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone, rendered client-side |
@@ -70,7 +70,7 @@ this much:
 
 | In the token form | Set it to |
 |---|---|
-| Resource owner | You, or the organisation that owns the repository |
+| Resource owner | You, or the organization that owns the repository |
 | Repository access | **Only select repositories** → the Pages repository |
 | Repository permissions → **Contents** | **Read and write** |
 | Repository permissions → Metadata | Read-only — added for you, cannot be removed |
@@ -79,11 +79,6 @@ this much:
 Nothing else is needed: no Actions, no Pages, no account permissions. The
 commonly missed one is **Contents**, because a token without it reads the
 repository perfectly and fails on the first commit with a 403.
-
-An **organisation-owned** repository needs one more step: an organisation
-owner has to approve the token (Organisation settings → Personal access
-tokens → Pending requests) before it can see the repository at all. Until
-they do, publishing fails with a 404 for a repository that plainly exists.
 
 A **classic** token works too if you prefer one: the `repo` scope, or
 `public_repo` if the repository is public. It is a blunter instrument — it
@@ -123,50 +118,57 @@ only. Give Pages a minute, then open the URL.
 
 | Field | Default | Notes |
 |---|---|---|
-| `github.owner` | **required** | The user or organisation, e.g. `yourname` |
-| `github.overrideName` | off | Publish somewhere other than `<owner>.github.io` |
-| `github.name` | derived | Shown only when the override is ticked; otherwise `<owner>.github.io` |
+| `github.owner` | **required** | The user or organization, e.g. `yourname` |
 | `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
-| `github.branch` | `main` | Branch Pages serves |
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
-| `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` |
-| `timezone.override` | off | Group tracks by a zone other than the server's |
-| `timezone.zone` | the server's zone | IANA zone, shown only when the override is ticked |
+| `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](#privacy-zones) |
 | `instrumentLog.paths` | the sparkline set | One path per line — [see below](#instrument-paths) |
 | `instrumentLog.hours` | `1` | How far back the sparklines plot; 0 publishes no log — [see below](#history-provider) |
-| `instrumentLog.providerId` | *empty* | Blank uses the server's default history provider |
+| `instrumentLog.providerId` | *server default* | A dropdown of the history providers registered on the server |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
-| `polars.override` | off | Publish a typed table instead of the active polar |
-| `polars.table` | the active polar | Shown only when the override is ticked, [see below](#polars) |
-| `track.detailMetres` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
-| `track.positionRetentionHours` | `24` | How long raw positions stay in the map track |
+| `track.detailMeters` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
 | `notifications.publish` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
 | `notifications.exclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
 | `notifications.warnAfterMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](#branding) |
 | `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](#branding) |
-| `site.overrideUrl` | off | Publish under a custom domain rather than the Pages URL |
-| `site.url` | derived | Where the site is served, e.g. `https://example.com/`; shown only when the override is ticked |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
-| `site.tideStationOverride` | *empty* | A NOAA station ID to query before the boat has a GPS fix — see [Tide station override](#tide-station-override) |
+
+### Overrides
+
+Six settings are worked out by the plugin rather than typed, and all six live
+in their own **Overrides** section at the bottom of the page. Each has a
+checkbox, and the checkbox opens with a mark saying whether the plugin found
+a value — ✅ found, ⚠️ not found, ⏳ not checked yet because no cycle has run —
+and what it was, read afresh every time the page is opened. Tick one and the
+box to type your own appears directly beneath it; untick it and the box goes
+away and is ignored.
+
+| Override | Derived from | Typed value |
+|---|---|---|
+| `overrides.overrideRepository` | `<owner>.github.io` | `overrides.repository` — a project site such as `tracker` |
+| `overrides.overrideBranch` | `main`; the mark says whether the last cycle published to it | `overrides.branch` |
+| `overrides.overrideSiteUrl` | the Pages URL for the repository | `overrides.siteUrl` — a custom domain |
+| `overrides.overrideTimezone` | the server's timezone | `overrides.timezone` — an IANA zone, from a list |
+| `overrides.overridePolar` | the active polar in Polar Management | `overrides.polar` — [see below](#polars) |
+| `overrides.overrideTideStation` | the NOAA station nearest the boat | `overrides.tideStation` — see [Tide station override](#tide-station-override) |
 
 The defaults are the numbers this tracker has run on for years on a
-Raspberry Pi. Four settings are derived rather than typed — the repository
-name from the owner, the site address from the repository, the timezone from
-the server, and the polar table from Polar Management — and each has an
-override checkbox. The box you would type in appears only once that checkbox
-is ticked; until then the checkbox itself says what the plugin is deriving,
-read afresh every time the page is opened. What has no default at all is what
-belongs to one particular boat: privacy zones start empty, and [the vessel's
-own details](#what-comes-from-signal-k) come from Signal K rather than from
-this page.
+Raspberry Pi. What has no default at all is what belongs to one particular
+boat: privacy zones start empty, and [the vessel's own
+details](#what-comes-from-signal-k) come from Signal K rather than from this
+page.
 
 Settings that used to be on this page and are not any more — an instrument
 log length and a bucket width where there is now one window, a history query
-timeout, a switch for `docs/index.json` — are still read from a config
+timeout, a switch for `docs/index.json`, and the overrides that used to sit
+in the section of the setting they overrode — are still read from a config
 written against them, and a config that carries them opens showing its own
-values rather than the new defaults. Nothing resets on upgrade.
+values (ticked boxes included) rather than the new defaults. Nothing resets
+on upgrade. The one exception is `track.positionRetentionHours`, which left
+the page and is no longer read: the map's track is always the last 24 hours,
+and past days survive as GPX regardless.
 
 > [!WARNING]
 > Signal K stores plugin configuration as plain JSON under
@@ -178,7 +180,7 @@ values rather than the new defaults. Nothing resets on upgrade.
 
 The track is recorded from `navigation.position` deltas, which arrive several
 a second, and thinned by *shape*: a fix is kept when dropping it would move
-the drawn line by more than `track.detailMetres`, and at least once per
+the drawn line by more than `track.detailMeters`, and at least once per
 publish cycle whatever the shape says.
 
 That is not the same as sampling more often. The Git Data API uploads whole
@@ -192,7 +194,7 @@ spends points where the track bends and nothing where it does not:
 | A mark rounding | 9 points, 9 m | 5 points, 174 m |
 | Straight motoring | same as before | same |
 
-Lower `detailMetres` follows a tack more closely and uploads more; higher is
+Lower `detailMeters` follows a tack more closely and uploads more; higher is
 cheaper on a hotspot. On a server that does not offer position deltas the
 plugin falls back to one fix per cycle, as before, and says so in the log.
 
@@ -239,9 +241,18 @@ paths the provider reports, re-listed every 15 minutes. A literal path the
 provider has never stored is still requested — a sensor that came online five
 minutes ago is not in the listing yet.
 
-Set `instrumentLog.providerId` only if more than one provider is registered
-and you want a specific one; blank means the server's default. Setting
-`instrumentLog.hours` to zero turns the whole thing off.
+The **History provider** dropdown lists the providers registered on the
+server, found by asking each enabled plugin; change it only if more than one
+is registered and you want a specific one. *Server default* follows the
+server's own setting. Setting `instrumentLog.hours` to zero turns the whole
+thing off.
+
+**Why the site says "(not logged)" past an hour.** The sparkline menu offers
+1, 3, 12 and 24 hours, and marks any window longer than the published log as
+not logged rather than drawing a copy of a shorter one. The log is as long as
+`instrumentLog.hours`, which defaults to 1. Set it to 24 for all four; the
+bucket width grows with the window (4 minutes at 24 hours), so the file
+stays around 130 kB rather than growing 24-fold.
 
 The whole log goes up on every publish, so its size is the bucket count times
 the paths: see
@@ -292,7 +303,7 @@ both the spec's `capacity.stateOfCharge` and the short form some producers
 use.
 
 A path you add that no panel draws is not lost: it appears under **Other
-Instruments** on the Data tab, named, converted and coloured from the
+Instruments** on the Data tab, named, converted and colored from the
 metadata the server publishes for it.
 
 This list is the entire bandwidth cost of a cycle. Trim it to what you look at.
@@ -359,7 +370,7 @@ copy.
 
 That is what lets a path this release has never heard of be rendered
 properly: `propulsion.port.coolantTemperature` shows as "Port Coolant" in
-your preferred temperature unit, coloured by the zones you set on the
+your preferred temperature unit, colored by the zones you set on the
 server's Data Fiddler page, with the server's description as its tooltip. Set
 the zone in Signal K and the site follows; there is nowhere here to set a
 threshold, on purpose, because the server is where the alarm that sounds the
@@ -367,15 +378,15 @@ buzzer is already configured.
 
 ## Privacy zones
 
-A position inside a zone is published as the zone's **centre**, and that point
+A position inside a zone is published as the zone's **center**, and that point
 is left out of the GPX track **entirely** rather than snapped to the middle —
 a night at the dock would otherwise be a pile of identical points saying
 exactly where you sleep. Speed and course are withheld from the track too, so
-it cannot show you manoeuvring in the harbour.
+it cannot show you maneuvering in the harbor.
 
 **Every** position in the published snapshot is checked, not just
 `navigation.position`. That matters most for `navigation.anchor.position`:
-anchoring inside a zone used to show the zone centre for the boat while
+anchoring inside a zone used to show the zone center for the boat while
 publishing the true anchor drop coordinates a few keys away in the same file.
 Anything position-shaped anywhere in the tree is covered, including paths a
 plugin added that this one has never heard of.
@@ -388,10 +399,31 @@ because you happen to be at home — where you are going is not where you are.
 Every check walks the whole zone list. Zones start empty: nothing is hidden
 until you say what to hide.
 
-The map draws the zones it is redacting against, as dashed rings. It used to
-draw one fixed ring at the Python daemon's old dock in San Francisco, on every
-site, while the configured zones were never drawn at all — a redaction claim
-that was wrong in both directions.
+**A corrected zone applies to what is already published.** The zones are
+applied as a track is recorded, which on its own protects only the future: a
+zone drawn in the wrong place, or too small to reach the slip, leaves every
+day recorded under it on the site, and a past day's GPX file is never
+rebuilt. So whenever the zones change — and on the first cycle after an
+upgrade — the plugin reads every GPX file in the repository and takes out
+each point inside a zone. A day that was nothing but the dock is deleted, and
+the track index is rewritten to match; the log line says how many points,
+files and days it took. The rolling 24-hour position index is re-checked on
+every cycle, so this morning's fixes are covered by this afternoon's zone.
+Trimming changes what the site serves. The old points are still in the
+repository's git history; removing them from there means rewriting that
+history, which the plugin never does.
+
+The zone center is published as the boat's position while it is inside, so
+put the center somewhere that is not your slip — the middle of the fairway,
+or the harbor entrance — and make the radius reach past the slip with room to
+spare. GPS wanders a few meters at the dock; a zone whose edge is 20 m from
+the slip will let a night's worth of wander through.
+
+The map draws the zones it is redacting against, as red dashed rings, on the
+main map and on each voyage's map. It used to draw one fixed ring at the
+Python daemon's old dock in San Francisco, on every site, while the
+configured zones were never drawn at all — a redaction claim that was wrong
+in both directions.
 
 > [!NOTE]
 > A zone missing its radius is a hard configuration error, not a warning. A
@@ -427,7 +459,7 @@ and `nominal` render green, `warn` and `caution` amber, `alert`, `alarm` and
 `emergency` red, and a zone's `message` becomes the label. Bounds are
 half-open — `lower <= value < upper` — so adjacent zones do not overlap.
 
-**A path with no zones renders with no colour.** That is deliberate, and it is
+**A path with no zones renders with no color.** That is deliberate, and it is
 the same rule the rest of the site follows: an unknown position renders as
 unknown rather than as San Francisco Bay. If a value should be flagged, the
 place to say so is the server, where the alarm that sounds the buzzer is
@@ -499,7 +531,7 @@ and icon, and the `<link rel="icon">` on both pages.
 
 Everything it needs comes off the config page or the Signal K tree. The name is
 `vessels.self`. The address is derived from the repository (`<owner>.github.io`,
-or `<owner>.github.io/<name>/` for a project site) unless `site.overrideUrl` is
+or `<owner>.github.io/<name>/` for a project site) unless `overrides.overrideSiteUrl` is
 ticked for a custom domain.
 
 The logo and the icon are two separate file pickers, `site.logo` and
@@ -581,10 +613,20 @@ only rewritten when its content changes.
 
 ### Tide station override
 
-The tide and 48-hour conditions panels use the boat's position when there is
-a live GPS fix. Before there is one, they use `site.tideStationOverride` — a
-NOAA station ID, e.g. `9414290` — and if that is not set either they say so
-and wait.
+The tide and 48-hour conditions panels use the NOAA station nearest the
+boat's position. Tick **Override tide station** and type a station ID, e.g.
+`9414290`, and the tide curves use that station instead, fix or no fix — the
+nearest station by straight-line distance is sometimes across a headland from
+the water the boat is in. Wind, swell and temperature still come from the
+boat's own position when there is one. With neither a fix nor an override the
+panels say so and wait. The checkbox's note names the station the site would
+pick right now, and how far away it is.
+
+NOAA's timestamps are UTC with a space and no zone (`2026-09-22 20:00`). The
+tide chart used to hand that string straight to `new Date()`, which Safari
+reads as Invalid Date — every point dropped, a heading over an empty chart on
+an iPhone — and Chrome reads as local time, shifting the curve by the UTC
+offset. Both panels now parse it as UTC explicitly.
 
 A station ID rather than a position on purpose: this setting replaced a
 "default position" lat/lon, captured from `navigation.position` by a checkbox
@@ -711,8 +753,9 @@ and nothing else this plugin does ever takes anything away.
 |---|---|
 | *Remove voyages older than N days* | Keeps the last N local days |
 | *Remove all* | Keeps today only |
+| *Remove* on a voyage's row | That one day, which then stays removed |
 
-Both name the days before they do anything: the page asks the plugin what
+All three name the days before they do anything: the page asks the plugin what
 would go, shows you the count and the range in a confirmation panel, and
 removes nothing until you press *Yes, remove them*. The confirmation is part
 of the page rather than a browser dialog, because Signal K serves webapps
@@ -720,7 +763,9 @@ inside a sandboxed iframe where `window.confirm` is ignored. What is removed is 
 `tracks_index.json`, in one commit — the data is still in the repository's git
 history; what goes is the copy the site serves. Today is never removed: the
 position index still holds its points and the next cycle would write the file
-straight back.
+straight back. A day removed from its own row is remembered and never
+rebuilt, even while the 24-hour position index still holds some of it; a day
+removed in bulk can come back if its points are still in that window.
 
 Nothing prunes on a schedule. There is no retention setting for tracks, on
 purpose — a passage nobody meant to lose should not disappear because a number
@@ -737,13 +782,12 @@ safe: the second press writes nothing. The starter files and the maintenance
 log do not count as documents of yours — logging an oil change before you press
 the button does not lock the starter set out.
 
-*Maintenance entry* is a form — date, system, engine hours, who, and free
-Markdown notes — that inserts one dated section at the top of
+*Maintenance entry* is a form — date, system, who, and free Markdown
+notes — that inserts one dated section at the top of
 `docs/maintenance/log.md`, creating the file on the first entry. It is an
 insert, not a rewrite: what is already in the file is carried across byte for
 byte, and the published copy is read back on every entry, so a note added from
-a phone between entries survives. The date defaults to the boat's local day and
-the engine hours to `propulsion.*.runTime` off the tree, both editable.
+a phone between entries survives. The date defaults to the boat's local day.
 
 ## Ship's docs
 
@@ -912,6 +956,7 @@ src/
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv, from the server or the config
   timezones.ts      The IANA list behind the timezone dropdown
+  tideStations.ts   The station the site would pick, for the config page's note
   frontend.ts       Reading site/, templating constants.js
   github.ts         Git Data API client, publish-with-retry
   manifest.ts       Ownership allowlist

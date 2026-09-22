@@ -15,16 +15,20 @@ import path from 'node:path';
 import {
   buildConfigSchema,
   pagesUrl,
+  readOverrides,
   resolveOwnerAndName,
   configUiSchema,
   resolveConfig,
+  type NearestTideStation,
   type PluginConfig,
   type PolarStatus,
+  type SchemaContext,
 } from './config';
+import { loadTideStations, nearestTideStation } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
-import { HistoryReader } from './history';
+import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { activePolarId, readActivePolar } from './polars';
@@ -164,6 +168,13 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   let notifications: NotificationRecorder | null = null;
   // Unsubscribe for the navigation.state watch, or undefined when not watching.
   let stateUnsubscribe: (() => void) | undefined;
+  // Whether the last cycle reached its branch, for the config page. Null until
+  // a cycle has run.
+  let branchStatus: SchemaContext['branch'] = null;
+  // The history providers the server had registered when last asked.
+  let historyProviders: SchemaContext['historyProviders'] = null;
+  // The site's tide station list, read the first time the config page wants it.
+  let tideStations: ReturnType<typeof loadTideStations> | undefined;
 
   /**
    * What to tell the config page about the polar table.
@@ -217,21 +228,56 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
     } catch {
       // Nothing saved yet: the notes stay quiet until the owner is set.
     }
+    const savedOverrides = readOverrides(saved ?? {});
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually
     // resolve against before anyone ticks the override.
     const repo = resolveOwnerAndName(
       owner,
-      savedGithub.name,
-      savedGithub.overrideName === true,
+      savedOverrides.repository,
+      savedOverrides.overrideRepository === true,
     );
+    // Asked again every time the page opens, for the next time it opens: the
+    // form is built synchronously, and a provider plugin that was enabled a
+    // minute ago should not need a server restart to appear.
+    void refreshHistoryProviders();
     return {
       repoName: owner ? `${owner}.github.io` : '',
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
+      branch: branchStatus,
       polar: polarNote(),
       polarCsv,
+      tideStation: tideStationNote(),
+      historyProviders,
       saved,
     };
+  };
+
+  /**
+   * The tide station the site would pick from the boat's own position.
+   *
+   * The raw position, not the redacted one: this is the boat's own config
+   * page, and nothing here leaves it.
+   */
+  const tideStationNote = (): NearestTideStation | null => {
+    try {
+      const position = readSelfTree(app)?.navigation?.position?.value;
+      const lat = Number(position?.latitude);
+      const lon = Number(position?.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      tideStations ??= loadTideStations(path.join(__dirname, '..', 'site'));
+      return nearestTideStation(tideStations, lat, lon);
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshHistoryProviders = async (): Promise<void> => {
+    try {
+      historyProviders = await listHistoryProviders(app);
+    } catch {
+      // Not knowing the list costs the dropdown its entries, nothing else.
+    }
   };
 
   const plugin: TrackerPlugin = {
@@ -346,7 +392,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       // is what this plugin did before.
       recorder = new PositionRecorder({
         app,
-        detailMetres: config.track.detailMetres,
+        detailMeters: config.track.detailMeters,
         maxIntervalSeconds: config.interval.stationary,
         log: (message) => app.debug(message),
       });
@@ -538,6 +584,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // A cycle that got as far as deciding there was nothing to publish
           // reached GitHub and read HEAD, so it counts as working.
           applyAlarm(alarm.recordSuccess());
+          branchStatus = { name: config.github.branch, ok: true };
         } catch (error: any) {
           // One bad cycle is a skipped update, not a dead plugin: a 502 from
           // GitHub, a truncated body or a wedged hotspot all retry next tick.
@@ -551,7 +598,17 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
           );
           applyAlarm(alarm.recordFailure(new Date(), message));
+          // Only a GitHub answer says anything about the branch; a dropped
+          // hotspot leaves whatever the last cycle found.
+          if (error?.status) {
+            branchStatus = {
+              name: config.github.branch,
+              ok: false,
+              detail: `HTTP ${error.status}`,
+            };
+          }
         }
+        void refreshHistoryProviders();
         schedule(seconds);
       };
 
@@ -609,6 +666,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         log: (message) => app.debug(message),
       };
 
+      void refreshHistoryProviders();
       void (async () => {
         try {
           await publisher.seed();

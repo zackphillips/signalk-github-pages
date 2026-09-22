@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { crossTrackMetres, PositionRecorder, TrackDecimator } from '../src/track';
+import { crossTrackMeters, PositionRecorder, TrackDecimator } from '../src/track';
 import type { PositionFix } from '../src/snapshot';
 
 const START = Date.parse('2026-03-01T18:00:00Z');
@@ -13,26 +13,26 @@ const at = (seconds: number, latitude: number, longitude: number): PositionFix =
   courseOverGroundTrue: 0,
 });
 
-/** Metres north/east of a reference point, as degrees. */
-const METRE = 1 / 111_320;
-const north = (metres: number) => 37.8 + metres * METRE;
-const east = (metres: number) => -122.4 + (metres * METRE) / Math.cos((37.8 * Math.PI) / 180);
+/** Meters north/east of a reference point, as degrees. */
+const METER = 1 / 111_320;
+const north = (meters: number) => 37.8 + meters * METER;
+const east = (meters: number) => -122.4 + (meters * METER) / Math.cos((37.8 * Math.PI) / 180);
 
 const feed = (decimator: TrackDecimator, fixes: PositionFix[]): PositionFix[] =>
   fixes.flatMap((fix) => decimator.add(fix));
 
-describe('crossTrackMetres', () => {
+describe('crossTrackMeters', () => {
   it('measures the perpendicular offset from the line', () => {
     const a = { latitude: north(0), longitude: east(0) };
     const b = { latitude: north(0), longitude: east(1000) };
     const off = { latitude: north(50), longitude: east(500) };
-    expect(crossTrackMetres(a, b, off)).toBeCloseTo(50, 0);
+    expect(crossTrackMeters(a, b, off)).toBeCloseTo(50, 0);
   });
 
   it('is zero for a point on the line', () => {
     const a = { latitude: north(0), longitude: east(0) };
     const b = { latitude: north(0), longitude: east(1000) };
-    expect(crossTrackMetres(a, b, { latitude: north(0), longitude: east(400) })).toBeCloseTo(0, 1);
+    expect(crossTrackMeters(a, b, { latitude: north(0), longitude: east(400) })).toBeCloseTo(0, 1);
   });
 
   it('measures to the nearer end for a point beyond the segment', () => {
@@ -41,17 +41,17 @@ describe('crossTrackMetres', () => {
     const a = { latitude: north(0), longitude: east(0) };
     const b = { latitude: north(0), longitude: east(100) };
     const beyond = { latitude: north(0), longitude: east(400) };
-    expect(crossTrackMetres(a, b, beyond)).toBeCloseTo(300, 0);
+    expect(crossTrackMeters(a, b, beyond)).toBeCloseTo(300, 0);
   });
 
   it('handles a boat that has not moved', () => {
     const a = { latitude: north(0), longitude: east(0) };
-    expect(crossTrackMetres(a, a, { latitude: north(30), longitude: east(0) })).toBeCloseTo(30, 0);
+    expect(crossTrackMeters(a, a, { latitude: north(30), longitude: east(0) })).toBeCloseTo(30, 0);
   });
 });
 
 describe('TrackDecimator', () => {
-  const options = { detailMetres: 15, maxIntervalSeconds: 120 };
+  const options = { detailMeters: 15, maxIntervalSeconds: 120 };
 
   it('keeps the first fix', () => {
     const decimator = new TrackDecimator(options);
@@ -77,8 +77,8 @@ describe('TrackDecimator', () => {
     // The corner is recorded, not smoothed into a diagonal.
     const atCorner = kept.some(
       (fix) =>
-        Math.abs(fix.longitude - east(290)) < 20 * METRE &&
-        Math.abs(fix.latitude - north(0)) < 20 * METRE,
+        Math.abs(fix.longitude - east(290)) < 20 * METER &&
+        Math.abs(fix.latitude - north(0)) < 20 * METER,
     );
     expect(atCorner).toBe(true);
     // ...and it does not cost many points to say so.
@@ -120,7 +120,7 @@ describe('TrackDecimator', () => {
     // boat sitting still.
     let interval = 3600;
     const decimator = new TrackDecimator({
-      detailMetres: 15,
+      detailMeters: 15,
       maxIntervalSeconds: () => interval,
     });
     decimator.add(at(0, north(0), east(0)));
@@ -133,7 +133,7 @@ describe('TrackDecimator', () => {
     // The window cap used to commit the oldest candidate and drop one, which
     // left the window sitting at the cap so every subsequent fix committed
     // too. A night at anchor came out as 42601 points of 43200.
-    const decimator = new TrackDecimator({ detailMetres: 15, maxIntervalSeconds: 3600 });
+    const decimator = new TrackDecimator({ detailMeters: 15, maxIntervalSeconds: 3600 });
     const kept = feed(
       decimator,
       // 12 hours at 1 Hz swinging on a 30 m scope: the shape is real, the
@@ -193,7 +193,7 @@ describe('PositionRecorder', () => {
         'navigation.speedOverGround': speed.stream,
         'navigation.headingTrue': heading.stream,
       }) as never,
-      detailMetres: 15,
+      detailMeters: 15,
       maxIntervalSeconds: 120,
       log: () => {},
     });
@@ -222,7 +222,7 @@ describe('PositionRecorder', () => {
         'navigation.speedOverGround': fakeStream().stream,
         'navigation.headingTrue': fakeStream().stream,
       }) as never,
-      detailMetres: 15,
+      detailMeters: 15,
       maxIntervalSeconds: 120,
       log: () => {},
     });
@@ -237,7 +237,7 @@ describe('PositionRecorder', () => {
     const messages: string[] = [];
     const recorder = new PositionRecorder({
       app: {} as never,
-      detailMetres: 15,
+      detailMeters: 15,
       maxIntervalSeconds: 120,
       log: (message) => messages.push(message),
     });
@@ -256,7 +256,7 @@ describe('PositionRecorder', () => {
         'navigation.speedOverGround': speed.stream,
         'navigation.headingTrue': heading.stream,
       }) as never,
-      detailMetres: 15,
+      detailMeters: 15,
       maxIntervalSeconds: 120,
       log: () => {},
     });

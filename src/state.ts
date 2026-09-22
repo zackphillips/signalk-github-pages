@@ -32,6 +32,19 @@ export interface PersistedState {
    * so a failed publish retries the removal rather than skipping it.
    */
   retired?: string[];
+  /**
+   * The privacy zones every published track was last checked against, as
+   * `privacyZoneFingerprint` renders them. A cycle whose zones differ checks
+   * every GPX file in the repository again. Recorded only after the commit
+   * carrying the trims landed.
+   */
+  privacyAudit?: string;
+  /**
+   * Days removed one at a time from the console. Never rebuilt from the
+   * position index, even while it still holds some of their points: the
+   * person asked for that day to go, not for it to come back truncated.
+   */
+  removedDays?: string[];
 }
 
 export class StateStore {

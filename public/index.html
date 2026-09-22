@@ -79,6 +79,7 @@
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
   button.danger { border-color: var(--danger); color: var(--danger); }
+  button.small { padding: 2px 9px; font-size: 13px; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   input[type=number] { width: 5.5em; }
   input, select, textarea {
@@ -161,9 +162,9 @@
     <p class="note" id="prune-note">
       Removing a voyage deletes its GPX file from the repository and its row in
       the track index. It stays in the repository's git history; what goes is
-      the copy the site serves. Today's track is never removed — the position
-      index still holds its points and the next cycle would write it straight
-      back.
+      the copy the site serves. Remove on a row takes that one day and it stays
+      removed. Today's track is never removed — the position index still holds
+      its points and the next cycle would write it straight back.
     </p>
     <div class="confirm" id="prune-confirm" hidden>
       <p class="confirm-question" id="prune-confirm-text"></p>
@@ -175,8 +176,8 @@
     <p class="note bad" id="prune-result" hidden></p>
     <div class="scroll">
       <table>
-        <thead><tr><th>Day</th><th>Distance</th><th>Hours</th><th>Max</th><th>Points</th></tr></thead>
-        <tbody id="tracks"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        <thead><tr><th>Day</th><th>Distance</th><th>Hours</th><th>Max</th><th>Points</th><th></th></tr></thead>
+        <tbody id="tracks"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -229,10 +230,6 @@
           </datalist>
         </div>
         <div class="field">
-          <label for="maint-hours">Engine hours</label>
-          <input type="number" id="maint-hours" step="0.1" min="0" style="width:100%">
-        </div>
-        <div class="field">
           <label for="maint-by">Logged by</label>
           <input type="text" id="maint-by">
         </div>
@@ -248,7 +245,6 @@
       </div>
       <div class="row">
         <button type="submit" id="maint-submit">Add entry</button>
-        <span class="note" id="maint-hours-hint"></span>
       </div>
     </form>
     <p class="note" id="maint-result" hidden></p>
@@ -348,7 +344,7 @@ function renderTracks(tracks) {
   if (!tracks.length) {
     var row = document.createElement('tr');
     var cell = document.createElement('td');
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.className = 'empty';
     cell.textContent = 'No voyages published yet.';
     row.appendChild(cell);
@@ -368,6 +364,17 @@ function renderTracks(tracks) {
       cell.textContent = value;
       row.appendChild(cell);
     });
+    // One day at a time, through the same named confirmation as the bulk
+    // buttons: the server plans it, the page shows the day, then it goes.
+    var action = document.createElement('td');
+    var remove = document.createElement('button');
+    remove.className = 'danger small track-remove';
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', 'Remove the voyage of ' + track.date);
+    remove.disabled = busy;
+    remove.addEventListener('click', function () { prune(track.date); });
+    action.appendChild(remove);
+    row.appendChild(action);
     body.appendChild(row);
   });
 }
@@ -383,6 +390,9 @@ function setBusy(value) {
   el('publish-btn').disabled = value;
   el('publish-site-btn').disabled = value;
   el('refresh-btn').disabled = value;
+  document.querySelectorAll('.track-remove').forEach(function (button) {
+    button.disabled = value;
+  });
 }
 
 async function refresh() {
@@ -508,7 +518,7 @@ el('publish-site-btn').addEventListener('click', function () {
 // it leads with what is already there: how many documents exist, and whether
 // the maintenance log has been started. Initializing is offered only while
 // docs/ is genuinely empty — the plugin refuses it otherwise, and a button
-// that looks available but always fails is worse than one that is greyed out.
+// that looks available but always fails is worse than one that is grayed out.
 
 var docsState = null;
 
@@ -551,17 +561,6 @@ function renderDocs(data) {
   // a laptop still on the last port's timezone would otherwise file the work
   // under the wrong date.
   if (!el('maint-date').value) el('maint-date').value = data.today;
-
-  var hours = (data.engineHours || [])[0];
-  var hint = el('maint-hours-hint');
-  if (hours) {
-    if (!el('maint-hours').value) el('maint-hours').value = hours.hours;
-    hint.textContent =
-      'Signal K reports ' + hours.hours.toFixed(1) + ' h on ' + hours.engine +
-      ((data.engineHours.length > 1) ? ' (' + data.engineHours.length + ' engines)' : '') + '.';
-  } else {
-    hint.textContent = 'No propulsion.*.runTime on this server — type the hours if you track them.';
-  }
 }
 
 async function refreshDocs() {
@@ -625,7 +624,6 @@ el('maint-form').addEventListener('submit', async function (event) {
     date: el('maint-date').value,
     title: el('maint-title').value,
     system: el('maint-system').value,
-    engineHours: el('maint-hours').value,
     by: el('maint-by').value,
     notes: el('maint-notes').value,
   };

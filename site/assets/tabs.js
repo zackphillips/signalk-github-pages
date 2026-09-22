@@ -72,7 +72,7 @@
     window.dispatchEvent(new Event('resize'));
   }
 
-  // app.js needs this to honour "Show on main map" from a voyage detail card.
+  // app.js needs this to honor "Show on main map" from a voyage detail card.
   window.activateTrackerTab = activateTab;
 
   if (tabBar) {

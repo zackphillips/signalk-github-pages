@@ -7,13 +7,15 @@
  * in the published repo is an *output* of this file, written for the frontend
  * to read.
  *
- * Four settings are derived rather than typed: the repository name from the
- * owner, the site address from the repository, the track timezone from the
- * server, and the polar table from the Polar Management plugin. Each one has
- * an "Override" checkbox, and the typed field appears only once that box is
- * ticked — see `shownWhenTicked`. What the plugin derives is written into the
- * checkbox's own description every time the page is opened, so it is current
- * rather than whatever was derived the day the config was last saved.
+ * Six settings are derived rather than typed: the repository name from the
+ * owner, the branch, the site address from the repository, the track timezone
+ * from the server, the polar table from the Polar Management plugin, and the
+ * tide station from the boat's position. Each one has an "Override" checkbox
+ * in the Overrides section, and the typed field appears directly beneath it
+ * only once that box is ticked — see `shownWhenTicked`. Whether the plugin
+ * found a value, and what it was, is written into the checkbox's own
+ * description every time the page is opened, so it is current rather than
+ * whatever was derived the day the config was last saved.
  *
  * Defaults are the values this tracker has run on for years on a Raspberry
  * Pi. What is *not* defaulted is anything that belongs to one
@@ -41,7 +43,7 @@ export interface PrivacyZone {
 /** A fully resolved configuration: every required value present. */
 export interface PluginConfig {
   github: {
-    /** User or organisation. */
+    /** User or organization. */
     owner: string;
     /** Repository name, without the owner. */
     name: string;
@@ -62,6 +64,7 @@ export interface PluginConfig {
     paths: string[];
     entries: number;
   };
+  /** How long raw positions stay in `positions_index.json`. Not configurable. */
   positionRetentionHours: number;
   staleMaxAgeMinutes: number;
   /**
@@ -86,7 +89,7 @@ export interface PluginConfig {
     table: string;
   };
   /** How much detail the recorded track keeps. See `track.ts`. */
-  track: { detailMetres: number };
+  track: { detailMeters: number };
   /**
    * Minutes of continuous publish failure before raising a Signal K
    * notification. Zero turns it off. See `alarm.ts`.
@@ -129,9 +132,10 @@ export interface PluginConfig {
     /** Extra buttons in the site's link row, in the order they appear. */
     customLinks: CustomLink[];
     /**
-     * The NOAA tide station the site queries before it has a GPS fix. Empty
-     * means it waits for one — the tide and forecast panels say so rather
-     * than showing some other coast's numbers.
+     * The NOAA tide station the site queries instead of the one nearest the
+     * boat. Empty means nearest-by-distance, and with no GPS fix either the
+     * tide and forecast panels say so rather than showing some other coast's
+     * numbers.
      *
      * This replaced a "default position" lat/lon, captured from the boat's
      * own `navigation.position` by a checkbox that read the self tree
@@ -215,15 +219,15 @@ export const DEFAULT_INSTRUMENT_LOG_HOURS = 1;
  */
 const INSTRUMENT_LOG_MAX_ENTRIES = 360;
 /**
- * Default track detail, in metres.
+ * Default track detail, in meters.
  *
- * A fix is dropped when the line through its neighbours already passes
+ * A fix is dropped when the line through its neighbors already passes
  * within this of it. 15 m is finer than a GPS fix is repeatable, so the
  * track follows every tack and gybe, while a straight leg costs almost
  * nothing — the whole day's GPX is re-uploaded on every cycle, so points on
  * a straight line are paid for again every two minutes until midnight.
  */
-export const DEFAULT_TRACK_DETAIL_METRES = 15;
+export const DEFAULT_TRACK_DETAIL_METERS = 15;
 /**
  * Minutes of continuous failure before the plugin raises a notification.
  *
@@ -232,7 +236,11 @@ export const DEFAULT_TRACK_DETAIL_METRES = 15;
  * short enough to hear about an expired token on the same passage it expired.
  */
 export const DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES = 30;
-/** How long raw positions stay in `positions_index.json`. */
+/**
+ * How long raw positions stay in `positions_index.json`: the map's 24-hour
+ * track. Not on the config page — past days survive as GPX regardless, and a
+ * longer window only makes a file that is uploaded on every cycle bigger.
+ */
 export const DEFAULT_POSITION_RETENTION_HOURS = 24;
 /** Values older than this are dropped from the published snapshot. */
 export const DEFAULT_STALE_MAX_AGE_MINUTES = 60;
@@ -282,15 +290,12 @@ const TIMEZONES = availableTimezones();
  *
  * Only what the token will not work without. "Contents: read and write" is the
  * permission people miss — a token with only Metadata reads fine and fails the
- * first commit with a 403 — and an organisation-owned repository needs an
- * owner to approve the token, which is invisible until a publish 404s on a
- * repository that plainly exists.
+ * first commit with a 403.
  */
 export const PAT_GUIDANCE =
   'GitHub > Settings > Developer settings > Personal access tokens > Fine-grained ' +
   'tokens. Repository access: Only select repositories, this one. Repository ' +
-  'permissions: Contents "Read and write". An organisation-owned repository also ' +
-  'needs an organisation owner to approve the token.';
+  'permissions: Contents "Read and write".';
 
 /**
  * The polar override box's help text.
@@ -313,16 +318,35 @@ export interface PolarStatus {
   problems: string[];
 }
 
+/** The NOAA station nearest the boat, for the tide override's note. */
+export interface NearestTideStation {
+  id: string;
+  name: string;
+  distanceNm: number;
+}
+
 /** What the plugin knows that the form does not, at the moment it is opened. */
 export interface SchemaContext {
   /** `<owner>.github.io`, derived from the saved owner. */
   repoName?: string;
   /** The Pages URL, derived from the saved owner and repository name. */
   siteUrl?: string;
+  /**
+   * Whether the last cycle reached the branch it publishes to. Null before
+   * any cycle has run, which the page says rather than guessing.
+   */
+  branch?: { name: string; ok: boolean; detail?: string } | null;
   /** What the last cycle resolved for the polar table. */
   polar?: PolarStatus | null;
   /** The active polar rendered as CSV, to start an override off from. */
   polarCsv?: string;
+  /** The station the site would pick from the boat's position right now. */
+  tideStation?: NearestTideStation | null;
+  /**
+   * History providers registered on the server, for the provider dropdown.
+   * Null when the server cannot be asked (no History API).
+   */
+  historyProviders?: { ids: string[]; defaultId?: string } | null;
   /**
    * The saved configuration, for settings that have moved between sections.
    *
@@ -333,6 +357,51 @@ export interface SchemaContext {
    * running on.
    */
   saved?: Record<string, any>;
+}
+
+/** The marks the Overrides section puts in front of each derived value. */
+const FOUND = '✅';
+const NOT_FOUND = '⚠️';
+const NOT_CHECKED = '⏳';
+
+/**
+ * The overrides as a config written before the Overrides section stored them,
+ * one flag and one value per setting, each in the section it overrode.
+ *
+ * Read by `resolveConfig` whenever the new section has not been saved yet, and
+ * by `carryForwardMovedSettings` so the page opens with those boxes ticked.
+ */
+function legacyOverrides(saved: Record<string, any>): Record<string, unknown> {
+  const github = saved.github ?? {};
+  const site = saved.site ?? {};
+  const timezone = saved.timezone ?? {};
+  const polars = saved.polars ?? {};
+  const branch = str(github.branch);
+  const tide = str(site.tideStationOverride);
+  return {
+    overrideRepository: bool(github.overrideName),
+    repository: str(github.name),
+    overrideBranch: branch !== '' && branch !== DEFAULT_BRANCH,
+    branch: branch && branch !== DEFAULT_BRANCH ? branch : '',
+    overrideSiteUrl: bool(site.overrideUrl),
+    siteUrl: str(site.url),
+    overrideTimezone: bool(timezone.override),
+    timezone: str(timezone.zone),
+    overridePolar: bool(polars.override),
+    polar: typeof polars.table === 'string' ? polars.table : '',
+    overrideTideStation: tide !== '',
+    tideStation: tide,
+  };
+}
+
+/**
+ * The overrides as `resolveConfig` reads them: the Overrides section once it
+ * has been saved, and the old per-section fields until then.
+ */
+export function readOverrides(input: Record<string, any>): Record<string, unknown> {
+  const overrides = input.overrides;
+  if (overrides && typeof overrides === 'object') return overrides;
+  return legacyOverrides(input);
 }
 
 /**
@@ -353,15 +422,15 @@ function carryForwardMovedSettings(
   const notifications = saved.notifications ?? {};
   const track = saved.track ?? {};
 
+  if (num(track.detailMeters) === null && num(track.detailMetres) !== null) {
+    properties.track.properties.detailMeters.default = num(track.detailMetres);
+  }
   if (zeroOrMore(instrumentLog.hours) === null) {
     const hours = resolveInstrumentLogHours(instrumentLog, history);
     properties.instrumentLog.properties.hours.default = hours;
     if (!str(instrumentLog.providerId) && str(history.providerId)) {
       properties.instrumentLog.properties.providerId.default = str(history.providerId);
     }
-  }
-  if (num(track.positionRetentionHours) === null && num(saved.positionRetentionHours) !== null) {
-    properties.track.properties.positionRetentionHours.default = num(saved.positionRetentionHours);
   }
   if (notifications.publish === undefined && saved.publishNotifications !== undefined) {
     properties.notifications.properties.publish.default = saved.publishNotifications !== false;
@@ -379,31 +448,44 @@ function carryForwardMovedSettings(
       saved.notifyAfterFailureMinutes,
     );
   }
+
+  // The overrides used to sit in the section of the setting they overrode.
+  // A config that has never saved the Overrides section opens with the boxes
+  // it had ticked still ticked, and the values it had typed behind them.
+  if (saved.overrides === undefined) {
+    const legacy = legacyOverrides(saved);
+    for (const { flag, field } of OVERRIDES) {
+      if (legacy[flag] !== true) continue;
+      properties.overrides.properties[flag].default = true;
+      if (legacy[field]) overrideField(schema, flag, field).default = legacy[field] as string;
+    }
+  }
 }
 
 /**
- * The typed field a derived setting's "Override" checkbox reveals, for
- * `buildConfigSchema` to fill in.
+ * The typed field an "Override" checkbox reveals, for `buildConfigSchema` to
+ * fill in.
  *
  * It lives in the ticked branch of a `dependencies` block, which is past
  * where the schema's own types reach; the cast is to that one field.
  */
 function overrideField(
   schema: typeof configSchema,
-  section: keyof typeof configSchema.properties,
   flag: string,
   field: string,
 ): { description?: string; default?: string } {
-  return (schema.properties as any)[section].dependencies[flag].oneOf[1].properties[field];
+  return (schema.properties.overrides.dependencies as any)[flag].oneOf[1].properties[field];
 }
 
 /** The "Override" checkbox itself, whose description carries what is derived. */
-function overrideCheckbox(
-  schema: typeof configSchema,
-  section: keyof typeof configSchema.properties,
-  flag: string,
-): { description: string } {
-  return (schema.properties as any)[section].properties[flag];
+function overrideCheckbox(schema: typeof configSchema, flag: string): { description: string } {
+  return (schema.properties.overrides.properties as any)[flag];
+}
+
+/** Put a found / not-found line in front of a checkbox's own description. */
+function annotate(schema: typeof configSchema, flag: string, note: string): void {
+  const checkbox = overrideCheckbox(schema, flag);
+  checkbox.description = `${note} ${checkbox.description}`;
 }
 
 /**
@@ -422,35 +504,107 @@ function overrideCheckbox(
  * `default` still set here is the polar CSV, and it sits in the branch that
  * exists only while Override polar is ticked: a starting point for editing,
  * saved only once the override is genuinely on.
+ *
+ * Every override opens with a mark saying whether the plugin found the value
+ * it would otherwise use: a check when it did, a warning when it did not, an
+ * hourglass when no cycle has run to find out.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, polar, polarCsv, saved } = context;
+  const { repoName, siteUrl, branch, polar, polarCsv, tideStation, historyProviders, saved } =
+    context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
   if (saved) carryForwardMovedSettings(schema, saved);
 
-  if (repoName) {
-    const checkbox = overrideCheckbox(schema, 'github', 'overrideName');
-    checkbox.description = `${checkbox.description} Publishing to ${repoName}.`;
-  }
-  if (siteUrl) {
-    const checkbox = overrideCheckbox(schema, 'site', 'overrideUrl');
-    checkbox.description = `${checkbox.description} The site is served at ${siteUrl}.`;
-  }
+  annotate(
+    schema,
+    'overrideRepository',
+    repoName
+      ? `${FOUND} Derived: publishing to ${repoName}.`
+      : `${NOT_FOUND} Not derived: set the repository owner above.`,
+  );
+  annotate(
+    schema,
+    'overrideBranch',
+    !branch
+      ? `${NOT_CHECKED} Not checked yet: no cycle has run.`
+      : branch.ok
+        ? `${FOUND} Found: the last cycle published to ${branch.name}.`
+        : `${NOT_FOUND} Not found: the last cycle could not publish to ${branch.name}` +
+          `${branch.detail ? ` (${branch.detail})` : ''}.`,
+  );
+  annotate(
+    schema,
+    'overrideSiteUrl',
+    siteUrl
+      ? `${FOUND} Derived: the site is served at ${siteUrl}.`
+      : `${NOT_FOUND} Not derived: set the repository owner above.`,
+  );
+  annotate(
+    schema,
+    'overrideTimezone',
+    `${FOUND} Found: this server is set to ${serverTimezone()}.`,
+  );
 
-  if (polar) {
-    const note =
-      polar.source === 'none'
-        ? `Publishing no polar: ${polar.summary}.`
-        : `Publishing ${polar.summary}.`;
+  if (!polar) {
+    annotate(schema, 'overridePolar', `${NOT_CHECKED} Not checked yet: no cycle has run.`);
+  } else {
     const problems = polar.problems.length ? ` ${polar.problems.join(' ')}` : '';
-    const checkbox = overrideCheckbox(schema, 'polars', 'override');
-    checkbox.description = `${note}${problems} ${checkbox.description}`;
+    annotate(
+      schema,
+      'overridePolar',
+      polar.source === 'none'
+        ? `${NOT_FOUND} Not found: publishing no polar, ${polar.summary}.${problems}`
+        : `${FOUND} Found: publishing ${polar.summary}.${problems}`,
+    );
   }
-  if (polarCsv) overrideField(schema, 'polars', 'override', 'table').default = polarCsv;
+  if (polarCsv) overrideField(schema, 'overridePolar', 'polar').default = polarCsv;
+
+  annotate(
+    schema,
+    'overrideTideStation',
+    tideStation
+      ? `${FOUND} Found: ${tideStation.name} (station ${tideStation.id}), ` +
+          `${tideStation.distanceNm.toFixed(1)} NM from the boat.`
+      : `${NOT_FOUND} Not found: the boat has no GPS position, or no listed station is near it.`,
+  );
+
+  // The provider dropdown lists what is registered right now. The saved
+  // choice stays selectable even when its plugin is disabled: an enum that no
+  // longer holds the saved value fails validation, and the admin UI then
+  // refuses to save anything until someone works out why.
+  const provider = (schema.properties.instrumentLog.properties as any).providerId;
+  const ids = historyProviders?.ids ?? [];
+  const current = str(saved?.instrumentLog?.providerId) || str(saved?.history?.providerId);
+  const choices = current && !ids.includes(current) ? [...ids, current] : [...ids];
+  provider.enum = ['', ...choices];
+  provider.enumNames = [
+    historyProviders?.defaultId
+      ? `Server default (${historyProviders.defaultId})`
+      : historyProviders
+        ? 'Server default (none registered)'
+        : 'Server default',
+    ...choices.map((id) => (ids.includes(id) ? id : `${id} (not registered)`)),
+  ];
 
   return schema;
 }
+
+/**
+ * The derived settings, in the order the Overrides section shows them: each
+ * flag is the checkbox, each field the typed value it reveals.
+ */
+const OVERRIDES = [
+  { flag: 'overrideRepository', field: 'repository' },
+  { flag: 'overrideBranch', field: 'branch' },
+  { flag: 'overrideSiteUrl', field: 'siteUrl' },
+  { flag: 'overrideTimezone', field: 'timezone' },
+  { flag: 'overridePolar', field: 'polar' },
+  { flag: 'overrideTideStation', field: 'tideStation' },
+] as const;
+
+/** Branch GitHub Pages publishes from unless the override says otherwise. */
+export const DEFAULT_BRANCH = 'main';
 
 /**
  * A derived field's "Override" checkbox, as a JSON Schema dependency: the
@@ -458,8 +612,8 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
  *
  * `dependencies` rather than `if`/`then` because every react-json-schema-form
  * the Signal K admin UI has shipped understands one, and the field is added by
- * the branch rather than greyed out in `properties` because that is the part
- * every version renders the same way. The greyed-out version this replaced had
+ * the branch rather than grayed out in `properties` because that is the part
+ * every version renders the same way. The grayed-out version this replaced had
  * a worse problem than looking inert on an old admin UI: the box was filled
  * from a JSON Schema `default`, the form submits its defaults, and so the
  * derived value of the day was written into the saved config and shown back
@@ -470,6 +624,11 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
  * A field that is not in the schema is still not dropped from the config: the
  * admin UI leaves form data it cannot see alone, so a typed polar table
  * survives unticking the box and comes back when it is ticked again.
+ *
+ * The form appends a dependency's field after every property of the object,
+ * so without help all six typed boxes would pile up at the bottom of the
+ * Overrides section under the last checkbox. `ui:order` in `configUiSchema` is
+ * what puts each one directly beneath its own box.
  */
 function shownWhenTicked(flag: string, field: string, definition: object) {
   return {
@@ -494,32 +653,15 @@ export const configSchema = {
     github: {
       type: 'object',
       title: 'GitHub repository',
+      description:
+        'The repository name, branch and site address follow from the owner; each ' +
+        'can be changed under Overrides.',
       required: ['owner', 'token'],
-      dependencies: shownWhenTicked('overrideName', 'name', {
-        type: 'string',
-        title: 'Repository name',
-        description:
-          'The repository to publish to, without the owner. A project site — e.g. ' +
-          '"tracker", served at /tracker/ — goes here.',
-        default: '',
-      }),
       properties: {
         owner: {
           type: 'string',
           title: 'Repository owner',
-          description: 'Your GitHub username, or the organisation that owns the repository.',
-        },
-        overrideName: {
-          type: 'boolean',
-          title: 'Override repository name',
-          description: 'Publish to a repository other than <owner>.github.io.',
-          default: false,
-        },
-        branch: {
-          type: 'string',
-          title: 'Branch',
-          description: 'Branch GitHub Pages publishes from.',
-          default: 'main',
+          description: 'Your GitHub username, or the organization that owns the repository.',
         },
         token: {
           type: 'string',
@@ -550,8 +692,10 @@ export const configSchema = {
       type: 'array',
       title: 'Privacy zones',
       description:
-        'Positions inside any of these circles are published as the zone centre ' +
-        'and left out of the GPX track. Empty means nothing is hidden.',
+        'Positions inside any of these circles are published as the zone center ' +
+        'and left out of the GPX tracks. Changing a zone rechecks every published ' +
+        'track on the next cycle and trims whatever falls inside it. Empty means ' +
+        'nothing is hidden.',
       items: {
         type: 'object',
         required: ['lat', 'lon', 'radius_m'],
@@ -559,30 +703,10 @@ export const configSchema = {
           name: { type: 'string', title: 'Name' },
           lat: { type: 'number', title: 'Latitude' },
           lon: { type: 'number', title: 'Longitude' },
-          radius_m: { type: 'number', title: 'Radius (metres)' },
+          radius_m: { type: 'number', title: 'Radius (meters)' },
         },
       },
       default: [],
-    },
-    timezone: {
-      type: 'object',
-      title: 'Track timezone',
-      description: `Calendar day GPX tracks are grouped by. This server is set to ${serverTimezone()}.`,
-      dependencies: shownWhenTicked('override', 'zone', {
-        type: 'string',
-        enum: ['UTC', ...TIMEZONES],
-        enumNames: ['UTC', ...TIMEZONES],
-        title: 'Timezone',
-        default: serverTimezone(),
-      }),
-      properties: {
-        override: {
-          type: 'boolean',
-          title: 'Override timezone',
-          description: "Group tracks by a zone other than the server's.",
-          default: false,
-        },
-      },
     },
     instrumentLog: {
       type: 'object',
@@ -606,17 +730,19 @@ export const configSchema = {
           type: 'number',
           title: 'History window (hours)',
           description:
-            'How far back the sparklines plot. Bucket width follows the window, so ' +
-            'the published file stays about the same size however long it is. Zero ' +
-            'publishes no log at all.',
+            'How far back the sparklines plot. The site offers 1, 3, 12 and 24 hour ' +
+            'views and marks any longer than this "not logged", so 24 makes all four ' +
+            'available. Bucket width follows the window, so the published file stays ' +
+            'about the same size however long it is. Zero publishes no log at all.',
           default: DEFAULT_INSTRUMENT_LOG_HOURS,
         },
         providerId: {
           type: 'string',
-          title: 'Provider plugin id',
+          title: 'History provider',
           description:
-            "Blank uses the server's default provider. Set a plugin id (e.g. " +
-            '"signalk-to-influxdb2") when more than one is registered.',
+            'The history providers registered on this server. The server default is ' +
+            'the one chosen in the server settings; pick another only when more than ' +
+            'one is registered.',
           default: '',
         },
       },
@@ -629,44 +755,18 @@ export const configSchema = {
         'shows them as unavailable rather than as current.',
       default: DEFAULT_STALE_MAX_AGE_MINUTES,
     },
-    polars: {
-      type: 'object',
-      title: 'Polar table',
-      dependencies: shownWhenTicked('override', 'table', {
-        type: 'string',
-        title: 'Polar table',
-        description: POLARS_FIELD_DESCRIPTION,
-        default: '',
-      }),
-      properties: {
-        override: {
-          type: 'boolean',
-          title: 'Override polar',
-          description: 'Publish a table typed here instead of the active polar.',
-          default: false,
-        },
-      },
-    },
     track: {
       type: 'object',
       title: 'Track',
       properties: {
-        detailMetres: {
+        detailMeters: {
           type: 'number',
-          title: 'Track detail (metres)',
+          title: 'Track detail (meters)',
           description:
             'A fix is kept when dropping it would move the drawn track by more than ' +
             'this, and at least once per publish cycle. Smaller follows a tack more ' +
             'closely and uploads more; larger is cheaper on a hotspot.',
-          default: DEFAULT_TRACK_DETAIL_METRES,
-        },
-        positionRetentionHours: {
-          type: 'number',
-          title: 'Position retention (hours)',
-          description:
-            'How long raw positions stay in positions_index.json — the map track. ' +
-            'Past days survive as GPX regardless.',
-          default: DEFAULT_POSITION_RETENTION_HOURS,
+          default: DEFAULT_TRACK_DETAIL_METERS,
         },
       },
     },
@@ -710,14 +810,6 @@ export const configSchema = {
       description:
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
-      dependencies: shownWhenTicked('overrideUrl', 'url', {
-        type: 'string',
-        title: 'Site address',
-        description:
-          'Where the published site is served, e.g. https://example.com/. It is what ' +
-          'a link preview in a chat app resolves images and titles against.',
-        default: '',
-      }),
       properties: {
         logo: {
           type: 'string',
@@ -745,12 +837,6 @@ export const configSchema = {
             'WebP or SVG. Empty falls back to a generic tracker icon.',
           default: '',
         },
-        overrideUrl: {
-          type: 'boolean',
-          title: 'Override site address',
-          description: 'Publish under a custom domain rather than the GitHub Pages URL.',
-          default: false,
-        },
         customLinks: {
           type: 'array',
           title: 'Custom buttons',
@@ -767,15 +853,97 @@ export const configSchema = {
           },
           default: [],
         },
-        tideStationOverride: {
+      },
+    },
+    overrides: {
+      type: 'object',
+      title: 'Overrides',
+      description:
+        'Settings the plugin works out for itself. Each says whether it found a value ' +
+        `(${FOUND} found, ${NOT_FOUND} not found, ${NOT_CHECKED} not checked yet). Tick ` +
+        'a box to type your own instead.',
+      dependencies: {
+        ...shownWhenTicked('overrideRepository', 'repository', {
           type: 'string',
-          title: 'Tide station override',
+          title: 'Repository name',
           description:
-            'A NOAA station ID (e.g. 9414290) for the tide and 48-hour conditions ' +
-            'panels to use before the boat has reported a GPS position. Blank means ' +
-            "those panels wait for a fix rather than showing some other coast's " +
-            'numbers.',
+            'The repository to publish to, without the owner. A project site — e.g. ' +
+            '"tracker", served at /tracker/ — goes here.',
           default: '',
+        }),
+        ...shownWhenTicked('overrideBranch', 'branch', {
+          type: 'string',
+          title: 'Branch',
+          description: 'The branch GitHub Pages publishes from.',
+          default: '',
+        }),
+        ...shownWhenTicked('overrideSiteUrl', 'siteUrl', {
+          type: 'string',
+          title: 'Site address',
+          description:
+            'Where the published site is served, e.g. https://example.com/. It is what ' +
+            'a link preview in a chat app resolves images and titles against.',
+          default: '',
+        }),
+        ...shownWhenTicked('overrideTimezone', 'timezone', {
+          type: 'string',
+          enum: ['UTC', ...TIMEZONES],
+          enumNames: ['UTC', ...TIMEZONES],
+          title: 'Track timezone',
+          description: 'The calendar day GPX tracks are grouped by.',
+          default: serverTimezone(),
+        }),
+        ...shownWhenTicked('overridePolar', 'polar', {
+          type: 'string',
+          title: 'Polar table',
+          description: POLARS_FIELD_DESCRIPTION,
+          default: '',
+        }),
+        ...shownWhenTicked('overrideTideStation', 'tideStation', {
+          type: 'string',
+          title: 'Tide station',
+          description:
+            'A NOAA station ID (e.g. 9414290). The tide and 48-hour conditions panels ' +
+            'use it instead of the station nearest the boat.',
+          default: '',
+        }),
+      },
+      properties: {
+        overrideRepository: {
+          type: 'boolean',
+          title: 'Override repository name',
+          description: 'Publish to a repository other than <owner>.github.io.',
+          default: false,
+        },
+        overrideBranch: {
+          type: 'boolean',
+          title: 'Override branch',
+          description: `Publish to a branch other than ${DEFAULT_BRANCH}.`,
+          default: false,
+        },
+        overrideSiteUrl: {
+          type: 'boolean',
+          title: 'Override site address',
+          description: 'Publish under a custom domain rather than the GitHub Pages URL.',
+          default: false,
+        },
+        overrideTimezone: {
+          type: 'boolean',
+          title: 'Override track timezone',
+          description: "Group tracks by a zone other than the server's.",
+          default: false,
+        },
+        overridePolar: {
+          type: 'boolean',
+          title: 'Override polar',
+          description: 'Publish a table typed here instead of the active polar.',
+          default: false,
+        },
+        overrideTideStation: {
+          type: 'boolean',
+          title: 'Override tide station',
+          description: 'Use one NOAA station rather than the one nearest the boat.',
+          default: false,
         },
       },
     },
@@ -786,9 +954,15 @@ export const configSchema = {
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
-  polars: { table: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   instrumentLog: { paths: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } } },
   notifications: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } } },
+  overrides: {
+    // Each typed box directly under its own checkbox. A name the schema does
+    // not currently have — every typed box while its override is unticked —
+    // is skipped by the form, and "*" catches anything added later.
+    'ui:order': [...OVERRIDES.flatMap(({ flag, field }) => [flag, field]), '*'],
+    polar: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
+  },
 };
 
 function str(value: unknown, fallback = ''): string {
@@ -847,7 +1021,7 @@ export function parsePathList(value: unknown): string[] {
   return [...seen];
 }
 
-/** GitHub's own rule for a user or organisation name. */
+/** GitHub's own rule for a user or organization name. */
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 /** And for a repository name. */
 const NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
@@ -901,9 +1075,9 @@ export function resolveOwnerAndName(
   }
 
   if (!owner) {
-    problems.push('GitHub repository owner is not set (your username, or the organisation).');
+    problems.push('GitHub repository owner is not set (your username, or the organization).');
   } else if (!OWNER_PATTERN.test(owner)) {
-    problems.push(`GitHub repository owner "${owner}" is not a GitHub username or organisation.`);
+    problems.push(`GitHub repository owner "${owner}" is not a GitHub username or organization.`);
   }
 
   const name = override ? typed : owner ? `${owner}.github.io` : '';
@@ -935,7 +1109,7 @@ export function pagesUrl(owner: string, name: string): string {
 /**
  * The site's address: derived from the repository, or the typed one.
  *
- * Normalised to a trailing slash and an explicit scheme, because it is
+ * Normalized to a trailing slash and an explicit scheme, because it is
  * concatenated with relative paths to build the absolute URLs in the
  * social-preview tags. A typed value that will not parse falls back to the
  * derived one with a warning rather than publishing `undefined/logo.png` into
@@ -1100,24 +1274,20 @@ function notificationExclude(
 }
 
 /** The track timezone: the server's, unless the override is ticked. */
-export function resolveTimezone(value: unknown): string {
-  if (value && typeof value === 'object') {
-    const { override, zone } = value as Record<string, unknown>;
-    if (override === true) return str(zone) || serverTimezone();
-  }
+export function resolveTimezone(overrides: Record<string, unknown>): string {
+  if (overrides.overrideTimezone === true) return str(overrides.timezone) || serverTimezone();
   return serverTimezone();
 }
 
 /** The polar table override: whether it is on, and what is in the box. */
-export function resolvePolars(value: unknown): { override: boolean; table: string } {
-  if (value && typeof value === 'object') {
-    const { override, table } = value as Record<string, unknown>;
-    return {
-      override: bool(override),
-      table: typeof table === 'string' ? table : '',
-    };
-  }
-  return { override: false, table: '' };
+export function resolvePolars(overrides: Record<string, unknown>): {
+  override: boolean;
+  table: string;
+} {
+  return {
+    override: bool(overrides.overridePolar),
+    table: typeof overrides.polar === 'string' ? overrides.polar : '',
+  };
 }
 
 /** Cadence in seconds, from the minutes the config page asks for. */
@@ -1152,16 +1322,25 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const notifications = input.notifications ?? {};
   const track = input.track ?? {};
   const site = input.site ?? {};
+  const overrides = readOverrides(input);
   const problems: string[] = [];
 
   const warnings: string[] = [];
 
   const { owner, name, problems: repoProblems } = resolveOwnerAndName(
     github.owner,
-    github.name,
-    bool(github.overrideName),
+    overrides.repository,
+    bool(overrides.overrideRepository),
   );
   problems.push(...repoProblems);
+
+  const typedBranch = str(overrides.branch);
+  if (bool(overrides.overrideBranch) && !typedBranch) {
+    warnings.push(
+      `Override branch is ticked but no branch is set; publishing to ${DEFAULT_BRANCH}.`,
+    );
+  }
+  const branch = (bool(overrides.overrideBranch) && typedBranch) || DEFAULT_BRANCH;
 
   const token = typeof github.token === 'string' ? github.token.trim() : '';
   if (!token) problems.push('GitHub personal access token is not set.');
@@ -1174,7 +1353,12 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const customLinks = customLinkResult.links;
   warnings.push(...customLinkResult.warnings);
 
-  const siteUrlResult = resolveSiteUrl(owner, name, site.overrideUrl, site.url);
+  const siteUrlResult = resolveSiteUrl(
+    owner,
+    name,
+    overrides.overrideSiteUrl,
+    overrides.siteUrl,
+  );
   warnings.push(...siteUrlResult.warnings);
 
   // A logo or icon that will not decode is fatal rather than a warning: it is
@@ -1209,7 +1393,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   if (droppedZones > 0) {
     problems.push(
       `${droppedZones} privacy zone(s) are incomplete (each needs a latitude, ` +
-        'longitude and a radius in metres) and would hide nothing.',
+        'longitude and a radius in meters) and would hide nothing.',
     );
   }
 
@@ -1238,7 +1422,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         owner,
         name,
         repo: `${owner}/${name}`,
-        branch: str(github.branch) || 'main',
+        branch,
         token,
       },
       interval: {
@@ -1246,16 +1430,13 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         stationary: intervalSeconds(interval.stationaryMinutes, DEFAULT_INTERVAL_STATIONARY),
       },
       privacyZones: zones,
-      timezone: resolveTimezone(input.timezone),
+      timezone: resolveTimezone(overrides),
       instrumentLog: {
         paths: paths.length ? paths : DEFAULT_INSTRUMENT_LOG_PATHS,
         entries,
       },
-      polars: resolvePolars(input.polars),
-      positionRetentionHours:
-        num(track.positionRetentionHours) ??
-        num(input.positionRetentionHours) ??
-        DEFAULT_POSITION_RETENTION_HOURS,
+      polars: resolvePolars(overrides),
+      positionRetentionHours: DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
       history: {
         enabled: hours > 0,
@@ -1264,7 +1445,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         timeoutMs: HISTORY_TIMEOUT_MS,
       },
       track: {
-        detailMetres: Math.max(1, num(track.detailMetres) ?? DEFAULT_TRACK_DETAIL_METRES),
+        detailMeters: Math.max(
+          1,
+          num(track.detailMeters) ?? num(track.detailMetres) ?? DEFAULT_TRACK_DETAIL_METERS,
+        ),
       },
       notifyAfterFailureMinutes:
         zeroOrMore(notifications.warnAfterMinutes) ??
@@ -1282,7 +1466,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         logo: logoResult.logo,
         icon: iconResult.icon,
         customLinks,
-        tideStationOverride: str(site.tideStationOverride),
+        tideStationOverride: bool(overrides.overrideTideStation)
+          ? str(overrides.tideStation)
+          : '',
       },
     },
   };

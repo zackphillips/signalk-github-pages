@@ -28,8 +28,8 @@ let map, marker, trackLine, trackMarkers;
 let anchorLayer = null;    // Leaflet circle for anchor swing radius
 let anchorMarker = null;   // ⚓ icon at anchor drop position
 let anchorLine = null;     // dashed line from anchor to vessel
-let trackLegend = null;    // Leaflet control for day-colour legend
-let recentTrackCount = C.DEFAULT_RECENT_TRACK_COUNT; // Number of most-recent tracks to colour (rest shown pale white)
+let trackLegend = null;    // Leaflet control for day-color legend
+let recentTrackCount = C.DEFAULT_RECENT_TRACK_COUNT; // Number of most-recent tracks to color (rest shown pale white)
 let trackByDay = new Map();    // Cached track data keyed by YYYY-MM-DD (local)
 let tracksIndex = [];          // Metadata from tracks_index.json (all sailing days ever)
 let olderTrackLayer = null;    // Leaflet layer for older tracks shown in white
@@ -74,7 +74,7 @@ const PANEL_SKELETONS = {
 // There is no constant-threshold fallback any more: six classify* functions
 // used to hard-code what counts as a low battery, a low tank and a dragging
 // anchor for every boat that publishes this site. A path with no zones set on
-// the server renders uncoloured — the honest answer to "nobody has said what
+// the server renders uncolored — the honest answer to "nobody has said what
 // good looks like here" — and the fix is to set the zone in Signal K, where
 // the alarm that fires the buzzer is configured anyway.
 
@@ -103,7 +103,7 @@ function zoneMatches(value, zone, inclusiveUpper) {
  *
  * Returns {level, label} or null when there are no zones, the value is not a
  * number, or no zone covers it. Null is a real answer: the caller renders the
- * value with no colour rather than guessing a level.
+ * value with no color rather than guessing a level.
  *
  * Bounds are half-open (lower <= v < upper), which is what makes adjacent
  * zones like [0,0.2) and [0.2,0.5) unambiguous. A second inclusive pass
@@ -232,7 +232,7 @@ function relativeAge(fromMs, toMs) {
   return `${Math.round(h / 24)}d`;
 }
 
-// A path reads better with its last segment emphasised: the interesting part
+// A path reads better with its last segment emphasized: the interesting part
 // of notifications.electrical.batteries.house.capacity.stateOfCharge is the
 // end of it, and on a phone the front is what gets truncated.
 function notificationTitle(item) {
@@ -524,7 +524,7 @@ const paintedPanels = new Set();
  * from the history provider, uploaded in full on every publish, and then
  * drawn by nothing at all.
  *
- * Everything here is labelled, formatted and coloured from the server's own
+ * Everything here is labeled, formatted and colored from the server's own
  * metadata, and picks up a sparkline from initInlineSparklines like any other
  * info-item. Called twice: once while painting the dashboard, and again when
  * the instrument log finishes loading, because that is what says which paths
@@ -696,7 +696,7 @@ const DAY_TRACK_COLORS = [
 // applied to everybody else's map.
 //
 // This is the second layer. The plugin redacts before it publishes: a position
-// inside a zone is replaced with the zone centre in the snapshot and the point
+// inside a zone is replaced with the zone center in the snapshot and the point
 // is left out of the GPX entirely, so nothing that reaches this file needs
 // hiding again. That is what makes an empty list safe here.
 function getPrivacyZones() {
@@ -726,22 +726,27 @@ function getPrivacyZoneCenter(lat, lon) {
 // redaction claim that was false in both directions. No zones configured
 // means no rings, which is the same answer getPrivacyZones gives everything
 // else.
+//
+// Drawn strong enough to find: the ring used to be a 1.5px dashed line at half
+// opacity with a 5% fill, which vanished against the dark tiles, so the one
+// thing on the map that explains where the track stops was the one thing
+// nobody saw. And it takes the pointer now \u2014 `interactive: false` meant the
+// tooltip naming the zone could never open.
 function drawPrivacyZones(map) {
   for (const zone of getPrivacyZones()) {
     if (!(zone.radius_m > 0)) continue;
     const label = zone.name
-      ? `\u{1F4CD} ${zone.name} \u2014 position not recorded inside this area`
-      : '\u{1F4CD} Privacy zone \u2014 position not recorded inside this area';
+      ? `\u{1F512} ${zone.name} \u2014 positions inside this circle are not published`
+      : '\u{1F512} Privacy zone \u2014 positions inside this circle are not published';
     L.circle([zone.lat, zone.lon], {
       radius: zone.radius_m,
       color: '#e74c3c',
       fillColor: '#e74c3c',
-      fillOpacity: 0.05,
-      opacity: 0.5,
-      weight: 1.5,
-      dashArray: '5 5',
-      interactive: false,
-    }).bindTooltip(label, { sticky: true, opacity: 0.85 }).addTo(map);
+      fillOpacity: 0.12,
+      opacity: 0.85,
+      weight: 2,
+      dashArray: '6 4',
+    }).bindTooltip(label, { sticky: true, opacity: 0.9 }).addTo(map);
   }
 }
 
@@ -755,7 +760,7 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Normalise a positions_index entry to {latitude, longitude, timestamp,
+ * Normalize a positions_index entry to {latitude, longitude, timestamp,
  * speedOverGround, courseOverGroundTrue}, handling both:
  *   - Legacy format: flat keys (latitude, longitude, speedOverGround, …)
  *   - New SignalK format: values array [{path, value}, …]
@@ -847,12 +852,12 @@ function renderTracks() {
     olderTrackLayer = null;
   }
 
-  // Sort newest-first; recent = first recentTrackCount coloured, older = all remainder.
+  // Sort newest-first; recent = first recentTrackCount colored, older = all remainder.
   const days = [...trackByDay.keys()].sort().reverse();
   const recentDays = days.slice(0, recentTrackCount);
   const olderDays = days.slice(recentTrackCount);
 
-  // Draw older tracks first (pale white) so coloured recent tracks appear on top.
+  // Draw older tracks first (pale white) so colored recent tracks appear on top.
   if (olderDays.length) {
     const segments = olderDays.map((day) =>
       trackByDay.get(day).map((p) => [p.latitude, p.longitude])
@@ -860,7 +865,7 @@ function renderTracks() {
     olderTrackLayer = L.polyline(segments, { color: '#ffffff', weight: 2, opacity: 0.35 }).addTo(map);
   }
 
-  // Draw recent tracks with per-day colours, oldest-to-newest so newest is on top.
+  // Draw recent tracks with per-day colors, oldest-to-newest so newest is on top.
   const lines = [];
   [...recentDays].reverse().forEach((day) => {
     const idx = recentDays.indexOf(day);
@@ -886,7 +891,7 @@ function renderTracks() {
   });
   trackLine = lines;
 
-  // Build / rebuild the day-colour legend.
+  // Build / rebuild the day-color legend.
   if (trackLegend) { trackLegend.remove(); trackLegend = null; }
   if (!days.length || !map) return;
 
@@ -1289,6 +1294,9 @@ function renderVoyageMiniMap(item, entry) {
     scrollWheelZoom: false,
   });
   tileLayerForTheme().addTo(mini);
+  // The same rings as the main map: a voyage that starts or ends at a zone's
+  // edge reads as a gap in the track without them.
+  drawPrivacyZones(mini);
   L.polyline(latlngs, { color: DAY_TRACK_COLORS[0], weight: 3, opacity: 0.9 }).addTo(mini);
   L.circleMarker(latlngs[0], { radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 1 })
     .bindTooltip('Start', { direction: 'top' }).addTo(mini);
@@ -1302,9 +1310,9 @@ function renderVoyageMiniMap(item, entry) {
 }
 
 // Zoom the map to a single day's track and bring it into the "recent"
-// coloured set (rather than the pale "older" styling) — called from the
+// colored set (rather than the pale "older" styling) — called from the
 // Voyages tab list via tabs.js. Reuses renderTracks()'s existing per-day
-// colouring instead of drawing a separate highlight layer.
+// coloring instead of drawing a separate highlight layer.
 function focusTrackDay(date) {
   if (!map || !date) return;
   const pts = trackPointsForDate(date);
@@ -1416,7 +1424,7 @@ const UNIT_GROUPS = {
 // ── Signal K metadata ──────────────────────────────────────────────────────
 // The published snapshot is the whole self tree, so it already carries each
 // path's `meta`: units, displayName, description, and the zones the panels
-// colour by. The page used to ignore all but the zones and hardcode the rest,
+// color by. The page used to ignore all but the zones and hardcode the rest,
 // which meant a path this release had never heard of could be logged,
 // published and drawn by nothing — and two tooltips named one particular
 // boat's hardware.
@@ -1457,7 +1465,7 @@ const SI_UNIT_TO_GROUP = {
  * The unit group for a path.
  *
  * The explicit table wins, because it encodes intent the units cannot: both
- * `navigation.log` and `navigation.anchor.currentRadius` are metres, and one
+ * `navigation.log` and `navigation.anchor.currentRadius` are meters, and one
  * wants nautical miles while the other wants feet. Metadata fills in
  * everything else, which is every path the table has never heard of.
  */
@@ -1540,17 +1548,34 @@ const hasValidCoordinates = (latitude, longitude) =>
 // fallback before that, a box around San Francisco Bay, which meant a boat in
 // the Chesapeake with no fix yet was shown Golden Gate tides under a heading
 // that read like its own. Both are gone.
+//
+// The override comes first when it is set: it is a choice made on the config
+// page, and a station picked by hand is the one the boat wants whether or not
+// there is a fix — the nearest by straight-line distance is sometimes across
+// a headland from the water the boat is actually in.
 function resolveTideTarget(currentLat, currentLon) {
-  if (hasValidCoordinates(currentLat, currentLon)) {
-    return { mode: 'gps', lat: currentLat, lon: currentLon };
-  }
-
   const stationId = vesselData?.tide_station_override;
   if (typeof stationId === 'string' && stationId.trim()) {
     return { mode: 'override', stationId: stationId.trim() };
   }
 
+  if (hasValidCoordinates(currentLat, currentLon)) {
+    return { mode: 'gps', lat: currentLat, lon: currentLon };
+  }
+
   return null;
+}
+
+// NOAA's `time_zone=gmt` timestamps are "YYYY-MM-DD HH:mm" in UTC, with a
+// space and no zone. `new Date()` on that string is Invalid Date in Safari —
+// every point dropped, so the tide chart drew nothing on an iPhone — and local
+// time in Chrome, which shifted the whole curve by the UTC offset. Parsed
+// explicitly as UTC here, for both panels that read NOAA.
+function parseNoaaTime(text) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(text ?? ''));
+  if (!match) return null;
+  const [, y, mo, d, h, mi] = match.map(Number);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi));
 }
 
 // ── Voyage statistics ────────────────────────────────────────────────────────
@@ -1875,7 +1900,7 @@ async function drawTideGraph(target) {
   // There is no fallback station. A failed fetch for the nearest station used
   // to be retried against San Francisco "because it is known to work", which
   // answered a question nobody asked: the panel then showed real tides for
-  // water 3000 miles away, labelled with this boat's heading.
+  // water 3000 miles away, labeled with this boat's heading.
   const targetStation = nearest;
   const url = buildUrl(targetStation.id);  const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
@@ -1932,15 +1957,24 @@ async function drawTideGraph(target) {
       return;
     }
 
+    // From the top of the current hour, so the "now" marker sits on the curve
+    // rather than before its first point.
+    const windowStart = new Date(startTime.getTime() - 3_600_000);
     const data = rawData
-      .map(d => ({ t: new Date(d.t), v: parseFloat(d.v) }))
-      .filter(d => d.t >= startTime && d.t <= endTime);
+      .map(d => ({ t: parseNoaaTime(d.t), v: parseFloat(d.v) }))
+      .filter(d => d.t && Number.isFinite(d.v) && d.t >= windowStart && d.t <= endTime);
 
+    if (data.length === 0) {
+      const tideHeader = document.getElementById("tideHeader");
+      if (tideHeader) {
+        tideHeader.textContent = `Tides at ${targetStation.name} (no predictions for the next 30 hours)`;
+      }
+      return;
+    }
 
     const labels = data.map(d =>
-    new Date(d.t.getTime() - d.t.getTimezoneOffset() * 60000)
-      .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-  );
+      d.t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+    );
     const heights = data.map(d => d.v);
 
     const peaks = [];
@@ -1951,13 +1985,12 @@ async function drawTideGraph(target) {
       }
     }
 
-    // Find the current tide height (closest time to now)
-    const nowUTC = new Date(Date.now() + new Date().getTimezoneOffset() * 60000);
-
+    // Find the current tide height (closest time to now). Both sides are real
+    // instants now, so there is no offset to correct for.
     let currentIndex = 0;
     let minDiff = Infinity;
     data.forEach((d, i) => {
-      const diff = Math.abs(d.t - nowUTC);
+      const diff = Math.abs(d.t - now);
       if (diff < minDiff) {
         minDiff = diff;
         currentIndex = i;
@@ -2017,7 +2050,9 @@ async function drawTideGraph(target) {
           annotation: {
             annotations: peaks.map(p => ({
               type: 'label',
-              xValue: labels[p.i],
+              // By index: 30 hours of labels repeat an hour, and a label string
+              // puts the annotation on the first day that hour appears.
+              xValue: p.i,
               yValue: p.value,
               content: `${p.value.toFixed(1)} ft @ ${p.time}`,
               backgroundColor: isDark ? 'rgba(96,165,250,0.9)' : 'rgba(37,99,235,0.85)',
@@ -2065,7 +2100,13 @@ async function drawTideGraph(target) {
       plugins: [Chart.registry.getPlugin('annotation')]
     });
   } catch (err) {
+    // Said on the panel, not only in the console: a header naming a station
+    // over an empty chart reads as "no tides today", not as a failure.
     console.error("Tide data fetch error:", err);
+    const tideHeader = document.getElementById("tideHeader");
+    if (tideHeader) {
+      tideHeader.textContent = `Tides unavailable for ${targetStation.name} (${err.message})`;
+    }
   }
 }
 
@@ -2879,8 +2920,8 @@ async function loadData() {
     // Update navigation data
     const currentTheme = document.documentElement.getAttribute('data-theme');
 
-    // Anchor distance is coloured by zones on navigation.anchor.currentRadius,
-    // in metres, like every other path. It used to be a ratio against
+    // Anchor distance is colored by zones on navigation.anchor.currentRadius,
+    // in meters, like every other path. It used to be a ratio against
     // maxRadius — 85% of the rode is "Safe", 105% is "Drifting" — which read
     // well and was not something any anchor alarm on board agreed with. The
     // alarm itself now reaches the page through notifications.navigation.anchor
@@ -3015,9 +3056,9 @@ async function loadData() {
     paintPanel('system-grid', () => `
       <div class="info-item" data-path="environment.rpi.cpu.temperature" data-label="CPU Temp" data-unit-group="temperature" data-raw="${rpi.cpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi CPU temperature', rpi.cpu?.temperature)}"><div class="label">CPU Temp</div><div class="value">${fmtCelsius(rpi.cpu?.temperature?.value)}</div></div>
       <div class="info-item" data-path="environment.rpi.gpu.temperature" data-label="GPU Temp" data-unit-group="temperature" data-raw="${rpi.gpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi GPU temperature', rpi.gpu?.temperature)}"><div class="label">GPU Temp</div><div class="value">${fmtCelsius(rpi.gpu?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.cpu.utilisation" data-label="CPU Use" title="${withUpdated('Raspberry Pi CPU utilisation', rpi.cpu?.utilisation)}"><div class="label">CPU Use</div><div class="value">${fmtPercent(rpi.cpu?.utilisation?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.memory.utilisation" data-label="RAM Use" title="${withUpdated('Raspberry Pi memory utilisation', rpi.memory?.utilisation)}"><div class="label">RAM Use</div><div class="value">${fmtPercent(rpi.memory?.utilisation?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.sd.utilisation" data-label="SD Use" title="${withUpdated('Raspberry Pi SD card utilisation', rpi.sd?.utilisation)}"><div class="label">SD Use</div><div class="value">${fmtPercent(rpi.sd?.utilisation?.value)}</div></div>
+      <div class="info-item" data-path="environment.rpi.cpu.utilisation" data-label="CPU Use" title="${withUpdated('Raspberry Pi CPU utilization', rpi.cpu?.utilisation)}"><div class="label">CPU Use</div><div class="value">${fmtPercent(rpi.cpu?.utilisation?.value)}</div></div>
+      <div class="info-item" data-path="environment.rpi.memory.utilisation" data-label="RAM Use" title="${withUpdated('Raspberry Pi memory utilization', rpi.memory?.utilisation)}"><div class="label">RAM Use</div><div class="value">${fmtPercent(rpi.memory?.utilisation?.value)}</div></div>
+      <div class="info-item" data-path="environment.rpi.sd.utilisation" data-label="SD Use" title="${withUpdated('Raspberry Pi SD card utilization', rpi.sd?.utilisation)}"><div class="label">SD Use</div><div class="value">${fmtPercent(rpi.sd?.utilisation?.value)}</div></div>
     `);
 
     const propulsion = data.propulsion?.port || {};
@@ -3412,13 +3453,14 @@ async function loadConditionsForecast() {
     return;
   }
 
-  // Wind, swell and temperature need an actual position, which a GPS fix
-  // supplies directly. A tide station override supplies one too, but only
-  // when the overridden ID happens to be in the local lookup table — it is a
-  // station choice, not a place typed in, so an ID this table has never
-  // heard of gets its tide predictions and nothing else here.
-  const weatherPosition = tideTarget.mode === 'gps'
-    ? { lat: tideTarget.lat, lon: tideTarget.lon }
+  // Wind, swell and temperature need an actual position. The boat's own comes
+  // first even when the tide station is overridden: the override picks which
+  // tide curve to draw, not where the weather is. Without a fix, the station
+  // supplies one, but only when the overridden ID happens to be in the local
+  // lookup table — it is a station choice, not a place typed in, so an ID
+  // this table has never heard of gets its tide predictions and nothing else.
+  const weatherPosition = hasValidCoordinates(lat, lon)
+    ? { lat, lon }
     : (() => {
         const known = findStationById(tideTarget.stationId);
         return known ? { lat: known.lat, lon: known.lon } : null;
@@ -3597,8 +3639,8 @@ async function loadConditionsForecast() {
     const { station, predictions } = tideResult.value;
     tideStationName = station?.name || '';
     predictions.forEach(d => {
-      // Force UTC parse by appending 'Z' after replacing space with 'T'
-      const t   = new Date(d.t.replace(' ', 'T') + 'Z');
+      const t   = parseNoaaTime(d.t);
+      if (!t) return;
       const idx = Math.round((t - windowStart) / 3600000);
       if (idx >= 0 && idx <= 48) tideHeight[idx] = parseFloat(d.v);
     });
@@ -4347,7 +4389,7 @@ function updateChartsForTheme(theme) {
           valueEl.textContent = (lvl && lvl !== 'N/A') ? lvl : (formatted !== 'N/A' ? formatted : 'N/A');
         }
       } else {
-        // Preserve colour spans produced by colorValue(); only update the text.
+        // Preserve color spans produced by colorValue(); only update the text.
         const inner = valueEl.querySelector('span') || valueEl;
         inner.textContent = formatted;
       }

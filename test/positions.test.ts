@@ -29,9 +29,9 @@ describe('buildPositionEntry', () => {
     ]);
   });
 
-  it('publishes the zone centre and drops speed and course inside a zone', () => {
-    // Speed and course at the dock would leak that the boat is manoeuvring in
-    // the harbour, which is the thing the zone exists to hide.
+  it('publishes the zone center and drops speed and course inside a zone', () => {
+    // Speed and course at the dock would leak that the boat is maneuvering in
+    // the harbor, which is the thing the zone exists to hide.
     const entry = buildPositionEntry(
       fix({ latitude: 37.78025, longitude: -122.38585 }),
       ZONES,

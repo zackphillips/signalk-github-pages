@@ -229,7 +229,7 @@ async function walk(dir: string, base = dir): Promise<string[]> {
 }
 
 /** Files whose `{{TOKEN}}`s are filled in, and how their values are escaped. */
-const TOKENISED: Record<string, (value: string) => string> = {
+const TOKENIZED: Record<string, (value: string) => string> = {
   'index.html': escapeHtml,
   'docs.html': escapeHtml,
   'manifest.json': escapeJson,
@@ -243,7 +243,7 @@ export function template(
 ): string {
   if (repoPath === 'assets/constants.js') return renderConstants(text, options);
   if (repoPath === 'sw.js') return renderServiceWorker(text, options);
-  const escape = TOKENISED[repoPath];
+  const escape = TOKENIZED[repoPath];
   if (escape) return substituteTokens(text, tokenValues(options), escape);
   return text;
 }

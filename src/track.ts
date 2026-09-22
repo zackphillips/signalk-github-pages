@@ -17,7 +17,7 @@
  *
  * So fixes are decimated by *shape* rather than by time: a point is kept when
  * dropping it would visibly move the drawn track, and skipped when the line
- * through its neighbours already passes within `detailMetres` of it. On a
+ * through its neighbors already passes within `detailMeters` of it. On a
  * straight motoring leg that is almost no points; through a tacking duel it
  * is dense where the detail is. The result is a better track than two-minute
  * sampling for fewer points, which is the opposite of the usual trade.
@@ -42,7 +42,7 @@ import type { SignalKApp } from './signalk';
 import type { PositionFix } from './snapshot';
 
 /** Default: a point is dropped when the track would move less than this. */
-export const DEFAULT_TRACK_DETAIL_METRES = 15;
+export const DEFAULT_TRACK_DETAIL_METERS = 15;
 
 /**
  * Cap on the candidate window.
@@ -64,29 +64,29 @@ export const DEFAULT_TRACK_DETAIL_METRES = 15;
 const MAX_WINDOW = 600;
 
 export interface DecimatorOptions {
-  detailMetres: number;
+  detailMeters: number;
   /** A function, because the publish cadence changes with navigation.state. */
   maxIntervalSeconds: number | (() => number);
 }
 
-/** Metres per degree of latitude. Good enough for a cross-track of metres. */
-const METRES_PER_DEGREE = 111_320;
+/** Meters per degree of latitude. Good enough for a cross-track of meters. */
+const METERS_PER_DEGREE = 111_320;
 
 /**
- * Perpendicular distance from `point` to the segment `start`–`end`, in metres.
+ * Perpendicular distance from `point` to the segment `start`–`end`, in meters.
  *
  * Equirectangular projection around the segment's latitude: over the hundreds
- * of metres this is ever asked about, the error is far below the tolerance it
+ * of meters this is ever asked about, the error is far below the tolerance it
  * is compared against, and it avoids trigonometry on every delta.
  */
-export function crossTrackMetres(
+export function crossTrackMeters(
   start: { latitude: number; longitude: number },
   end: { latitude: number; longitude: number },
   point: { latitude: number; longitude: number },
 ): number {
   const scale = Math.cos((start.latitude * Math.PI) / 180);
-  const x = (p: { longitude: number }) => p.longitude * scale * METRES_PER_DEGREE;
-  const y = (p: { latitude: number }) => p.latitude * METRES_PER_DEGREE;
+  const x = (p: { longitude: number }) => p.longitude * scale * METERS_PER_DEGREE;
+  const y = (p: { latitude: number }) => p.latitude * METERS_PER_DEGREE;
 
   const ax = x(start);
   const ay = y(start);
@@ -156,13 +156,13 @@ export class TrackDecimator {
     // to everything in between? If so, none of them need recording.
     const worst = this.window.reduce(
       (most, candidate) => {
-        const deviation = crossTrackMetres(this.anchor!, fix, candidate);
+        const deviation = crossTrackMeters(this.anchor!, fix, candidate);
         return deviation > most.deviation ? { candidate, deviation } : most;
       },
       { candidate: null as PositionFix | null, deviation: 0 },
     );
 
-    if (worst.candidate && worst.deviation > this.options.detailMetres) {
+    if (worst.candidate && worst.deviation > this.options.detailMeters) {
       // The track bends here. Commit the point that bends it most, and start
       // measuring again from there — this fix stays a candidate.
       const index = this.window.indexOf(worst.candidate);
@@ -196,7 +196,7 @@ export type TrackHost = Partial<Pick<SignalKApp, 'streambundle'>>;
 
 export interface RecorderOptions {
   app: TrackHost;
-  detailMetres: number;
+  detailMeters: number;
   maxIntervalSeconds: number;
   log: (message: string) => void;
 }
@@ -235,7 +235,7 @@ export class PositionRecorder {
   constructor(private readonly options: RecorderOptions) {
     this.maxIntervalSeconds = options.maxIntervalSeconds;
     this.decimator = new TrackDecimator({
-      detailMetres: options.detailMetres,
+      detailMeters: options.detailMeters,
       maxIntervalSeconds: () => this.maxIntervalSeconds,
     });
   }
@@ -297,7 +297,7 @@ export class PositionRecorder {
     this.subscribed = true;
     this.options.log(
       `Recording the track from navigation.position deltas, keeping a fix when the ` +
-        `track would move more than ${this.options.detailMetres} m, and at least ` +
+        `track would move more than ${this.options.detailMeters} m, and at least ` +
         'once per publish cycle.',
     );
     return true;

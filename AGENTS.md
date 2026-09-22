@@ -9,7 +9,7 @@ before changing it.
 ```
 src/
   index.ts          Plugin entry: schema, start/stop, tick scheduling, router
-  config.ts         Config schema, defaults, normalisation, validation
+  config.ts         Config schema, defaults, normalization, validation
   publisher.ts      One cycle end to end — the only module that orchestrates
   webapp.ts         The console's routes: status, preview, prune, docs
   preview.ts        The site's data files rendered live, never published
@@ -32,6 +32,7 @@ src/
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
+  tideStations.ts   The NOAA station nearest the boat, for the tide override's note
   logo.ts           The config page's logo and icon fields, decoded into bytes and a path
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
@@ -90,7 +91,7 @@ Run `npm test` and `npm run typecheck` before committing.
   other source (privacy zones, custom links, the tide station override, the
   timezone, the address the site links back to), plus the USCG and hull
   numbers, which are here because picking them out of a `registrations` tree
-  is a judgement the plugin already makes and the frontend should not make
+  is a judgment the plugin already makes and the frontend should not make
   twice. Neither number is on the config page at all — they are read from
   Signal K on every cycle — so a boat with no matching registration simply
   publishes neither key.
@@ -138,7 +139,7 @@ Run `npm test` and `npm run typecheck` before committing.
   `navigation.position` by a config-page checkbox that read the self tree
   directly, ahead of the privacy-zone redaction every other position on its
   way to the repository goes through. It is gone too, replaced by
-  `site.tideStationOverride`, a NOAA station ID with nothing for a privacy
+  `overrides.tideStation`, a NOAA station ID with nothing for a privacy
   zone to redact.
 - **The tide and map/conditions panels are isolated from each other and from
   everything rendered before them.** Both used to sit in `loadData`'s one big
@@ -154,7 +155,22 @@ Run `npm test` and `npm run typecheck` before committing.
   ring used to be a literal at one dock in San Francisco, drawn on every
   adopter's map while their own zones were never drawn — a redaction claim
   false in both directions, which is worse than the fallbacks above: a ring on
-  the map is a promise about the data beside it.- **A published URL is an `href` on someone else's browser.** `customLinks`
+  the map is a promise about the data beside it. It is drawn on each voyage's
+  map too, and drawn to be seen: the first version was a 1.5px dashed line at
+  half opacity with a 5% fill and `interactive: false`, which disappeared on
+  the dark tiles and could never show its tooltip.
+- **NOAA timestamps are parsed, never handed to `new Date()`.** `time_zone=gmt`
+  returns `"2026-09-22 20:00"`: UTC, a space, no zone. Safari reads that as
+  Invalid Date and Chrome as local time, so the tide chart drew nothing on an
+  iPhone and a curve shifted by the UTC offset everywhere else. `parseNoaaTime`
+  builds the instant with `Date.UTC`, and both NOAA panels use it.
+- **The tide station override wins over the GPS.** It used to apply only
+  before a fix; now a ticked override is the station both tide panels query,
+  because a person who typed one has usually picked it over the nearest by
+  straight-line distance for a reason. The conditions panel still takes wind,
+  swell and temperature from the boat's position when there is one: the
+  override chooses a tide curve, not where the weather is.
+- **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
   that anyone with write access can edit. One check is a config validation;
@@ -185,7 +201,7 @@ Run `npm test` and `npm run typecheck` before committing.
   navigation data hub's process.
 - **The track is recorded from deltas and thinned by shape.** A fix is kept
   when dropping it would move the drawn track by more than
-  `track.detailMetres`, and at least once per publish cycle. Measured on a
+  `track.detailMeters`, and at least once per publish cycle. Measured on a
   synthetic hour of 60-second tacks: 60 points and the track exactly right,
   against 30 points and 128 m of error for one-fix-per-cycle sampling; a mark
   rounding is 9 points and 9 m against 5 points and 174 m. A straight leg
@@ -199,7 +215,7 @@ Run `npm test` and `npm run typecheck` before committing.
 - **The tree fix is the fallback, not an addition.** With a recorder running,
   `runCycle` uses its fixes; without one — an older server, or streams it
   could not subscribe to — it uses the one on the tree, which is exactly what
-  this plugin did before. Appending both would put a near-duplicate a metre
+  this plugin did before. Appending both would put a near-duplicate a meter
   away beside every recorded point.
 - **`track.ts` never redacts, and must not start.** Its output is a list of
   candidates. `buildPositionEntry` is the single place a position becomes a
@@ -223,7 +239,7 @@ Run `npm test` and `npm run typecheck` before committing.
   only `meta.zones` and hardcode the rest. `unitGroupForPath` consults the
   explicit `PATH_TO_UNIT_GROUP` table first and falls back to `meta.units`,
   because the table encodes intent the units cannot — `navigation.log` and
-  `navigation.anchor.currentRadius` are both metres and want nautical miles
+  `navigation.anchor.currentRadius` are both meters and want nautical miles
   and feet respectively — and metadata covers everything the table has never
   heard of. `withUpdated` prefers `meta.description` over the string written
   here. Tooltips naming one boat's hardware ("from BNO055 IMU", "BME280
@@ -252,7 +268,7 @@ Run `npm test` and `npm run typecheck` before committing.
   dragging anchor and a lossy link were for every boat that publishes this
   site. They are gone: `classifyByZones` reads `meta.zones` off the published
   snapshot and is the only classifier there is. A path with no zones renders
-  uncoloured — the same rule as the invented tide location and the invented
+  uncolored — the same rule as the invented tide location and the invented
   vessel identity, one layer down. The server is where a threshold belongs,
   because it is where the alarm that sounds the buzzer is already configured,
   and a second copy here can only disagree with it silently. If a panel needs
@@ -299,7 +315,7 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Notifications are not stale-filtered, on purpose.** `STALE_FILTER_KEYS`
   covers `environment`, `navigation` and `entertainment`, where an old value
   presented as current is a lie. A notification is a *state*: it stays up
-  until something clears it, and ageing one out would silently clear a real
+  until something clears it, and aging one out would silently clear a real
   alarm on the site while the boat still has it. The banner shows how long it
   has been up instead.
 - **The preview folds the firing log forward and throws it away.**
@@ -309,9 +325,9 @@ Run `npm test` and `npm run typecheck` before committing.
   firing would never be counted.
 - **The theme is never named `dark`.** The cycle is marine / amber / bright,
   and the first two are the dark ones. Nor after a boat: `amber` was `mermug`,
-  named and coloured for one vessel's logo and offered to everybody. A `[data-theme="dark"]` selector
+  named and colored for one vessel's logo and offered to everybody. A `[data-theme="dark"]` selector
   matches nothing — three `.value-*` rules sat dead in `styles.css` for that
-  reason, which left every warn and alert painted in the light-theme colour on
+  reason, which left every warn and alert painted in the light-theme color on
   a dark background. Three more (`.alert-chip--*`, `.floating-dark-mode-btn`)
   are still keyed that way.
 - **The three history outcomes are three different publishes.** `ok` writes
@@ -321,7 +337,7 @@ Run `npm test` and `npm run typecheck` before committing.
   provider, or the setting is off — publishes an empty log once, so the panels
   omit the sparklines instead of drawing whatever an older version last
   accumulated. Collapsing any two of those into a nullable snapshot loses a
-  behaviour someone will notice.
+  behavior someone will notice.
 - **`instrumentLog.hours` is the query window, and it is also the history
   dropdown.** The sparklines' window dropdown offers 1/3/12/24 hours against
   exactly what the published file reaches back: a span it does not cover is
@@ -335,14 +351,17 @@ Run `npm test` and `npm run typecheck` before committing.
   shorter than one publish interval, which now only fires on a very slow
   cadence). Zero hours publishes no log at all. `SPARKLINE_MAX_POINTS` is a
   draw cap, not a trim; it does not shorten the window.
-- **A setting that leaves the page is still read.** `resolveConfig` reads the
-  keys a moved or replaced setting used to live under — `instrumentLog.entries`
-  with `history.resolutionSeconds`, the top-level `positionRetentionHours`,
-  `publishNotifications`, `notificationExclude`, `notifyAfterFailureMinutes` —
-  and `buildConfigSchema` carries them into the new field's `default` so the
-  page opens showing the boat's own values. Without that second half the admin
-  UI fills the new field from the schema default and submits it, and the first
-  save after an upgrade silently replaces what the boat was running on.
+- **A setting that moves is still read.** `resolveConfig` reads the keys a
+  moved or replaced setting used to live under — `instrumentLog.entries` with
+  `history.resolutionSeconds`, `publishNotifications`, `notificationExclude`,
+  `notifyAfterFailureMinutes`, `track.detailMetres`, and every override's old
+  home — and `buildConfigSchema` carries them into the new field's `default`
+  so the page opens showing the boat's own values. Without that second half
+  the admin UI fills the new field from the schema default and submits it, and
+  the first save after an upgrade silently replaces what the boat was running
+  on. A setting that *leaves* is the opposite case: the position retention
+  window was taken off the page and is no longer read at all, because a
+  saved value with no box left to change it is a setting nobody can see.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
@@ -354,15 +373,42 @@ Run `npm test` and `npm run typecheck` before committing.
 - **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
+- **A zone applies to what is already published, not only to what comes
+  next.** The zones are applied as a fix is recorded, and a past day's GPX is
+  frozen, so a corrected zone used to protect the future only. That is how a
+  zone 316 m off the slip with a 200 m radius left four days of the boat
+  sitting in its berth on a public site after the zone was fixed: the files
+  were written under the old zone and nothing ever looked at them again.
+  Two things close it. `redactStoredEntry` runs every stored
+  `positions_index.json` entry through the current zones on every cycle, so
+  the 24-hour window follows a change the moment it is made. And
+  `privacyAudit` compares a fingerprint of the zones (`privacyZoneFingerprint`
+  — positions and radii, not names or order) with the one the repository was
+  last checked against; when they differ, including on the first cycle after
+  an upgrade, it lists the tree, reads every `tracks/*.gpx`, and
+  `trimPrivatePoints` removes each `<trkpt>` inside a zone, leaving the rest
+  of the file byte for byte. A day with nothing left is deleted and leaves the
+  index; the index also drops rows whose file is not in the repository. It
+  enumerates the repository rather than the index because a failed commit has
+  already rewritten the local index, and the retry has to find the same files.
+  The fingerprint is recorded only after the commit lands. What it cannot do
+  is reach git history — the trimmed points are still in the commits that
+  added them — and it must not try: rewriting history on the user's
+  repository is not this plugin's call.
+- **A day removed by hand stays removed.** A bulk prune takes its days out of
+  `publishedDays` so they can come back while their points are still in the
+  24-hour window; the per-row Remove button records the day in
+  `removedDays`, which `updateTracks` never rebuilds. Someone who removed a
+  day by name wanted it gone, not back truncated on the next cycle.
 - **Redact every position in the tree, not just `navigation.position`.** The
   same bug one level up, and it survived longer: the rule was "if the vessel
   is inside a zone, rewrite `navigation.position`", which guarded one path
   out of a tree that has several. Anchor inside a privacy zone and the site
-  showed the zone centre for the boat while publishing the true anchor drop
+  showed the zone center for the boat while publishing the true anchor drop
   coordinates a few keys away in the same file — and the frontend reads
   `navigation.anchor.position` to draw the marker. `redactPositions` walks
   the tree and moves *any* position that falls inside a zone to that zone's
-  centre, so a path the spec or a plugin grows later is covered without
+  center, so a path the spec or a plugin grows later is covered without
   anyone remembering to add it to a list.
   The rule is per-position, not per-vessel, and that matters twice: an
   anchor position left over from the slip the boat left this morning is
@@ -539,12 +585,24 @@ Run `npm test` and `npm run typecheck` before committing.
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
-- **Four settings are derived, each behind an override checkbox.** The
-  repository name from the owner (`<owner>.github.io`), the site address from
-  the repository (`pagesUrl`, which a custom domain overrides), the timezone
-  from the server, and the polar from Polar Management. `resolveConfig`
-  derives them itself and ignores the typed field whenever its override is
-  unticked. The typed field is not on the page until the box is ticked:
+- **Six settings are derived, each behind an override checkbox in one
+  Overrides section.** The repository name from the owner
+  (`<owner>.github.io`), the branch (`main`), the site address from the
+  repository (`pagesUrl`, which a custom domain overrides), the timezone from
+  the server, the polar from Polar Management, and the tide station from the
+  boat's position. `resolveConfig` derives them itself and ignores the typed
+  field whenever its override is unticked. They used to sit in the section of
+  the setting each one overrode; `readOverrides` falls back to those old keys
+  until the Overrides section has been saved once, and
+  `carryForwardMovedSettings` opens the page with the same boxes ticked. Each
+  checkbox's description opens with a mark — found, not found, not checked
+  yet — so a derived value that is missing (no owner, no active polar, a
+  branch the last cycle got a 404 on, no GPS for the tide station) is visible
+  without ticking anything. The form appends a dependency's field after every
+  property of the object, so all six typed boxes would pile up under the last
+  checkbox; `ui:order` in `configUiSchema` puts each directly beneath its own,
+  and the trailing `"*"` is what keeps an unticked box's absent field from
+  being an error. The typed field is not on the page until the box is ticked:
   `shownWhenTicked` puts it in the ticked branch of a JSON Schema
   `dependencies` block, which every react-json-schema-form the Signal K admin
   UI has shipped renders the same way. It used to sit in `properties` with

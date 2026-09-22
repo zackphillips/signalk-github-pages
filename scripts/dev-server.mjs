@@ -34,7 +34,7 @@ const TOKENS = {
   BASE_PATH: '/',
 };
 
-const TOKENISED = new Set(['index.html', 'docs.html', 'manifest.json']);
+const TOKENIZED = new Set(['index.html', 'docs.html', 'manifest.json']);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -76,7 +76,7 @@ createServer(async (request, response) => {
     'Cache-Control': 'no-store',
   };
   const relative = path.relative(roots[0], file).split(path.sep).join('/');
-  if (TOKENISED.has(relative)) {
+  if (TOKENIZED.has(relative)) {
     const text = (await fs.readFile(file, 'utf-8')).replace(
       /\{\{([A-Z_]+)\}\}/g,
       (match, key) => TOKENS[key] ?? match,

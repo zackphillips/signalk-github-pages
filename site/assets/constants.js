@@ -18,7 +18,7 @@ var VESSEL_CONSTANTS = Object.freeze({
   // is configured anyway, so a threshold set here would be a second answer
   // that disagrees with the first one silently. app.js reads the zones off
   // the published snapshot and paints from those alone; a path with no zones
-  // set renders uncoloured, the same way an unknown position renders as
+  // set renders uncolored, the same way an unknown position renders as
   // unknown rather than as San Francisco.
 
   // ── Cache TTLs (milliseconds) ────────────────────────────────────────────
@@ -31,7 +31,7 @@ var VESSEL_CONSTANTS = Object.freeze({
   // from queueing tens of thousands of lineTo calls per card for sub-pixel
   // detail nobody can see. A card is at most ~400 CSS px wide.
   SPARKLINE_MAX_POINTS:     2000,
-  DEFAULT_RECENT_TRACK_COUNT:  3,   // coloured track days shown by default
+  DEFAULT_RECENT_TRACK_COUNT:  3,   // colored track days shown by default
 
   // How far back the sparklines plot, offered in the panel header once
   // history is shown. What is actually selectable depends on the published

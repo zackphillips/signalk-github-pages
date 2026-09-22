@@ -26,7 +26,7 @@ import {
   renderNotifications,
   updateNotificationLog,
 } from './notifications';
-import { parsePositionIndex } from './positions';
+import { parsePositionIndex, redactStoredEntry, renderPositionIndex } from './positions';
 import { TRACKS_DIR } from './prune';
 import { filterStaleData, redactPositions, type Tree } from './snapshot';
 import type { StateStore } from './state';
@@ -84,8 +84,16 @@ export async function renderPreviewData(
     `${JSON.stringify({ schema_version: 1, ...tree }, null, 2)}\n`,
   );
 
+  // The stored index was redacted against the zones of the day each fix was
+  // taken; the next publish applies today's, and so does the preview.
+  const entries = parsePositionIndex(await store.readText('positions_index.json')).map((entry) =>
+    redactStoredEntry(entry, config.privacyZones),
+  );
+  if (entries.length) {
+    files.set(`${TELEMETRY_DIR}/positions_index.json`, renderPositionIndex(entries));
+  }
+
   for (const [name, path] of [
-    ['positions_index.json', `${TELEMETRY_DIR}/positions_index.json`],
     ['instrument_log.json', `${TELEMETRY_DIR}/instrument_log.json`],
     ['tracks_index.json', `${TELEMETRY_DIR}/tracks_index.json`],
   ] as const) {
@@ -101,7 +109,6 @@ export async function renderPreviewData(
 
   // Days rebuilt from the retention window. A published day older than that is
   // not on this machine to serve.
-  const entries = parsePositionIndex(await store.readText('positions_index.json'));
   const byDay = groupPointsByDay(entries, {
     zones: config.privacyZones,
     timezone: config.timezone,
