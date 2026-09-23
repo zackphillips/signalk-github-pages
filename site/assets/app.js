@@ -1541,24 +1541,6 @@ function toggleVoyageDetail(item) {
   renderVoyageMiniMap(item, entry);
 }
 
-// Whether docs/index.json lists the captain's log, which is what decides
-// whether the Voyages tab offers to open it. It is one boat's filing habit,
-// not a feature of the tracker: a site without that document used to get a
-// button that opened GitHub's new-file editor for a path nobody had chosen.
-let hasCaptainsLog = false;
-
-async function loadCaptainsLogPresence() {
-  if (!C.CAPTAINS_LOG_PATH) return;
-  try {
-    const response = await fetch(C.DOCS_INDEX_URL);
-    if (!response.ok) return;
-    const index = await response.json();
-    hasCaptainsLog = (index?.docs ?? []).some((doc) => doc?.path === C.CAPTAINS_LOG_PATH);
-  } catch {
-    // No docs index, no button. A site with no docs at all is the common case.
-  }
-}
-
 function voyageDetailHtml(entry) {
   const fmtTime = (iso) => {
     if (!iso) return '—';
@@ -1594,9 +1576,6 @@ function voyageDetailHtml(entry) {
     <div class="voyage-detail-actions">
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-      ${hasCaptainsLog ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" target="_blank" rel="noopener noreferrer"
-         href="https://github.com/${C.GITHUB_REPO}/edit/${C.GITHUB_DEFAULT_BRANCH}/${C.CAPTAINS_LOG_PATH}"
-         title="Opens the Captain's Log in the GitHub editor — add crew, conditions and notes for this trip">Log this voyage</a>` : ''}
     </div>`;
 }
 
@@ -4561,10 +4540,6 @@ function updateChartsForTheme(theme) {
 
   // Load tide stations data
   await loadTideStations();
-
-  // Before the voyage list renders: it decides whether a row offers the
-  // "Log this voyage" button.
-  await loadCaptainsLogPresence();
 
   initDarkMode();
   loadPolarData();
