@@ -1,8 +1,8 @@
-<h1 align="center">signalk-github-pages</h1>
+<h1 align="center">GitHub Pages Vessel Tracker</h1>
 
 <p align="center">
   <em>Your boat publishes its own website.</em><br>
-  A Signal K plugin that turns live vessel data into a static GitHub Pages site —
+  <code>signalk-github-pages</code>: a Signal K plugin that turns live vessel data into a static GitHub Pages site —
   position, tracks, instruments and the ship's docs — with no server ashore
   and no git checkout on board.
 </p>
