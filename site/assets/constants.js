@@ -75,11 +75,11 @@ var VESSEL_CONSTANTS = Object.freeze({
   DOCS_CHECKLIST_PREFIX: 'tracker.checklist.',
 
   // ── GitHub (edit-in-place links) ────────────────────────────────────────
-  // "Edit on GitHub" links (docs.js, the Voyages tab's "Log this voyage"
-  // button) point here. Anyone can open the editor, but only collaborators
-  // with push access can commit straight to GITHUB_DEFAULT_BRANCH — GitHub
-  // routes everyone else through "fork + pull request" automatically, so
-  // this alone is what keeps edits gated to contributors.
+  // "Edit on GitHub" links (docs.js) point here. Anyone can open the editor,
+  // but only collaborators with push access can commit straight to
+  // GITHUB_DEFAULT_BRANCH — GitHub routes everyone else through
+  // "fork + pull request" automatically, so this alone is what keeps edits
+  // gated to contributors.
   // Placeholders: src/frontend.ts substitutes the configured repository on the
   // way into the repository, and throws if it cannot find these lines. They
   // used to ship as one particular repository, which meant a substitution that
@@ -87,10 +87,6 @@ var VESSEL_CONSTANTS = Object.freeze({
   // somebody else's repo.
   GITHUB_REPO: 'OWNER/REPO',
   GITHUB_DEFAULT_BRANCH: 'main',
-  // The Voyages tab's "Log this voyage" button edits this file on GitHub. The
-  // button is only rendered when docs/index.json actually lists it, so a site
-  // without a captain's log does not offer to open one.
-  CAPTAINS_LOG_PATH: 'docs/captains-log.md',
 
   // ── Data URLs ────────────────────────────────────────────────────────────
   TRACKS_INDEX_URL:     'data/telemetry/tracks_index.json',
