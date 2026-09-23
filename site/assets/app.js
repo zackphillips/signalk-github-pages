@@ -2205,20 +2205,85 @@ async function drawTideGraph(target) {
 
   // Build NOAA API URL according to official documentation
   // https://api.tidesandcurrents.noaa.gov/api/prod/
-  const buildUrl = (stationId) => {
+  const buildUrl = (stationId, interval = 'h', beginDate = begin, endDate = end) => {
     const params = new URLSearchParams({
       product: 'predictions',
       application: 'vessel-tracker',
-      begin_date: begin,
-      end_date: end,
+      begin_date: beginDate,
+      end_date: endDate,
       datum: 'MLLW',
       station: stationId,
       time_zone: 'gmt',
       units: 'english',
-      interval: 'h',
+      interval,
       format: 'json'
     });
     return `https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?${params.toString()}`;
+  };
+
+  // One predictions request. NOAA reports some errors as HTTP 400 and others
+  // as a 200 with an error object in the body; both throw here.
+  const fetchPredictions = async (requestUrl) => {
+    const res = await fetch(requestUrl);
+    if (res.ok) {
+      const body = await res.json();
+      if (body.error) throw new Error(body.error.message || JSON.stringify(body.error));
+      return body;
+    }
+    let errorDetails = res.statusText;
+    try {
+      const errorBody = await res.text();
+      if (errorBody) {
+        try {
+          const errorJson = JSON.parse(errorBody);
+          errorDetails = errorJson.error?.message || errorJson.message || errorBody;
+        } catch {
+          errorDetails = errorBody;
+        }
+      }
+    } catch {
+      // Ignore errors parsing error response
+    }
+    throw new Error(`HTTP ${res.status}: ${errorDetails}`);
+  };
+
+  // A subordinate station (NOAA type "S") is a set of time and height offsets
+  // from a harmonic one, and NOAA publishes only its highs and lows: the
+  // hourly request answers "No Predictions data was found". Such a station can
+  // only arrive through the tide override (the lookup table ships harmonic
+  // stations only), and it is a valid choice, so draw it from its highs and
+  // lows. Between two extremes the tide follows half a cosine, which is how
+  // NOAA's own subordinate-station curves are drawn. The request is widened by
+  // a day each side so the first and last hours in the window sit between two
+  // extremes rather than past the ends.
+  const fetchInterpolatedFromHiLo = async (stationId) => {
+    const day = 86_400_000;
+    const body = await fetchPredictions(buildUrl(
+      stationId, 'hilo',
+      fmtYYYYMMDD(new Date(startTime.getTime() - day)),
+      fmtYYYYMMDD(new Date(endTime.getTime() + day)),
+    ));
+    const extremes = (Array.isArray(body?.predictions) ? body.predictions : [])
+      .map(d => ({ t: parseNoaaTime(d.t), v: parseFloat(d.v) }))
+      .filter(d => d.t && Number.isFinite(d.v));
+    const hourly = [];
+    if (extremes.length < 2) return { predictions: hourly };
+    const hour = 3_600_000;
+    const pad = (n) => String(n).padStart(2, '0');
+    let i = 0;
+    for (let t = Math.ceil(extremes[0].t / hour) * hour; t <= extremes[extremes.length - 1].t; t += hour) {
+      while (i < extremes.length - 2 && extremes[i + 1].t < t) i += 1;
+      const a = extremes[i];
+      const b = extremes[i + 1];
+      const frac = (t - a.t) / (b.t - a.t);
+      const v = a.v + (b.v - a.v) * (1 - Math.cos(Math.PI * frac)) / 2;
+      const d = new Date(t);
+      hourly.push({
+        t: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:00`,
+        v: v.toFixed(3),
+      });
+    }
+    return { predictions: hourly };
   };
 
   // There is no fallback station. A failed fetch for the nearest station used
@@ -2229,7 +2294,6 @@ async function drawTideGraph(target) {
   const url = buildUrl(targetStation.id);  const tideCacheKey = `tide_${targetStation.id}_${begin}`;
 
   try {
-    let res;
     // Serve from cache if fresh — tide predictions don't change within a day
     let json = (() => { const c = getCached(tideCacheKey, C.TIDE_CACHE_TTL_MS); return c ? { predictions: c } : null; })();
 
@@ -2240,30 +2304,12 @@ async function drawTideGraph(target) {
       url, begin_date: begin, end_date: end
     });
     if (!json) {
-      res = await fetch(url);
-      if (res.ok) {
-        json = await res.json();
-        // NOAA sometimes returns 200 with an error object in the body.
-        if (json.error) {
-          throw new Error(json.error.message || JSON.stringify(json.error));
-        }
-      } else {
-        // Try to get error details from response body
-        let errorDetails = res.statusText;
-        try {
-          const errorBody = await res.text();
-          if (errorBody) {
-            try {
-              const errorJson = JSON.parse(errorBody);
-              errorDetails = errorJson.error?.message || errorJson.message || errorBody;
-            } catch {
-              errorDetails = errorBody;
-            }
-          }
-        } catch {
-          // Ignore errors parsing error response
-        }
-        throw new Error(`HTTP ${res.status}: ${errorDetails}`);
+      try {
+        json = await fetchPredictions(url);
+      } catch (err) {
+        if (!/No Predictions data/i.test(err.message)) throw err;
+        console.debug('Tide fetch: no hourly predictions, trying highs and lows', targetStation.id);
+        json = await fetchInterpolatedFromHiLo(targetStation.id);
       }
     }
     const rawData = Array.isArray(json?.predictions) ? json.predictions : [];
