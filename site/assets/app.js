@@ -2155,8 +2155,9 @@ function findStationById(stationId) {
 // Which NOAA station to query, and why: nearest-by-distance from a live GPS
 // fix, or the exact one the config page overrides to when there is none. The
 // override is never distance-ranked — it is a choice, not a guess — so an ID
-// outside the local lookup table (any valid NOAA station, not just the ~50
-// West Coast ones this table ships) still works, just without a name to show.
+// outside the local lookup table (which ships only NOAA's harmonic stations;
+// see scripts/update-tide-stations.mjs) still works, just without a name to
+// show.
 async function resolveTideStation(target) {
   if (target.mode === 'gps') {
     const station = await findNearestNOAAStation(target.lat, target.lon);
