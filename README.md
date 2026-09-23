@@ -11,7 +11,7 @@
   <img alt="Signal K plugin" src="https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4">
   <img alt="Node 20+" src="https://img.shields.io/badge/node-%E2%89%A520-5fa04e">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6">
-  <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="License BSD-3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-blue">
 </p>
 
 ---
@@ -990,4 +990,4 @@ people ashore, and it stays up when the boat's link does not.
 
 ## License
 
-MIT.
+BSD 3-Clause. See [LICENSE](LICENSE).
