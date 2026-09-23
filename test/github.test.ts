@@ -160,7 +160,8 @@ describe('tokenHint', () => {
 
   it('points a sign-in that cannot see the repository at installing the app', () => {
     const url = 'https://github.com/apps/signalk-github-pages/installations/new';
-    expect(tokenHint(404, 'owner/site', 'app', url)).toContain(`Install the GitHub App on it (${url})`);
+    expect(tokenHint(404, 'owner/site', 'app', url)).toContain(`not installed on it (${url})`);
+    expect(tokenHint(404, 'owner/site', 'app', url)).toContain('can create it');
     expect(tokenHint(401, 'owner/site', 'app')).toContain('Sign in again');
     // Nobody made a token, so there is no permission box to go back and tick.
     expect(tokenHint(403, 'owner/site', 'app')).not.toContain('fine-grained');

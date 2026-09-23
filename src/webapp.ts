@@ -16,6 +16,8 @@
  *   GET  /auth              whether the plugin is signed in to GitHub, and as whom
  *   POST /auth/device       start signing in: a code to enter at github.com/login/device
  *   POST /auth/signout      forget the sign-in, or abandon one in progress
+ *   POST /repo/check        look at the repository again: missing, empty, not installed, Pages off
+ *   POST /repo/setup        create the repository, or finish it, and turn Pages on
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -41,6 +43,7 @@ import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './s
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
 import { appInstallUrl, type GitHubAuth } from './githubAuth';
+import { RepoSetupError, type RepoCheck } from './repoSetup';
 
 /** The bits of an Express response this module uses. */
 interface Response {
@@ -94,6 +97,12 @@ export interface WebappDeps {
    * so this module still never calls the server itself.
    */
   publishNow: (reason: string) => Promise<PublishNowResult>;
+  /** What the last look at the repository found, or null before one. */
+  repository: () => RepoCheck | null;
+  /** Look again. A few GETs. */
+  checkRepository: () => Promise<RepoCheck>;
+  /** Create or finish the repository and turn Pages on, then publish. */
+  setUpRepository: () => Promise<RepoCheck>;
   log: (message: string) => void;
 }
 
@@ -178,6 +187,7 @@ export function registerRoutes(
         ...(await auth().status()),
         publishingWith: current ? current.config.github.auth : null,
         repo: current ? current.config.github.repo : null,
+        repository: current ? current.repository() : null,
         installUrl: appInstallUrl(),
       };
     };
@@ -210,6 +220,35 @@ export function registerRoutes(
       }
     });
   }
+
+  // POSTs: the check spends requests, and the setup can create a public
+  // repository on someone's account. Neither happens because a page opened.
+  router.post('/repo/check', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.checkRepository());
+    } catch (error) {
+      fail(response, error, 502);
+    }
+  });
+
+  router.post('/repo/setup', async (_request, response) => {
+    const current = running(response);
+    if (!current) return;
+    try {
+      response.json(await current.setUpRepository());
+    } catch (error) {
+      if (error instanceof RepoSetupError) {
+        // A refusal with a way round it: the links do by hand what the app
+        // was not allowed to.
+        current.log(`Repository setup: ${error.message}`);
+        response.status(409).json({ error: error.message, links: error.links });
+        return;
+      }
+      fail(response, error, 502);
+    }
+  });
 
   router.get('/status', async (_request, response) => {
     const current = running(response);

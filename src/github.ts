@@ -109,8 +109,9 @@ function signInHint(status: number | undefined, repo: string, installUrl?: strin
   }
   if (status === 404) {
     return (
-      ` ${repo} is not visible to the sign-in. Install the GitHub App on it` +
-      `${installUrl ? ` (${installUrl})` : ''}, and check the owner and repository name.`
+      ` ${repo} is not visible to the sign-in: it does not exist yet, or the GitHub App is not` +
+      ` installed on it${installUrl ? ` (${installUrl})` : ''}. The plugin's console tells which,` +
+      ' and can create it.'
     );
   }
   return '';
@@ -166,6 +167,7 @@ export class GitHubClient {
     path: string,
     body?: unknown,
     extraHeaders: Record<string, string> = {},
+    anonymous = false,
   ): Promise<{ status: number; data: T; headers: Headers }> {
     const url = `https://api.github.com${path}`;
     const payload = body === undefined ? undefined : JSON.stringify(body);
@@ -175,7 +177,7 @@ export class GitHubClient {
       return this.fetchImpl(url, {
         method,
         headers: {
-          Authorization: `Bearer ${await this.token()}`,
+          ...(anonymous ? {} : { Authorization: `Bearer ${await this.token()}` }),
           Accept: 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2022-11-28',
           'User-Agent': this.userAgent,
@@ -189,7 +191,12 @@ export class GitHubClient {
     let response = await send();
     // Once, not in a loop: a token refreshed a moment ago and still refused
     // is a revoked sign-in, and retrying it only spends the rate limit.
-    if (response.status === 401 && this.onUnauthorized && (await this.onUnauthorized())) {
+    if (
+      !anonymous &&
+      response.status === 401 &&
+      this.onUnauthorized &&
+      (await this.onUnauthorized())
+    ) {
       response = await send();
     }
 
@@ -349,6 +356,112 @@ export class GitHubClient {
       if (error instanceof GitHubError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  // ── Setting a repository up ──────────────────────────────────────────────
+  // Used once, from the console, never by a cycle.
+
+  /**
+   * Whether the repository exists as far as the public can tell, asked
+   * without credentials.
+   *
+   * A GitHub App's token sees only the repositories it is installed on, so
+   * its 404 cannot tell "no such repository" from "not installed on it".
+   * The anonymous answer can, for a public one. Null when GitHub would not
+   * say: the anonymous rate limit is 60 an hour per address, and a marina's
+   * shared uplink can spend that without us.
+   */
+  async existsPublicly(): Promise<boolean | null> {
+    try {
+      await this.request('GET', `/repos/${this.repo}`, undefined, {}, true);
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return false;
+      return null;
+    }
+  }
+
+  /** `User` or `Organization`, which decides where a repository is created. */
+  async accountType(login: string): Promise<string | null> {
+    const { data } = await this.request<{ type?: string }>(
+      'GET',
+      `/users/${encodeURIComponent(login)}`,
+    );
+    return data?.type ?? null;
+  }
+
+  /**
+   * Create this client's repository: public, because Pages on a free plan
+   * serves only public repositories, and with a README so there is a branch
+   * and a first commit for the Git Data API to build on.
+   */
+  async createRepository(organization: boolean, description: string): Promise<{ defaultBranch: string }> {
+    const [owner, name] = this.repo.split('/') as [string, string];
+    const { data } = await this.request<{ default_branch?: string }>(
+      'POST',
+      organization ? `/orgs/${encodeURIComponent(owner)}/repos` : '/user/repos',
+      { name, description, private: false, auto_init: true },
+    );
+    return { defaultBranch: data?.default_branch ?? 'main' };
+  }
+
+  /** The default branch, or null for a repository with no commits yet. */
+  async defaultBranch(): Promise<string | null> {
+    const { data } = await this.request<{ default_branch?: string; size?: number }>(
+      'GET',
+      `/repos/${this.repo}`,
+    );
+    return data?.default_branch ?? null;
+  }
+
+  /**
+   * One file through the Contents API — the only write that works on a
+   * repository with no commits, where the Git Data API answers 409.
+   */
+  async putFile(path: string, content: string, message: string): Promise<void> {
+    await this.request(
+      'PUT',
+      `/repos/${this.repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,
+      { message, content: Buffer.from(content, 'utf-8').toString('base64') },
+    );
+  }
+
+  /** Point the configured branch at a commit, creating it. */
+  async createBranch(commitSha: string): Promise<void> {
+    await this.request('POST', `/repos/${this.repo}/git/refs`, {
+      ref: `refs/heads/${this.branch}`,
+      sha: commitSha,
+    });
+  }
+
+  /** Head of another branch, for starting the configured one from it. */
+  async getBranchHead(branch: string): Promise<string> {
+    const { data } = await this.request<{ object: { sha: string } }>(
+      'GET',
+      `/repos/${this.repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+    );
+    return data.object.sha;
+  }
+
+  /** The Pages site, or null when Pages is off for this repository. */
+  async getPages(): Promise<{ url?: string; source?: { branch?: string; path?: string } } | null> {
+    try {
+      const { data } = await this.request<{ html_url?: string; source?: { branch?: string; path?: string } }>(
+        'GET',
+        `/repos/${this.repo}/pages`,
+      );
+      return { url: data?.html_url, source: data?.source };
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** Serve the configured branch's root, which is where the site is written. */
+  async enablePages(): Promise<void> {
+    await this.request('POST', `/repos/${this.repo}/pages`, {
+      source: { branch: this.branch, path: '/' },
+    });
   }
 
   /** Raw file contents by blob SHA (used to read docs without a checkout). */

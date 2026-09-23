@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MaintenanceInputError } from '../src/docsSeed';
 import { GitHubClient } from '../src/github';
 import { GitHubAuth } from '../src/githubAuth';
+import { RepoSetupError } from '../src/repoSetup';
 import { Publisher } from '../src/publisher';
 import { StateStore } from '../src/state';
 import {
@@ -79,6 +80,13 @@ const deps = (over: Partial<WebappDeps> = {}): WebappDeps =>
     readTree: () => ({}),
     polars: () => ({ csv: '', status: null }),
     passage: () => null,
+    repository: () => null,
+    checkRepository: async () => {
+      throw new Error('not in this test');
+    },
+    setUpRepository: async () => {
+      throw new Error('not in this test');
+    },
     publishNow: async () => ({ published: true, files: ['a'], bytes: 10 }),
     log: () => {},
     ...over,
@@ -179,6 +187,24 @@ describe('the preview routes', () => {
       state: 'signed-out',
       publishingWith: 'token',
       installUrl: 'https://github.com/apps/signalk-github-pages/installations/new',
+    });
+  });
+
+  it('answers a refused repository setup with the links that do it by hand', async () => {
+    const { router, call } = fakeRouter();
+    const links = { create: 'https://github.com/new?name=site' };
+    registerRoutes(router, () =>
+      deps({
+        setUpRepository: async () => {
+          throw new RepoSetupError('GitHub would not let the app create owner/site (HTTP 403).', links);
+        },
+      }),
+    );
+    const result = await call('post', '/repo/setup');
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({
+      error: 'GitHub would not let the app create owner/site (HTTP 403).',
+      links,
     });
   });
 

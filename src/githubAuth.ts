@@ -95,14 +95,7 @@ export type AuthStatus =
       refreshExpiresAt: string | null;
       /** Set once GitHub has turned the token away and no refresh helped. */
       rejected: boolean;
-      /** What the first look at the repository after signing in found. */
-      repoCheck: RepoCheck | null;
     };
-
-export interface RepoCheck {
-  ok: boolean;
-  detail: string;
-}
 
 /**
  * Publishing was asked for with nobody signed in.
@@ -214,7 +207,6 @@ export class GitHubAuth {
   private polling: Promise<void> | null = null;
   private refreshing: Promise<StoredGrant> | null = null;
   private rejected = false;
-  private repoCheck: RepoCheck | null = null;
   /** Why the last flow or refresh ended, for a signed-out console. */
   private lastError: string | undefined;
 
@@ -288,7 +280,6 @@ export class GitHubAuth {
         signedInAt: grant.signedInAt,
         refreshExpiresAt: grant.refreshExpiresAt ?? null,
         rejected: this.rejected,
-        repoCheck: this.repoCheck,
       };
     }
     if (!this.available) {
@@ -305,10 +296,6 @@ export class GitHubAuth {
   /** True when a sign-in is stored, whether or not GitHub still honors it. */
   async signedIn(): Promise<boolean> {
     return (await this.load()) !== null;
-  }
-
-  recordRepoCheck(check: RepoCheck): void {
-    this.repoCheck = check;
   }
 
   private async post<T>(url: string, params: Record<string, string>): Promise<T> {
@@ -423,7 +410,6 @@ export class GitHubAuth {
       grant.login = await this.whoAmI(grant.accessToken);
       await this.save(grant);
       this.rejected = false;
-      this.repoCheck = null;
       finish();
       this.log(`Signed in to GitHub${grant.login ? ` as ${grant.login}` : ''}.`);
       try {
@@ -474,7 +460,6 @@ export class GitHubAuth {
     if (this.pending) this.pending.cancelled = true;
     this.pending = null;
     this.rejected = false;
-    this.repoCheck = null;
     this.lastError = undefined;
     await this.save(null);
     this.log('Signed out of GitHub.');

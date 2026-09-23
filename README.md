@@ -62,7 +62,12 @@ live `HEAD`.
 
 **1. A repository with Pages on.** The plugin publishes to `<you>.github.io`
 unless you override the name; anything else is served at `/<repo>/`.
-Settings → Pages → Deploy from a branch → `main` / `(root)`.
+Settings → Pages → Deploy from a branch → `main` / `(root)`. If you sign in
+(step 2), skip this: the console sees the repository is missing, empty, on
+the wrong branch or without Pages, and **Set up repository** fixes it. It
+creates a missing one public, with a README, in your account or your
+organization. It never touches a repository that already has commits,
+beyond starting the configured branch from the default one.
 
 **2. Sign in, or make a token.** The easy way is to leave the token field
 empty and sign in from the plugin's console (step 3). It shows a code; you
@@ -1030,8 +1035,17 @@ GitHub → Settings → Developer settings → GitHub Apps → New GitHub App:
 | Enable Device Flow | **Ticked**. Without it every sign-in fails with `device_flow_disabled` |
 | Webhook → Active | Unticked |
 | Repository permissions → Contents | **Read and write** |
+| Repository permissions → Pages | **Read and write**: seeing whether Pages is on, and turning it on |
+| Repository permissions → Administration | Read and write, *optional*: see below |
 | Repository permissions → Metadata | Read-only (forced) |
 | Where can this GitHub App be installed? | Any account |
+
+Administration is what lets **Set up repository** create a repository and
+turn Pages on. It is the permission that can also delete or rename the
+repositories the app is installed on, and GitHub shows it at install time in
+those words. Without it, everything else works and the console hands over a
+prefilled github.com/new link and the Pages settings page instead: two taps
+by hand in place of one button. Leave it off unless you want the button.
 
 Both token settings work. Unticked, a sign-in lasts until it is revoked.
 Ticked, the access token lasts eight hours and the refresh token six months,

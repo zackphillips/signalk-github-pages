@@ -29,6 +29,7 @@ import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
 import { appInstallUrl, GitHubAuth, GITHUB_APP } from './githubAuth';
+import { checkRepository, setUpRepository, type RepoCheck, type RepoTarget } from './repoSetup';
 import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
@@ -183,6 +184,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // causes. Built on first use: the data directory is the server's to hand
   // out, and not every release has it ready while plugins are constructed.
   let githubAuth: GitHubAuth | undefined;
+  // What the last look at the repository found, for the console. Kept out
+  // here so a restart does not blank it before the next look.
+  let repoCheck: RepoCheck | null = null;
   const auth = (): GitHubAuth =>
     (githubAuth ??= new GitHubAuth({
       store: new StateStore(app.getDataDirPath()),
@@ -677,6 +681,53 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         }
       }
 
+      /**
+       * Look at the repository and remember what was found, for the console.
+       *
+       * A few GETs. Run at start, after a sign-in, and when the console asks;
+       * never from a cycle, which already says what failed in its own words.
+       */
+      const repoTarget = async (): Promise<RepoTarget> => {
+        let login: string | null = null;
+        if (config.github.auth === 'app') {
+          const status = await auth().status();
+          if (status.state === 'signed-in') login = status.login;
+        }
+        return {
+          owner: config.github.owner,
+          name: config.github.name,
+          repo: config.github.repo,
+          branch: config.github.branch,
+          auth: config.github.auth,
+          installUrl: appInstallUrl(),
+          login,
+        };
+      };
+      const lookAtRepository = async (): Promise<RepoCheck> => {
+        repoCheck = await checkRepository(client, await repoTarget());
+        if (!repoCheck.ok) app.debug(`Repository: ${repoCheck.detail}`);
+        return repoCheck;
+      };
+      /** Publish now as a whole tick, so the status line and alarm catch up too. */
+      const tickNow = async () => {
+        if (stopped) return;
+        if (timer) clearTimeout(timer);
+        await tick();
+      };
+
+      /**
+       * A sign-in just landed: look at the repository, then publish if it is
+       * ready. What the look finds is on the console while the person is still
+       * holding the phone — most often that the repository does not exist yet
+       * or the app is not installed on it — rather than an hour later in the
+       * plugin status line. A whole tick rather than `publishNow`, because at
+       * the stationary cadence the next scheduled one could be an hour away.
+       */
+      auth().setOnSignedIn(async () => {
+        if (stopped || config.github.auth !== 'app') return;
+        if ((await lookAtRepository()).repository === 'ok') await tickNow();
+      });
+
       webapp = {
         config,
         store,
@@ -688,49 +739,46 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         polars: () => ({ csv: polarCsv, status: polarStatus }),
         passage: () => passage,
         publishNow,
+        repository: () => repoCheck,
+        checkRepository: lookAtRepository,
+        // Creating a public repository on someone's account is a button a
+        // person presses, never something a cycle decides. Once it is ready,
+        // publish at once: an empty repository is not a site.
+        setUpRepository: async () => {
+          try {
+            repoCheck = await setUpRepository(client, await repoTarget(), (message) =>
+              app.debug(message),
+            );
+          } catch (error) {
+            // Whatever was done before the refusal is worth showing.
+            await lookAtRepository().catch(() => null);
+            throw error;
+          }
+          // Not awaited: the first publish writes the whole site, which over
+          // a hotspot is longer than a button should hang. The console reads
+          // the status again shortly after.
+          if (repoCheck.repository === 'ok') {
+            void tickNow().catch((error: any) =>
+              app.error(`Publish after repository setup failed: ${error?.message ?? error}`),
+            );
+          }
+          return repoCheck;
+        },
         log: (message) => app.debug(message),
       };
 
-      /**
-       * A sign-in just landed: look at the repository, then publish.
-       *
-       * The look is what the console shows beside "Signed in", and the one
-       * thing it most often says is that the app was never installed on this
-       * repository — worth hearing while the person is still holding the
-       * phone, not an hour later from the plugin status line. The publish is
-       * a whole tick rather than `publishNow`, so the status line and the
-       * failure alarm catch up at once instead of on the next scheduled
-       * cycle, which at the stationary cadence could be an hour away.
-       */
-      auth().setOnSignedIn(async () => {
-        if (stopped || config.github.auth !== 'app') return;
-        try {
-          await client.getRef();
-          auth().recordRepoCheck({
-            ok: true,
-            detail: `Can read ${config.github.repo}@${config.github.branch}.`,
-          });
-        } catch (error: any) {
-          // The explanation first and the request line not at all: this is
-          // read on a phone, and the console links the install page itself.
-          const why = tokenHint(error?.status, config.github.repo, 'app').trim();
-          auth().recordRepoCheck({
-            ok: false,
-            detail: why ? `${why} (HTTP ${error.status})` : String(error?.message ?? error),
-          });
-          return;
-        }
-        if (timer) clearTimeout(timer);
-        await tick();
-      });
-
       void refreshHistoryProviders();
       // Seeding is the first thing every cycle does, so there is nothing to
-      // do before the first one.
+      // do before the first one. The repository look is for the console and
+      // runs beside it; with nobody signed in there is nothing to look with.
       void (async () => {
         await tick();
         watchState();
       })();
+      void (async () => {
+        if (config.github.auth === 'app' && !(await auth().signedIn())) return;
+        await lookAtRepository();
+      })().catch((error: any) => app.debug(`Could not look at the repository: ${error?.message ?? error}`));
     },
 
     stop() {
