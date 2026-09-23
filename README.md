@@ -89,18 +89,19 @@ The plugin reads the failure status back to you: 401 says the token is wrong
 or expired, 403 says it lacks Contents: read and write, 404 says it cannot see
 the repository.
 
-**3. Install it.** Not on npm yet, so not in the App Store either — install
-straight from git into the Signal K home directory:
+**3. Install it.** In the Signal K admin UI, **Appstore → Available**, search
+for *GitHub Pages*, install, and restart the server when it asks. From a
+shell, the same thing is:
 
 ```bash
 cd ~/.signalk
-npm install github:zackphillips/signalk-github-pages
+npm install signalk-github-pages
 sudo systemctl restart signalk        # or however you run the server
 ```
 
-npm clones it, installs the dependencies and runs the TypeScript build via the
-package's `prepare` script, leaving a loadable plugin in
-`~/.signalk/node_modules/signalk-github-pages`.
+To run unreleased code from `main`, install
+`github:zackphillips/signalk-github-pages` instead; npm clones it and runs the
+TypeScript build through the package's `prepare` script.
 
 Then open **Server → Plugin Config → GitHub Pages Vessel Tracker**, fill in
 the repository owner and the token, enable. Everything else has a working
@@ -110,7 +111,7 @@ The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetr
 only. Give Pages a minute, then open the URL.
 
 > [!TIP]
-> Install [signalk-autostate](https://www.npmjs.com/package/signalk-autostate)
+> Install [signalk-autostate](https://www.npmjs.com/package/@meri-imperiumi/signalk-autostate)
 > if you have not. It sets `navigation.state`, which is what makes the cadence
 > adaptive. Without it every cycle uses the stationary interval.
 
@@ -252,7 +253,7 @@ thing off.
 not logged rather than drawing a copy of a shorter one. The log is as long as
 `instrumentLog.hours`, which defaults to 1. Set it to 24 for all four; the
 bucket width grows with the window (4 minutes at 24 hours), so the file
-stays around 130 kB rather than growing 24-fold.
+grows 6-fold rather than 24-fold.
 
 The whole log goes up on every publish, so its size is the bucket count times
 the paths: see
@@ -285,8 +286,9 @@ grow with the window:
 | 24 | 240 s | 360 |
 
 The whole file is uploaded on every publish, so the cap is what keeps a day of
-history off a hotspot budget: 24 hours costs about 130 kB a cycle at the
-size of the default two dozen paths rather than the half megabyte 1440 one-minute buckets would.
+history off a hotspot budget. Each path costs roughly 35 bytes a bucket, so
+24 hours of 30 paths is about 380 kB a cycle, where 1440 one-minute buckets
+would be 1.5 MB.
 What it costs instead is detail inside the shorter views — at a 24-hour window
 the 1-hour view is fifteen points. An hour is the default because it is what
 every install can carry; six hours is the longest window that keeps full
@@ -384,7 +386,7 @@ it cannot show you maneuvering in the harbor.
 
 **Every** position in the published snapshot is checked, not just
 `navigation.position`. That matters most for `navigation.anchor.position`:
-anchoring inside a zone used to show the zone center for the boat while
+checking only the boat would show the zone center for the boat while
 publishing the true anchor drop coordinates a few keys away in the same file.
 Anything position-shaped anywhere in the tree is covered, including paths a
 plugin added that this one has never heard of.
@@ -418,10 +420,7 @@ spare. GPS wanders a few meters at the dock; a zone whose edge is 20 m from
 the slip will let a night's worth of wander through.
 
 The map draws the zones it is redacting against, as red dashed rings, on the
-main map and on each voyage's map. It used to draw one fixed ring at the
-Python daemon's old dock in San Francisco, on every site, while the
-configured zones were never drawn at all — a redaction claim that was wrong
-in both directions.
+main map and on each voyage's map.
 
 > [!NOTE]
 > A zone missing its radius is a hard configuration error, not a warning. A
@@ -433,8 +432,6 @@ in both directions.
 The dashboard has no thresholds of its own. Whether 46% state of charge is
 fine or alarming is a property of a battery bank, not of a web page: 46% is
 comfortable on 600Ah of LiFePO4 and nearly flat on a tired 200Ah of AGM.
-The frontend used to carry twelve constants that answered for every boat —
-battery, tank, anchor and packet-loss levels — and they are gone.
 
 What paints a value now is `meta.zones` on the Signal K path, which is where
 the server keeps it anyway:
@@ -481,12 +478,11 @@ counts it had already collected. An empty list publishes everything.
 
 **Firings are counted from deltas, not from snapshots.** The plugin
 subscribes to the notification stream, so one that comes on and clears
-between two publishes is still counted — a bilge pump that runs for three
-seconds every ten minutes used to be invisible, because the tree was only
-read once a cycle and at the dock that is once an hour. The panel says which
-way its numbers were collected: a real count while the plugin has been
-running, or a floor on a server that offers no delta stream.
-
+between two publishes is still counted: a bilge pump that runs for three
+seconds every ten minutes shows up even at the dock, where a cycle is an hour
+apart. The panel says which way its numbers were collected: a real count
+while the plugin has been running, or a floor on a server that offers no
+delta stream.
 
 `data/telemetry/notifications.json` carries two things. **Active** is the
 current set straight off `notifications.*`, raised in a banner above the tabs
@@ -500,10 +496,11 @@ would score thirty times higher underway than at anchor. An escalation
 (`warn` → `alarm`) counts as a new firing; a producer that re-stamps an
 unchanged notification does not.
 
-The honest limit, and the panel says so: anything that fires **and clears**
-between two publishes is never seen. At the dock that gap is the stationary
-interval, an hour by default. The counts are a floor, not a total. The panel
-also marks any window longer than the log has been running, so a plugin
+On a server with no delta stream the plugin falls back to comparing one
+publish with the next, and anything that fires **and clears** between two
+publishes is never seen. At the dock that gap is the stationary interval, an
+hour by default, so those counts are a floor, not a total. The panel also
+marks any window longer than the log has been running, so a plugin
 restarted at 06:00 does not report a quiet night it never watched.
 
 The log lives in the plugin's data directory, is pruned to 24 hours, and is
@@ -537,10 +534,9 @@ The logo and the icon are two separate file pickers, `site.logo` and
 them to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`, uploaded
 independently and only when their own bytes change. The logo is shown beside
 the name in the status hero and the footer; the icon is what the browser tab,
-the phone home screen and a shared link's preview use. They used to be the
-same upload, which meant a detailed logo that read fine at 200px came out as a
-muddy favicon, and a boat that wanted a clean square icon had to make its
-status-hero image match it.
+the phone home screen and a shared link's preview use. They are separate
+because a detailed logo that reads fine at 200px comes out as a muddy
+favicon.
 
 Neither field has a size limit of the plugin's own. Each image is
 fingerprinted, so a large file costs one upload rather than one per cycle.
@@ -548,21 +544,15 @@ The ceiling that does exist is the Signal K server's: it accepts a config save
 up to `FILEUPLOADSIZELIMIT`, 10 MB by default, and base64 adds about a third
 on the way in.
 
-With no logo set, the pages ask for `data/vessel/logo.png` — where the first
-adopters of this tracker committed theirs by hand — and hide the image if it is
-not there. With no icon set, the tab, home-screen and link-preview icon fall
-back to a generic `assets/icon.svg` that ships with the plugin — there is no
-hand-committed fallback path for the icon, since it is a new field with no
-history to keep working.
+With no logo set, the pages ask for a hand-committed `data/vessel/logo.png`
+and hide the image if it is not there. With no icon set, the tab, home-screen
+and link-preview icon fall back to a generic `assets/icon.svg` that ships
+with the plugin. Do not edit files under `assets/` by hand: the plugin owns
+them and overwrites them on upgrade.
 
-None of this used to be configurable. The pages named one boat in their
-preview tags and their manifest, and the six favicon and home-screen icons in
-`assets/` were that boat's logo, published into every adopter's repository
-under paths the plugin owns and overwrites on upgrade. Editing them by hand
-lasted until the next release.
+`assets/custom.css` is yours, loaded last by both pages and never written by
+the plugin, for anything the config page does not reach.
 
-`assets/custom.css` is still yours, loaded last by both pages and never written
-by the plugin, for anything the config page does not reach.
 ## What comes from Signal K
 
 The boat's own details are not typed on the config page and not published a
@@ -598,10 +588,6 @@ comes from the **Course API** — `startTime` is the departure, with no state
 for the plugin to keep — so clearing the destination on arrival takes the
 banner down by itself.
 
-This used to be a `passage:` block hand-edited into the published config from
-the GitHub web UI before departure and deleted on arrival, which meant it was
-wrong whenever anyone forgot. Nothing on the site is hand-edited now.
-
 No coordinates are published, only names: `previousPoint` is usually the
 vessel's own position at the moment you activated the waypoint, and falling
 back to its latitude and longitude would put the slip you just left on a
@@ -620,32 +606,14 @@ boat's own position when there is one. With neither a fix nor an override the
 panels say so and wait. The checkbox's note names the station the site would
 pick right now, and how far away it is.
 
-NOAA's timestamps are UTC with a space and no zone (`2026-09-22 20:00`). The
-tide chart used to hand that string straight to `new Date()`, which Safari
-reads as Invalid Date — every point dropped, a heading over an empty chart on
-an iPhone — and Chrome reads as local time, shifting the curve by the UTC
-offset. Both panels now parse it as UTC explicitly.
+A station ID rather than a position on purpose: a NOAA station ID names a
+public reference point, not anywhere the boat has been, so there is nothing
+here for a privacy zone to need to redact. A default position typed or
+captured here would reach the repository without passing through the zones.
 
-A station ID rather than a position on purpose: this setting replaced a
-"default position" lat/lon, captured from `navigation.position` by a checkbox
-that read the self tree directly, ahead of the privacy-zone redaction that
-guards every other position on its way to the repository — a boat whose
-default position happened to sit inside its own privacy zone published its
-exact home coordinates unredacted. A NOAA station ID names a public reference
-point, not anywhere the boat has been, so there is nothing here for a privacy
-zone to need to redact.
-
-Nothing stands in for it beyond that. The frontend used to carry a hardcoded
-San Francisco Bay, so a boat in the Chesapeake with a cold GPS was shown
-Golden Gate tides under a heading that read like its own — a wrong number
-presented as a right one. The same went for a fallback privacy zone at one
-particular dock, and for a whole fallback vessel identity (name, MMSI,
-documentation number) used when the site configuration failed to load, which
-made every such site introduce itself as somebody else's boat. So was a
-fabricated telemetry snapshot shown when `signalk_latest.json` would not
-load, which told anyone following the boat it was sailing in ten knots off
-Ocean Beach when in fact publishing had broken. All of them are gone: unknown
-renders as unknown.
+Nothing stands in for it beyond that. There is no built-in default location,
+vessel identity or sample telemetry: a site whose data will not load says so
+rather than showing someone else's boat.
 
 ## Polars
 
@@ -709,6 +677,7 @@ into a commit.
 | `index.html`, `docs.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
 | `data/vessel/logo.*` | Plugin, but only while a logo is set on the config page |
+| `data/vessel/icon.*` | Plugin, but only while an icon is set on the config page |
 | `docs/*.md` | **You** — the console can create `docs/AGENTS.md`, `docs/ships-docs.md` and `docs/maintenance/log.md` if they do not exist, and never rewrites one |
 | `assets/custom.css` | **You** — loaded last by both pages, never written here |
 | Everything else | **You** |
@@ -865,15 +834,13 @@ snapshot, the page and the data have come from different places: the data is
 fetched network-first, the page was served by the service worker out of the
 device's cache.
 
-That used to be permanent. The shell cache was named by a constant, served
-cache-first and never revalidated, so a device that had loaded the site once
-kept that release's HTML and JavaScript for good — including across a plugin
-upgrade that published a new frontend. From 0.2.0 the cache is named after the
-plugin version, shell assets are stale-while-revalidate, and `data/` is never
-pre-cached, so a publish reaches a returning device on the next load or two.
+The cache is named after the plugin version, shell assets are
+stale-while-revalidate, and `data/` is never pre-cached, so a publish reaches
+a returning device on the next load or two. A device that loaded a site
+published by a release before 0.2.0 can stay stuck on that release's worker.
 
-To clear a device that is still stuck on the old worker: open the site in a
-private tab to confirm that is what it is, then on iOS use Settings → Safari →
+To clear it: open the site in a private tab to confirm that is what it is,
+then on iOS use Settings → Safari →
 Advanced → Website Data → your site → Delete, or on a desktop browser hard-
 reload it.
 
@@ -897,7 +864,7 @@ node -e "console.log(require(process.env.HOME + \
 
 1. **No such file** — the build did not run. This is the usual one after a
    `git clone` straight into `node_modules`, which skips npm entirely and so
-   skips `prepare`. Fix it in place:
+   skips `prepare`. The npm package ships `dist/` prebuilt. Fix it in place:
    ```bash
    cd ~/.signalk/node_modules/signalk-github-pages && npm install && npm run build
    ```
@@ -908,9 +875,6 @@ node -e "console.log(require(process.env.HOME + \
    confirm the server was restarted, that it is reading the `~/.signalk` you
    are looking at (`SIGNALK_NODE_CONFIG_DIR` overrides it), and that Node is
    20 or newer (`node -v`), which is what `package.json` asks for.
-
-`npm install signalk-github-pages` by name fails with a 404 until this is
-published. Use the git form above.
 
 ## Development
 
@@ -947,9 +911,16 @@ src/
   snapshot.ts       Self-tree read, stale filter, position redaction
   privacy.ts        Haversine, privacy zones
   positions.ts      positions_index.json
-  instrumentLog.ts  instrument_log.json + the path allowlist
+  instrumentLog.ts  instrument_log.json + the path exclusion list
+  history.ts        Reading the instrument log back from a history provider
+  track.ts          Recording the track from position deltas
   gpx.ts            Per-day GPX and tracks_index.json
   docsIndex.ts      docs/index.json
+  docsSeed.ts       The console's starter docs and maintenance log
+  notifications.ts  notifications.json: active set and firing log
+  notificationRecorder.ts  Counting firings from the delta stream
+  alarm.ts          The publish-failed Signal K notification
+  logo.ts           The logo and icon uploads
   siteConfig.ts     data/vessel/site.json, and reading the boat off the tree
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv, from the server or the config
@@ -959,8 +930,11 @@ src/
   github.ts         Git Data API client, publish-with-retry
   manifest.ts       Ownership allowlist
   state.ts          Rolling state, atomic writes
+  signalk.ts        The server API surface this plugin uses
+  time.ts           Timestamp helpers
 site/               The published site, shipped in the package
 public/             The console webapp Signal K mounts
+seed/               Starter docs the console can commit
 sample/             Fixture telemetry for the dev server
 ```
 
