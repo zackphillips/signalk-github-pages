@@ -98,6 +98,33 @@ describe('Publisher', () => {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
 
+  it('leaves hidden paths out of the published snapshot', async () => {
+    const publisher = makePublisher({ paths: { hide: 'electrical\nenvironment.wind' } });
+    await publisher.runCycle(tree());
+    const snapshot = JSON.parse(fake.files.get('data/telemetry/signalk_latest.json') as string);
+    expect(snapshot.electrical).toBeUndefined();
+    expect(snapshot.environment.wind).toBeUndefined();
+    expect(snapshot.navigation.speedOverGround.value).toBeTypeOf('number');
+  });
+
+  it('publishes no track when the position itself is hidden', async () => {
+    const publisher = makePublisher({ paths: { hide: 'navigation.position' } });
+    await publisher.runCycle(tree(), {
+      fixes: [
+        {
+          latitude: 38,
+          longitude: -123,
+          timestamp: '2026-03-01T19:59:00Z',
+          speedOverGround: null,
+          courseOverGroundTrue: null,
+        },
+      ],
+    });
+    const snapshot = JSON.parse(fake.files.get('data/telemetry/signalk_latest.json') as string);
+    expect(snapshot.navigation.position).toBeUndefined();
+    expect(fake.files.has('data/telemetry/positions_index.json')).toBe(false);
+  });
+
   it('publishes telemetry, the frontend, the config and the docs index on the first cycle', async () => {
     const publisher = makePublisher();
     await publisher.seed();

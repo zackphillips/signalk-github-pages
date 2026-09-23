@@ -7,6 +7,7 @@
  * freeze the site on stale data.
  */
 import type { PrivacyZone } from './config';
+import { isExcludedPath } from './instrumentLog';
 import { privacyZoneCenter, type ZoneCenter } from './privacy';
 import type { SignalKApp } from './signalk';
 
@@ -113,6 +114,38 @@ export function filterStaleData(
     else blob[key] = pruned;
   }
   return blob;
+}
+
+/**
+ * Remove every path the adopter has hidden, subtree and all.
+ *
+ * The dashboard draws whatever the snapshot carries, so this is what takes a
+ * card off the site — and, since the snapshot is a public file, what keeps
+ * the value out of the repository rather than merely out of view. Metadata
+ * rides along with its node: a hidden path leaves no `meta` behind either.
+ *
+ * Mutates the blob. Returns the paths removed, for the log.
+ */
+export function hidePaths(blob: Tree, patterns: string[]): string[] {
+  const removed: string[] = [];
+  if (!patterns.length || !blob || typeof blob !== 'object') return removed;
+  const visit = (node: Record<string, any>, prefix: string): void => {
+    for (const key of Object.keys(node)) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (isExcludedPath(path, patterns)) {
+        delete node[key];
+        removed.push(path);
+        continue;
+      }
+      const child = node[key];
+      // `value`, `meta` and `values` are a leaf's own fields, not children
+      // with paths of their own.
+      if (key === 'value' || key === 'meta' || key === 'values') continue;
+      if (child && typeof child === 'object' && !Array.isArray(child)) visit(child, path);
+    }
+  };
+  visit(blob, '');
+  return removed;
 }
 
 export interface PositionFix {
