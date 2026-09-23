@@ -741,8 +741,7 @@ function pathCard(path, options = {}) {
   const meta = metaAtPath(path);
   const described =
     typeof meta.description === 'string' && meta.description.trim() ? meta.description.trim() : path;
-  const stamped = formatTimestamp(node?.timestamp);
-  const title = escapeHtml(stamped ? `${described}\nLast updated: ${stamped}` : described);
+  const title = escapeHtml(tooltipFor(described, node));
   if (raw === null && typeof value === 'string') {
     return `
       <div class="info-item" title="${title}">
@@ -861,6 +860,43 @@ function engineStatus() {
     if (on && (!best.on || (rpm ?? 0) > (best.rpm ?? 0))) best = { on, rpm };
   }
   return best;
+}
+
+/**
+ * Where a value came from, for its tooltip: the `$source` the server
+ * recorded, with the NMEA 2000 PGN or 0183 sentence when it names one.
+ *
+ * When more than one source reports the path the server keeps them all under
+ * `values` and shows one as `value`. Listing the others is how you notice two
+ * GPSs fighting over `navigation.position`, or a battery monitor and a
+ * charger disagreeing about the bank voltage. The snapshot already carries
+ * all of this; the tooltip is only where it becomes readable.
+ */
+function sourceText(node) {
+  if (!node || typeof node !== 'object') return '';
+  const describe = (id, entry) => {
+    const via = entry?.pgn != null ? `PGN ${entry.pgn}` : entry?.sentence ? `${entry.sentence} sentence` : '';
+    return via ? `${id} (${via})` : id;
+  };
+  const primary = typeof node.$source === 'string' ? node.$source : '';
+  const values =
+    node.values && typeof node.values === 'object' && !Array.isArray(node.values) ? node.values : {};
+  const others = Object.keys(values).filter((id) => id !== primary);
+  const lines = [];
+  if (primary) lines.push(`Source: ${describe(primary, node)}`);
+  if (others.length) {
+    const label = primary ? 'Also reported by' : 'Sources';
+    lines.push(`${label}: ${others.map((id) => describe(id, values[id])).join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+/** A card's tooltip: what the value is, where it came from, and when. */
+function tooltipFor(description, node) {
+  const stamped = formatTimestamp(node?.timestamp);
+  return [description, sourceText(node), stamped ? `Last updated: ${stamped}` : '']
+    .filter(Boolean)
+    .join('\n');
 }
 
 function paintOtherInstruments() {
@@ -2428,19 +2464,11 @@ async function loadData() {
     const fromServer = node?.meta?.description;
     const text =
       typeof fromServer === 'string' && fromServer.trim() ? fromServer.trim() : description;
-    const formatted = formatTimestamp(node?.timestamp);
-    return formatted ? `${text}\nLast updated: ${formatted}` : text;
+    // Escaped because a `$source` is whatever a plugin named its connection,
+    // and this lands in an attribute.
+    return escapeHtml(tooltipFor(text, node));
   };
 
-  const withUpdatedNodes = (description, ...nodes) => {
-    for (const node of nodes) {
-      const formatted = formatTimestamp(node?.timestamp);
-      if (formatted) {
-        return `${description}\nLast updated: ${formatted}`;
-      }
-    }
-    return description;
-  };
 
   // Build a Map<path, [{t, v}]> from instrument_log.json entries.
   // Each entry is {timestamp, values: {path: number}}.

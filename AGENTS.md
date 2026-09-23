@@ -334,6 +334,10 @@ Run `npm test` and `npm run typecheck` before committing.
   `meta.units` on spec leaf names), and hides a panel with nothing in it. Do
   not add a card for one boat's instance name here; if a path renders badly,
   fix the unit table or the label rule so every boat gets the fix.
+- **Every card's tooltip goes through `tooltipFor`.** Description, then
+  `sourceText` (the `$source`, its PGN or sentence, and the other ids under
+  `values`), then the timestamp. The result is escaped: a `$source` is
+  whatever a plugin named its connection, and it lands in an attribute.
 - **A notification the adopter excludes leaves no trace.**
   `notificationExclude` filters at three points: `readNotifications` never
   observes it, `NotificationRecorder` never records it, and

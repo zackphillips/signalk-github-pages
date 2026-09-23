@@ -389,7 +389,10 @@ copy.
 That is what lets a path this release has never heard of be rendered
 properly: `propulsion.port.coolantTemperature` shows as "Port Coolant" in
 your preferred temperature unit, colored by the zones you set on the
-server's Data Fiddler page, with the server's description as its tooltip. Set
+server's Data Fiddler page, with the server's description as its tooltip.
+The tooltip also names the value's source (`$source`, plus the PGN or 0183
+sentence when there is one) and any other source reporting the same path,
+which is how two GPSs fighting over a position show up. Set
 the zone in Signal K and the site follows; there is nowhere here to set a
 threshold, on purpose, because the server is where the alarm that sounds the
 buzzer is already configured.
