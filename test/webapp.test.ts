@@ -4,6 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MaintenanceInputError } from '../src/docsSeed';
 import { GitHubClient } from '../src/github';
+import { GitHubAuth } from '../src/githubAuth';
+import { RepoSetupError } from '../src/repoSetup';
 import { Publisher } from '../src/publisher';
 import { StateStore } from '../src/state';
 import {
@@ -78,6 +80,13 @@ const deps = (over: Partial<WebappDeps> = {}): WebappDeps =>
     readTree: () => ({}),
     polars: () => ({ csv: '', status: null }),
     passage: () => null,
+    repository: () => null,
+    checkRepository: async () => {
+      throw new Error('not in this test');
+    },
+    setUpRepository: async () => {
+      throw new Error('not in this test');
+    },
     publishNow: async () => ({ published: true, files: ['a'], bytes: 10 }),
     log: () => {},
     ...over,
@@ -157,6 +166,48 @@ describe('readJsonBody', () => {
   });
 });
 describe('the preview routes', () => {
+  it('answers the sign-in routes while the plugin is stopped', async () => {
+    // A fresh install is stopped until it has an owner, and signing in first
+    // must still work. Every other route says 503.
+    const { router, call } = fakeRouter();
+    const auth = new GitHubAuth({ store: { readText: async () => null } as never, clientId: '' });
+    registerRoutes(router, () => null, () => auth);
+    const result = await call('get', '/auth');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ state: 'unavailable', publishingWith: null, repo: null });
+    expect((await call('get', '/status')).status).toBe(503);
+  });
+
+  it('says which credential the running plugin publishes with', async () => {
+    const { router, call } = fakeRouter();
+    const auth = new GitHubAuth({ store: { readText: async () => null } as never, clientId: 'Iv1.x' });
+    registerRoutes(router, () => deps(), () => auth);
+    const result = await call('get', '/auth');
+    expect(result.body).toMatchObject({
+      state: 'signed-out',
+      publishingWith: 'token',
+      installUrl: 'https://github.com/apps/signalk-github-pages/installations/new',
+    });
+  });
+
+  it('answers a refused repository setup with the links that do it by hand', async () => {
+    const { router, call } = fakeRouter();
+    const links = { create: 'https://github.com/new?name=site' };
+    registerRoutes(router, () =>
+      deps({
+        setUpRepository: async () => {
+          throw new RepoSetupError('GitHub would not let the app create owner/site (HTTP 403).', links);
+        },
+      }),
+    );
+    const result = await call('post', '/repo/setup');
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({
+      error: 'GitHub would not let the app create owner/site (HTTP 403).',
+      links,
+    });
+  });
+
   it('serves the site for /preview/ rather than redirecting to itself', async () => {
     // Express does not run in strict-routing mode, so `/preview` also matches
     // `/preview/`. Registered first, it answered `/preview/` with a redirect

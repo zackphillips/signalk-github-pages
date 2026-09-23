@@ -286,7 +286,12 @@ export class Publisher {
       [POLARS_PATH, 'polars.csv'],
     ] as const) {
       if ((await store.readText(local)) !== null) continue;
-      const remote = await client.getFile(repoPath).catch(() => null);
+      // No catch: `getFile` already answers null for a file that is not
+      // there, so anything it throws is GitHub being unreachable or refusing
+      // us. Swallowing that marked the store seeded with nothing in it, and
+      // the first cycle that got through published a track index that had
+      // forgotten the rest of the day.
+      const remote = await client.getFile(repoPath);
       if (remote !== null) {
         await store.writeText(local, remote);
         log(`Seeded ${local} from the repository.`);

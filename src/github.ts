@@ -17,7 +17,16 @@
 export interface GitHubOptions {
   repo: string;
   branch: string;
-  token: string;
+  /**
+   * A personal access token, or where to get the signed-in user's token for
+   * each request — it can be refreshed between two calls of one cycle.
+   */
+  token: string | (() => Promise<string>);
+  /**
+   * GitHub answered 401. Resolve true once a fresh token is ready and the
+   * request should be sent once more; a PAT has no such remedy.
+   */
+  onUnauthorized?: () => Promise<boolean>;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   userAgent?: string;
@@ -43,6 +52,9 @@ export class GitHubError extends Error {
   }
 }
 
+/** How the plugin is authenticating, which decides what a failure means. */
+export type AuthMode = 'token' | 'app';
+
 /**
  * What a failing status usually means for the token.
  *
@@ -51,7 +63,13 @@ export class GitHubError extends Error {
  * "Contents: read and write" reads the repository perfectly and fails on the
  * first commit.
  */
-export function tokenHint(status: number | undefined, repo: string): string {
+export function tokenHint(
+  status: number | undefined,
+  repo: string,
+  mode: AuthMode = 'token',
+  installUrl?: string,
+): string {
+  if (mode === 'app') return signInHint(status, repo, installUrl);
   if (status === 401) {
     return ' The token was rejected: it is wrong, revoked, or past its expiry date.';
   }
@@ -65,6 +83,35 @@ export function tokenHint(status: number | undefined, repo: string): string {
     return (
       ` ${repo} is not visible to this token. Check the owner and the repository name, and` +
       " that the token's repository access includes this one."
+    );
+  }
+  return '';
+}
+
+/**
+ * The same three statuses, for a sign-in through the GitHub App.
+ *
+ * The fixes are different ones: nobody made a token, so there is no
+ * permission box to go back and tick. A 404 almost always means the app was
+ * never installed on this repository — signing in authorizes the app to act
+ * as you, and installing it is what says which repositories it may touch.
+ */
+function signInHint(status: number | undefined, repo: string, installUrl?: string): string {
+  if (status === 401) {
+    return ' GitHub rejected the sign-in: it was revoked or has lapsed. Sign in again from the console.';
+  }
+  if (status === 403) {
+    return (
+      ` The GitHub App can reach GitHub but may not write ${repo}. Accept its requested` +
+      ' permissions under GitHub > Settings > Applications, and check that your own account' +
+      ' can push to the repository.'
+    );
+  }
+  if (status === 404) {
+    return (
+      ` ${repo} is not visible to the sign-in: it does not exist yet, or the GitHub App is not` +
+      ` installed on it${installUrl ? ` (${installUrl})` : ''}. The plugin's console tells which,` +
+      ' and can create it.'
     );
   }
   return '';
@@ -97,7 +144,8 @@ const emptyStats = (): RequestStats => ({
 export class GitHubClient {
   private readonly repo: string;
   private readonly branch: string;
-  private readonly token: string;
+  private readonly token: () => Promise<string>;
+  private readonly onUnauthorized: (() => Promise<boolean>) | undefined;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
@@ -106,7 +154,9 @@ export class GitHubClient {
   constructor(options: GitHubOptions) {
     this.repo = options.repo;
     this.branch = options.branch;
-    this.token = options.token;
+    const token = options.token;
+    this.token = typeof token === 'string' ? async () => token : token;
+    this.onUnauthorized = options.onUnauthorized;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.userAgent = options.userAgent ?? 'signalk-github-pages';
@@ -117,24 +167,38 @@ export class GitHubClient {
     path: string,
     body?: unknown,
     extraHeaders: Record<string, string> = {},
+    anonymous = false,
   ): Promise<{ status: number; data: T; headers: Headers }> {
     const url = `https://api.github.com${path}`;
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    this.stats.requests += 1;
-    if (payload) this.stats.bytesUploaded += Buffer.byteLength(payload, 'utf-8');
-    const response = await this.fetchImpl(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': this.userAgent,
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...extraHeaders,
-      },
-      body: payload,
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const send = async () => {
+      this.stats.requests += 1;
+      if (payload) this.stats.bytesUploaded += Buffer.byteLength(payload, 'utf-8');
+      return this.fetchImpl(url, {
+        method,
+        headers: {
+          ...(anonymous ? {} : { Authorization: `Bearer ${await this.token()}` }),
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': this.userAgent,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...extraHeaders,
+        },
+        body: payload,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    };
+    let response = await send();
+    // Once, not in a loop: a token refreshed a moment ago and still refused
+    // is a revoked sign-in, and retrying it only spends the rate limit.
+    if (
+      !anonymous &&
+      response.status === 401 &&
+      this.onUnauthorized &&
+      (await this.onUnauthorized())
+    ) {
+      response = await send();
+    }
 
     const remaining = response.headers.get('x-ratelimit-remaining');
     if (remaining !== null) this.stats.rateLimitRemaining = Number(remaining);
@@ -292,6 +356,112 @@ export class GitHubClient {
       if (error instanceof GitHubError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  // ── Setting a repository up ──────────────────────────────────────────────
+  // Used once, from the console, never by a cycle.
+
+  /**
+   * Whether the repository exists as far as the public can tell, asked
+   * without credentials.
+   *
+   * A GitHub App's token sees only the repositories it is installed on, so
+   * its 404 cannot tell "no such repository" from "not installed on it".
+   * The anonymous answer can, for a public one. Null when GitHub would not
+   * say: the anonymous rate limit is 60 an hour per address, and a marina's
+   * shared uplink can spend that without us.
+   */
+  async existsPublicly(): Promise<boolean | null> {
+    try {
+      await this.request('GET', `/repos/${this.repo}`, undefined, {}, true);
+      return true;
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return false;
+      return null;
+    }
+  }
+
+  /** `User` or `Organization`, which decides where a repository is created. */
+  async accountType(login: string): Promise<string | null> {
+    const { data } = await this.request<{ type?: string }>(
+      'GET',
+      `/users/${encodeURIComponent(login)}`,
+    );
+    return data?.type ?? null;
+  }
+
+  /**
+   * Create this client's repository: public, because Pages on a free plan
+   * serves only public repositories, and with a README so there is a branch
+   * and a first commit for the Git Data API to build on.
+   */
+  async createRepository(organization: boolean, description: string): Promise<{ defaultBranch: string }> {
+    const [owner, name] = this.repo.split('/') as [string, string];
+    const { data } = await this.request<{ default_branch?: string }>(
+      'POST',
+      organization ? `/orgs/${encodeURIComponent(owner)}/repos` : '/user/repos',
+      { name, description, private: false, auto_init: true },
+    );
+    return { defaultBranch: data?.default_branch ?? 'main' };
+  }
+
+  /** The default branch, or null for a repository with no commits yet. */
+  async defaultBranch(): Promise<string | null> {
+    const { data } = await this.request<{ default_branch?: string; size?: number }>(
+      'GET',
+      `/repos/${this.repo}`,
+    );
+    return data?.default_branch ?? null;
+  }
+
+  /**
+   * One file through the Contents API — the only write that works on a
+   * repository with no commits, where the Git Data API answers 409.
+   */
+  async putFile(path: string, content: string, message: string): Promise<void> {
+    await this.request(
+      'PUT',
+      `/repos/${this.repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,
+      { message, content: Buffer.from(content, 'utf-8').toString('base64') },
+    );
+  }
+
+  /** Point the configured branch at a commit, creating it. */
+  async createBranch(commitSha: string): Promise<void> {
+    await this.request('POST', `/repos/${this.repo}/git/refs`, {
+      ref: `refs/heads/${this.branch}`,
+      sha: commitSha,
+    });
+  }
+
+  /** Head of another branch, for starting the configured one from it. */
+  async getBranchHead(branch: string): Promise<string> {
+    const { data } = await this.request<{ object: { sha: string } }>(
+      'GET',
+      `/repos/${this.repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+    );
+    return data.object.sha;
+  }
+
+  /** The Pages site, or null when Pages is off for this repository. */
+  async getPages(): Promise<{ url?: string; source?: { branch?: string; path?: string } } | null> {
+    try {
+      const { data } = await this.request<{ html_url?: string; source?: { branch?: string; path?: string } }>(
+        'GET',
+        `/repos/${this.repo}/pages`,
+      );
+      return { url: data?.html_url, source: data?.source };
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** Serve the configured branch's root, which is where the site is written. */
+  async enablePages(): Promise<void> {
+    await this.request('POST', `/repos/${this.repo}/pages`, {
+      source: { branch: this.branch, path: '/' },
+    });
   }
 
   /** Raw file contents by blob SHA (used to read docs without a checkout). */

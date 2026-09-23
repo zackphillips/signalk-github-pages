@@ -23,6 +23,7 @@
  * stand-in.
  */
 
+import { GITHUB_APP } from './githubAuth';
 import { parseIcon, parseLogo, type VesselIcon, type VesselLogo } from './logo';
 import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
@@ -50,7 +51,13 @@ export interface PluginConfig {
     /** `owner/name`, the form the API client and the frontend links want. */
     repo: string;
     branch: string;
+    /** The personal access token, or empty when publishing as the signed-in user. */
     token: string;
+    /**
+     * `token` when a PAT is set — it wins, because it is the one thing on
+     * this page someone typed on purpose — and `app` for the console sign-in.
+     */
+    auth: 'token' | 'app';
   };
   /** Publish cadence in seconds. The config page asks for minutes. */
   interval: {
@@ -284,6 +291,16 @@ export const PAT_GUIDANCE =
   'GitHub > Settings > Developer settings > Personal access tokens > Fine-grained ' +
   'tokens. Repository access: Only select repositories, this one. Repository ' +
   'permissions: Contents "Read and write".';
+
+/**
+ * The token field's help text: what to tick, and that it is optional when
+ * this build can sign in instead.
+ */
+export function tokenDescription(signInAvailable: boolean = GITHUB_APP.clientId !== ''): string {
+  return signInAvailable
+    ? 'Optional: leave empty and sign in from the plugin\'s console. ' + PAT_GUIDANCE
+    : PAT_GUIDANCE;
+}
 
 /**
  * The polar override box's help text.
@@ -644,7 +661,10 @@ export const configSchema = {
       description:
         'The repository name, branch and site address follow from the owner; each ' +
         'can be changed under Overrides.',
-      required: ['owner', 'token'],
+      // The token is not required by the form even when nothing else can
+      // stand in for it: `resolveConfig` names it as the problem, which says
+      // more than a red box does.
+      required: ['owner'],
       properties: {
         owner: {
           type: 'string',
@@ -654,7 +674,7 @@ export const configSchema = {
         token: {
           type: 'string',
           title: 'Personal access token',
-          description: PAT_GUIDANCE,
+          description: tokenDescription(),
         },
       },
     },
@@ -1316,7 +1336,11 @@ function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
  * told about the next one is a miserable way to configure a plugin over a
  * boat's wifi.
  */
-export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
+export function resolveConfig(
+  raw: unknown,
+  options: { signInAvailable?: boolean } = {},
+): ResolvedConfig | UnresolvedConfig {
+  const signInAvailable = options.signInAvailable ?? GITHUB_APP.clientId !== '';
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
   const interval = input.interval ?? {};
@@ -1347,8 +1371,12 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const branch = (bool(overrides.overrideBranch) && typedBranch) || DEFAULT_BRANCH;
 
   const token = typeof github.token === 'string' ? github.token.trim() : '';
-  if (!token) problems.push('GitHub personal access token is not set.');
-  else {
+  // With a GitHub App to sign in through, an empty token is a choice rather
+  // than a gap: the plugin starts, and says it is not signed in on every
+  // cycle until someone does, which is also what lets the console's sign-in
+  // button reach a running plugin.
+  if (!token && !signInAvailable) problems.push('GitHub personal access token is not set.');
+  else if (token) {
     const warning = tokenWarning(token);
     if (warning) warnings.push(warning);
   }
@@ -1426,6 +1454,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         repo: `${owner}/${name}`,
         branch,
         token,
+        auth: token ? 'token' : 'app',
       },
       interval: {
         underway,

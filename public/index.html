@@ -119,12 +119,69 @@
      be taken away. */
   .confirm--plain { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
   .bad { color: var(--danger); }
+  /* The sign-in code is read off one screen and typed into another, often a
+     phone held in the other hand: big, monospaced, and selected whole by one
+     tap, because a copy button needs a clipboard the sandboxed iframe may not
+     have. */
+  .user-code {
+    font: 600 26px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: .12em;
+    user-select: all;
+    -webkit-user-select: all;
+  }
+  .code-box { margin: 10px 0 12px; }
   .empty { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
   <h1>GitHub Pages Tracker</h1>
   <p class="sub" id="subtitle">Loading…</p>
+
+  <section class="panel" id="auth-panel" hidden>
+    <h2>GitHub</h2>
+    <div id="auth-signin">
+    <p class="note" style="margin-top:0" id="auth-state">Loading…</p>
+    <div class="code-box" id="auth-code" hidden>
+      <div class="user-code" id="auth-user-code"></div>
+      <p class="note">
+        Enter it at <a href="https://github.com/login/device" id="auth-verify"
+        target="_blank" rel="noopener">github.com/login/device</a>, on any device.
+        This page notices by itself when you have.
+      </p>
+    </div>
+    <p class="note" id="auth-detail" hidden></p>
+    <div class="row" style="margin-top:10px">
+      <button id="auth-signin-btn" hidden>Sign in with GitHub</button>
+      <button id="auth-signout-btn" hidden>Sign out</button>
+    </div>
+    <div class="confirm" id="auth-confirm" hidden>
+      <p class="confirm-question">Sign out? Publishing stops until someone signs in again or sets a personal access token.</p>
+      <div class="row">
+        <button id="auth-confirm-yes" class="danger">Yes, sign out</button>
+        <button id="auth-confirm-no">Cancel</button>
+      </div>
+    </div>
+    </div>
+
+    <div id="repo-section" hidden>
+      <h3>Repository</h3>
+      <p class="note" style="margin-top:0" id="repo-state"></p>
+      <div class="row" style="margin-top:10px">
+        <button id="repo-setup-btn" hidden>Set up repository</button>
+        <button id="repo-check-btn">Check again</button>
+        <a href="#" id="repo-install" target="_blank" rel="noopener" hidden>Install the app on it</a>
+        <a href="#" id="repo-create" target="_blank" rel="noopener" hidden>Create it on GitHub instead</a>
+        <a href="#" id="repo-pages" target="_blank" rel="noopener" hidden>Pages settings</a>
+      </div>
+      <div class="confirm confirm--plain" id="repo-confirm" hidden>
+        <p class="confirm-question" id="repo-confirm-text"></p>
+        <div class="row">
+          <button id="repo-confirm-yes">Yes, set it up</button>
+          <button id="repo-confirm-no">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <section class="panel">
     <h2>Status</h2>
@@ -308,7 +365,11 @@ function ago(iso) {
 async function api(path, options) {
   var response = await fetch(API + path, options);
   var body = await response.json().catch(function () { return {}; });
-  if (!response.ok) throw new Error(body.error || ('HTTP ' + response.status));
+  if (!response.ok) {
+    var error = new Error(body.error || ('HTTP ' + response.status));
+    error.body = body;
+    throw error;
+  }
   return body;
 }
 
@@ -663,8 +724,173 @@ el('reload-preview').addEventListener('click', function () {
   el('preview').src = PREVIEW + '?t=' + Date.now();
 });
 
+// ── GitHub sign-in ──────────────────────────────────────────────────────────
+// The plugin does the polling; this page only asks how it is going. Closing
+// the tab to type the code on a phone does not lose the sign-in.
+var authTimer = null;
+var authState = null;
+
+function show(id, visible) { el(id).hidden = !visible; }
+
+function renderAuth(data) {
+  var previous = authState;
+  authState = data.state;
+  // No app in this build: the token on the config page is the only way, and
+  // a sign-in offering anything else would be offering nothing. The
+  // repository half is still worth showing to a token user.
+  show('auth-panel', data.state !== 'unavailable' || !!data.repository);
+  show('auth-signin', data.state !== 'unavailable');
+  renderRepository(data.repository, data.repo);
+  show('auth-code', data.state === 'pending');
+  show('auth-signin-btn', data.state === 'signed-out');
+  show('auth-signout-btn', data.state === 'pending' || data.state === 'signed-in');
+  el('auth-signout-btn').textContent = data.state === 'pending' ? 'Cancel' : 'Sign out';
+  if (data.state !== 'signed-in') show('auth-confirm', false);
+
+  var state = el('auth-state');
+  var detail = el('auth-detail');
+  state.className = 'note';
+  detail.hidden = true;
+  var patNote = data.publishingWith === 'token'
+    ? ' The personal access token on the config page takes precedence; clear it to publish as this sign-in.'
+    : '';
+
+  if (data.state === 'signed-out') {
+    state.textContent = 'Not signed in. Signing in publishes as your GitHub account, ' +
+      'through a GitHub App that can only write the repositories you install it on.' + patNote;
+    if (data.detail) say('auth-detail', data.detail, true);
+  } else if (data.state === 'pending') {
+    el('auth-user-code').textContent = data.userCode;
+    // Only ever a github.com address, whatever the server relays.
+    if (/^https:\/\/github\.com\//.test(data.verificationUri)) el('auth-verify').href = data.verificationUri;
+    var minutes = Math.max(0, Math.round((Date.parse(data.expiresAt) - Date.now()) / 60000));
+    state.textContent = 'Waiting for this code. It expires in ' + minutes + ' min.';
+  } else if (data.state === 'signed-in') {
+    state.textContent = 'Signed in' + (data.login ? ' as ' + data.login : '') + '.' + patNote;
+    state.className = 'note ok';
+    if (data.rejected) {
+      say('auth-detail', 'GitHub has stopped accepting this sign-in. Sign out and sign in again.', true);
+    } else if (data.refreshExpiresAt) {
+      say('auth-detail', 'Renewed automatically while the boat publishes. If it has not ' +
+        'published by ' + data.refreshExpiresAt.slice(0, 10) + ', sign in again.', false);
+    }
+  }
+
+  clearTimeout(authTimer);
+  if (data.state === 'pending') authTimer = setTimeout(refreshAuth, 3000);
+  // The sign-in landed while this page watched: the plugin is publishing now,
+  // so the status and the docs are worth reading again once it has.
+  if (previous === 'pending' && data.state === 'signed-in') {
+    setTimeout(function () { refreshAuth(); refresh(); refreshDocs(); }, 4000);
+  }
+}
+
+async function refreshAuth() {
+  try {
+    renderAuth(await api('/auth'));
+  } catch (error) {
+    show('auth-panel', true);
+    el('auth-state').textContent = 'Could not read the sign-in: ' + error.message;
+    el('auth-state').className = 'note bad';
+  }
+}
+
+async function authAction(path) {
+  el('auth-signin-btn').disabled = true;
+  el('auth-signout-btn').disabled = true;
+  try {
+    renderAuth(await api(path, { method: 'POST' }));
+  } catch (error) {
+    say('auth-detail', error.message, true);
+  } finally {
+    el('auth-signin-btn').disabled = false;
+    el('auth-signout-btn').disabled = false;
+  }
+}
+
+// Only ever a github.com address, whatever the server relays.
+function githubLink(id, url) {
+  var ok = typeof url === 'string' && /^https:\/\/github\.com\//.test(url);
+  if (ok) el(id).href = url;
+  show(id, ok);
+}
+
+var repoState = null;
+
+function renderRepository(check, repo) {
+  repoState = check;
+  show('repo-section', !!check);
+  if (!check) return;
+  var state = el('repo-state');
+  state.textContent = check.detail;
+  state.className = check.ok ? 'note ok' : 'note bad';
+  show('repo-setup-btn', !!check.canSetUp);
+  var links = check.links || {};
+  githubLink('repo-install', links.install);
+  githubLink('repo-create', links.create);
+  githubLink('repo-pages', links.pagesSettings);
+  if (!check.canSetUp) show('repo-confirm', false);
+}
+
+async function repoAction(path) {
+  el('repo-setup-btn').disabled = true;
+  el('repo-check-btn').disabled = true;
+  el('repo-state').textContent = path === '/repo/setup' ? 'Setting it up…' : 'Looking…';
+  el('repo-state').className = 'note';
+  try {
+    renderRepository(await api(path, { method: 'POST' }));
+    if (path === '/repo/setup') setTimeout(function () { refresh(); refreshDocs(); }, 2000);
+  } catch (error) {
+    // A refusal with a way round it comes back with links: show them.
+    var body = error.body || {};
+    renderRepository({
+      ok: false,
+      detail: error.message,
+      canSetUp: false,
+      links: body.links || (repoState && repoState.links) || {},
+    });
+  } finally {
+    el('repo-setup-btn').disabled = false;
+    el('repo-check-btn').disabled = false;
+  }
+}
+
+// Named before it happens: creating a public repository on someone's
+// account is not something a stray tap should do.
+el('repo-setup-btn').addEventListener('click', function () {
+  if (!repoState) return;
+  var what = {
+    missing: 'Create it as a public repository with a README, and turn GitHub Pages on?',
+    empty: 'Give it a first commit (a README) and turn GitHub Pages on?',
+    'no-branch': 'Start the branch from the repository\'s default branch, and turn GitHub Pages on?',
+    ok: 'Turn GitHub Pages on, serving the branch\'s root?'
+  }[repoState.repository] || 'Set it up?';
+  el('repo-confirm-text').textContent = what;
+  show('repo-confirm', true);
+});
+el('repo-confirm-no').addEventListener('click', function () { show('repo-confirm', false); });
+el('repo-confirm-yes').addEventListener('click', function () {
+  show('repo-confirm', false);
+  repoAction('/repo/setup');
+});
+el('repo-check-btn').addEventListener('click', function () { repoAction('/repo/check'); });
+
+el('auth-signin-btn').addEventListener('click', function () { authAction('/auth/device'); });
+// Cancelling a code nobody has entered costs nothing; signing out stops
+// publishing, so that one is asked about in the page first.
+el('auth-signout-btn').addEventListener('click', function () {
+  if (authState === 'pending') authAction('/auth/signout');
+  else show('auth-confirm', true);
+});
+el('auth-confirm-no').addEventListener('click', function () { show('auth-confirm', false); });
+el('auth-confirm-yes').addEventListener('click', function () {
+  show('auth-confirm', false);
+  authAction('/auth/signout');
+});
+
 el('open-preview').href = PREVIEW;
 el('preview').src = PREVIEW;
+refreshAuth();
 refresh();
 refreshDocs();
 </script>

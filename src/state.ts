@@ -63,12 +63,21 @@ export class StateStore {
     }
   }
 
-  /** Temp file + fsync + rename: a crash leaves the previous file intact. */
-  async writeText(name: string, contents: string): Promise<void> {
+  /**
+   * Temp file + fsync + rename: a crash leaves the previous file intact.
+   *
+   * `mode` is for a file holding a credential. It is set on the temp file
+   * before anything is written to it, so the secret is never readable by
+   * anyone else even for the moment before the rename.
+   */
+  async writeText(name: string, contents: string, mode?: number): Promise<void> {
     const target = this.resolve(name);
     await fs.mkdir(path.dirname(target), { recursive: true });
     const temp = `${target}.tmp`;
-    const handle = await fs.open(temp, 'w');
+    // A temp file left by a crash keeps its old mode through `open`, so it
+    // goes first rather than being reused.
+    if (mode !== undefined) await fs.rm(temp, { force: true });
+    const handle = await fs.open(temp, 'w', mode);
     try {
       await handle.writeFile(contents, 'utf-8');
       await handle.sync();
@@ -76,6 +85,11 @@ export class StateStore {
       await handle.close();
     }
     await fs.rename(temp, target);
+  }
+
+  /** Delete a file; one that is already gone is not an error. */
+  async remove(name: string): Promise<void> {
+    await fs.rm(this.resolve(name), { force: true });
   }
 
   async readJson<T>(name: string, fallback: T): Promise<T> {

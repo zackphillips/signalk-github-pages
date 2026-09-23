@@ -28,6 +28,8 @@ import { loadTideStations, nearestTideStation } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
+import { appInstallUrl, GitHubAuth, GITHUB_APP } from './githubAuth';
+import { checkRepository, setUpRepository, type RepoCheck, type RepoTarget } from './repoSetup';
 import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
@@ -175,6 +177,23 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   let historyProviders: SchemaContext['historyProviders'] = null;
   // The site's tide station list, read the first time the config page wants it.
   let tideStations: ReturnType<typeof loadTideStations> | undefined;
+  // The console sign-in. One for the server's life rather than one per start,
+  // because signing in has to work while the plugin is stopped — a fresh
+  // install is stopped until it has a repository owner — and a flow someone
+  // is halfway through must survive the restart that saving the config page
+  // causes. Built on first use: the data directory is the server's to hand
+  // out, and not every release has it ready while plugins are constructed.
+  let githubAuth: GitHubAuth | undefined;
+  // What the last look at the repository found, for the console. Kept out
+  // here so a restart does not blank it before the next look.
+  let repoCheck: RepoCheck | null = null;
+  const auth = (): GitHubAuth =>
+    (githubAuth ??= new GitHubAuth({
+      store: new StateStore(app.getDataDirPath()),
+      clientId: GITHUB_APP.clientId,
+      userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
+      log: (message) => app.debug(message),
+    }));
 
   /**
    * What to tell the config page about the polar table.
@@ -319,7 +338,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       }
 
       app.debug(
-        `Starting: ${config.github.repo}@${config.github.branch}, ` +
+        `Starting: ${config.github.repo}@${config.github.branch} ` +
+          `${config.github.auth === 'app' ? 'as the console sign-in' : 'with a personal access token'}, ` +
           `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
           `${config.instrumentLog.exclude.length} instrument path exclusion(s), ` +
           `${config.positionRetentionHours}h position retention, ` +
@@ -376,9 +396,13 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       const client = new GitHubClient({
         repo: config.github.repo,
         branch: config.github.branch,
-        token: config.github.token,
+        ...(config.github.auth === 'app'
+          ? { token: () => auth().token(), onUnauthorized: () => auth().onUnauthorized() }
+          : { token: config.github.token }),
         userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
       });
+      const hint = (status: number | undefined) =>
+        tokenHint(status, config.github.repo, config.github.auth, appInstallUrl());
       const history = new HistoryReader({
         app,
         history: config.history,
@@ -479,6 +503,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
         }
         app.debug(`Publishing on request (${reason}).`);
+        await publisher.seed();
         passage = await readPassage(app, (problem) => app.error(problem));
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
@@ -559,6 +584,10 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // never sparser than one fix per cycle and never denser than that
           // when the boat is not moving.
           recorder?.setPublishInterval(seconds);
+          // A no-op once it has worked. Here rather than only at start, so a
+          // boot with no hotspot or nobody signed in seeds on the first cycle
+          // that reaches GitHub instead of publishing over the day's track.
+          await publisher.seed();
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
@@ -592,7 +621,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           const detail = error?.status ? ` (HTTP ${error.status}: ${error.body ?? ''})` : '';
           app.error(
             `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}` +
-              tokenHint(error?.status, config.github.repo),
+              hint(error?.status),
           );
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
@@ -652,6 +681,53 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         }
       }
 
+      /**
+       * Look at the repository and remember what was found, for the console.
+       *
+       * A few GETs. Run at start, after a sign-in, and when the console asks;
+       * never from a cycle, which already says what failed in its own words.
+       */
+      const repoTarget = async (): Promise<RepoTarget> => {
+        let login: string | null = null;
+        if (config.github.auth === 'app') {
+          const status = await auth().status();
+          if (status.state === 'signed-in') login = status.login;
+        }
+        return {
+          owner: config.github.owner,
+          name: config.github.name,
+          repo: config.github.repo,
+          branch: config.github.branch,
+          auth: config.github.auth,
+          installUrl: appInstallUrl(),
+          login,
+        };
+      };
+      const lookAtRepository = async (): Promise<RepoCheck> => {
+        repoCheck = await checkRepository(client, await repoTarget());
+        if (!repoCheck.ok) app.debug(`Repository: ${repoCheck.detail}`);
+        return repoCheck;
+      };
+      /** Publish now as a whole tick, so the status line and alarm catch up too. */
+      const tickNow = async () => {
+        if (stopped) return;
+        if (timer) clearTimeout(timer);
+        await tick();
+      };
+
+      /**
+       * A sign-in just landed: look at the repository, then publish if it is
+       * ready. What the look finds is on the console while the person is still
+       * holding the phone — most often that the repository does not exist yet
+       * or the app is not installed on it — rather than an hour later in the
+       * plugin status line. A whole tick rather than `publishNow`, because at
+       * the stationary cadence the next scheduled one could be an hour away.
+       */
+      auth().setOnSignedIn(async () => {
+        if (stopped || config.github.auth !== 'app') return;
+        if ((await lookAtRepository()).repository === 'ok') await tickNow();
+      });
+
       webapp = {
         config,
         store,
@@ -663,23 +739,51 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         polars: () => ({ csv: polarCsv, status: polarStatus }),
         passage: () => passage,
         publishNow,
+        repository: () => repoCheck,
+        checkRepository: lookAtRepository,
+        // Creating a public repository on someone's account is a button a
+        // person presses, never something a cycle decides. Once it is ready,
+        // publish at once: an empty repository is not a site.
+        setUpRepository: async () => {
+          try {
+            repoCheck = await setUpRepository(client, await repoTarget(), (message) =>
+              app.debug(message),
+            );
+          } catch (error) {
+            // Whatever was done before the refusal is worth showing.
+            await lookAtRepository().catch(() => null);
+            throw error;
+          }
+          // Not awaited: the first publish writes the whole site, which over
+          // a hotspot is longer than a button should hang. The console reads
+          // the status again shortly after.
+          if (repoCheck.repository === 'ok') {
+            void tickNow().catch((error: any) =>
+              app.error(`Publish after repository setup failed: ${error?.message ?? error}`),
+            );
+          }
+          return repoCheck;
+        },
         log: (message) => app.debug(message),
       };
 
       void refreshHistoryProviders();
+      // Seeding is the first thing every cycle does, so there is nothing to
+      // do before the first one. The repository look is for the console and
+      // runs beside it; with nobody signed in there is nothing to look with.
       void (async () => {
-        try {
-          await publisher.seed();
-        } catch (error: any) {
-          app.error(`Could not seed state from the repository: ${error?.message ?? error}`);
-        }
         await tick();
         watchState();
       })();
+      void (async () => {
+        if (config.github.auth === 'app' && !(await auth().signedIn())) return;
+        await lookAtRepository();
+      })().catch((error: any) => app.debug(`Could not look at the repository: ${error?.message ?? error}`));
     },
 
     stop() {
       stopped = true;
+      githubAuth?.setOnSignedIn(undefined);
       if (timer) clearTimeout(timer);
       timer = undefined;
       webapp = null;
@@ -699,7 +803,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     /** The console's backend. Signal K mounts it once, for the server's life. */
     registerWithRouter(router: Router) {
-      registerRoutes(router, () => webapp);
+      registerRoutes(router, () => webapp, auth);
     },
   };
 
