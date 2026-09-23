@@ -740,9 +740,9 @@ Run `npm test` and `npm run typecheck` before committing.
 
 ## Installing on a server
 
-`dist/` is not committed. The `prepare` script builds it on `npm install`,
-which covers installing from a git URL or from a local checkout — the only
-routes there are until this is published to npm. A `git clone` directly into
+`dist/` is not committed. The npm package ships it prebuilt
+(`prepublishOnly`), and the `prepare` script builds it on `npm install` from a
+git URL or a local checkout. A `git clone` directly into
 `~/.signalk/node_modules` bypasses npm and therefore `prepare`, leaving no
 `dist/index.js`; the server then reports a provider error instead of listing
 the plugin. Do not "fix" that by committing `dist/`.
