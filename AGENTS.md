@@ -239,7 +239,7 @@ Run `npm test` and `npm run typecheck` before committing.
   this one.
 - **The instrument log is an exclusion list, and "found" means found on the
   boat.** Every path the provider has stored *and* the self tree currently
-  carries a number for is logged, less `instrumentLog.exclude`
+  carries a number for is logged, less `paths.notGraphed` and `paths.hide`
   (`DEFAULT_INSTRUMENT_LOG_EXCLUDE`: design, course calculations, GNSS
   housekeeping and the like). The provider alone is not enough: it keeps
   every path it has ever stored, and asking for all of them was once ~167
@@ -316,8 +316,30 @@ Run `npm test` and `npm run typecheck` before committing.
   anything firing and clearing between two publishes is invisible, so the
   counts are a floor; the panel says so, and `sampled_since` bounds them to
   what the log has actually watched.
+- **One blacklist for telemetry and notifications.** `paths.hide` is full
+  Signal K paths; `hidePaths` removes them from the snapshot before identity,
+  redaction or anything else reads it, `resolveConfig` adds them to the
+  instrument log exclusions (a provider still has them stored), and its
+  `notifications.` lines become `notificationExclude` without the prefix. A
+  bare `notifications` turns publishing off. `navigation.position` hidden
+  drops the recorded fixes too, since the recorder reads the stream, not the
+  snapshot.
+- **The power, tanks, propulsion, internet and system panels are enumerated
+  from the tree.** They used to be written out card by card for one boat
+  (`batteries.house`, `solar.bimini`, `tanks.propane.a`, `propulsion.port`,
+  a live-well sensor labeled "Bilge"). `paintTreePanel` walks a root with
+  `leafPaths`, labels with `autoLabel` (the instance's `name`, else its id),
+  formats with `formatPathValue` (unit group, then `SI_DISPLAY`, then
+  `meta.units` as a suffix, with `LEAF_UNITS` standing in for a missing
+  `meta.units` on spec leaf names), and hides a panel with nothing in it. Do
+  not add a card for one boat's instance name here; if a path renders badly,
+  fix the unit table or the label rule so every boat gets the fix.
+- **Every card's tooltip goes through `tooltipFor`.** Description, then
+  `sourceText` (the `$source`, its PGN or sentence, and the other ids under
+  `values`), then the timestamp. The result is escaped: a `$source` is
+  whatever a plugin named its connection, and it lands in an attribute.
 - **A notification the adopter excludes leaves no trace.**
-  `notifications.exclude` filters at three points: `readNotifications` never
+  `notificationExclude` filters at three points: `readNotifications` never
   observes it, `NotificationRecorder` never records it, and
   `updateNotificationLog` drops it from both `seen` and the retained
   `events`. Adding a pattern has to take the path off the site on the next

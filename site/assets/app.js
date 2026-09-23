@@ -537,6 +537,368 @@ function formatTimestamp(value) {
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
 }
 
+// ---------------------------------------------------------------------------
+// Cards built from the tree
+// ---------------------------------------------------------------------------
+// The power, tanks, propulsion, internet and system panels used to be written
+// out card by card for one boat: a house bank, a bimini solar array, two
+// propane tanks called a and b, a port engine, a live-well sensor labeled
+// "Bilge". On any other boat most of those cards read N/A forever while the
+// boat's own start bank and its second engine were drawn by nothing. They are
+// now enumerated from the snapshot, which is the whole self tree less the
+// paths hidden on the plugin config page — so the config page, not this file,
+// is where a card is taken off.
+
+// A leaf's unit when the server publishes no `meta.units`: the Signal K spec
+// names these leaves, and each name has exactly one unit. Names that mean
+// different things in different places (`capacity` is m3 on a tank and J on
+// a battery) are left out on purpose.
+const LEAF_UNITS = {
+  voltage: 'V',
+  current: 'A',
+  power: 'W',
+  panelPower: 'W',
+  panelVoltage: 'V',
+  panelCurrent: 'A',
+  stateOfCharge: 'ratio',
+  stateOfHealth: 'ratio',
+  currentLevel: 'ratio',
+  utilisation: 'ratio',
+  humidity: 'ratio',
+  relativeHumidity: 'ratio',
+  temperature: 'K',
+  coolantTemperature: 'K',
+  oilTemperature: 'K',
+  exhaustTemperature: 'K',
+  oilPressure: 'Pa',
+  coolantPressure: 'Pa',
+  pressure: 'Pa',
+  revolutions: 'Hz',
+  timeRemaining: 's',
+  runTime: 's',
+  yieldToday: 'J',
+  dischargeSinceFull: 'C',
+  currentVolume: 'm3',
+  fuelRate: 'm3/s',
+};
+
+/** A path's unit: what the server says, else what the spec's leaf name implies. */
+function unitsForPath(path) {
+  const meta = metaAtPath(path);
+  if (typeof meta.units === 'string' && meta.units) return meta.units;
+  return LEAF_UNITS[String(path).split('.').pop()] || '';
+}
+
+// SI units with no toggle group, shown in the unit people read them in.
+const SI_DISPLAY = {
+  ratio: { unit: '%', transform: (v) => v * 100, digits: 0 },
+  V: { unit: 'V', transform: (v) => v, digits: 2 },
+  A: { unit: 'A', transform: (v) => v, digits: 1 },
+  W: { unit: 'W', transform: (v) => v, digits: 0 },
+  J: { unit: 'Wh', transform: (v) => v / 3600, digits: 0 },
+  C: { unit: 'Ah', transform: (v) => v / 3600, digits: 1 },
+  s: { unit: 'hrs', transform: (v) => v / 3600, digits: 1 },
+  'm3/s': { unit: 'L/h', transform: (v) => v * 3.6e6, digits: 1 },
+};
+
+/**
+ * How a path is drawn: the transform to display units, the unit label and
+ * the precision. The unit groups first, because those are the ones a tap
+ * cycles through; then the SI table; then the server's unit as a suffix on
+ * the raw number, which is the honest fallback for a unit nobody anticipated.
+ */
+function displayConfigForPath(path) {
+  const group = unitGroupForPath(path);
+  if (group) {
+    const { transform, unit, digits } = getUnitCfg(group);
+    return { transform, unit, digits };
+  }
+  const units = unitsForPath(path);
+  if (SI_DISPLAY[units]) return SI_DISPLAY[units];
+  return { transform: (v) => v, unit: units, digits: null };
+}
+
+/** A number for a card, in the path's display unit, or N/A. */
+function formatPathValue(path, raw) {
+  if (raw == null || !Number.isFinite(raw)) return 'N/A';
+  const group = unitGroupForPath(path);
+  if (group) return fmtUnit(group, raw);
+  const { transform, unit, digits } = displayConfigForPath(path);
+  const value = transform(raw);
+  const shown = digits === null ? String(Number(value.toFixed(3))) : value.toFixed(digits);
+  if (!unit) return shown;
+  return unit === '%' ? `${shown}%` : `${shown}\u00a0${unit}`;
+}
+
+/** `stateOfCharge` -> `state of charge`; `0` stays `0`. */
+function humanizeSegment(segment) {
+  return String(segment)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .toLowerCase();
+}
+
+function capitalize(text) {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
+
+// Segments that group leaves without naming anything a reader wants to see:
+// "House state of charge" says it, "House capacity state of charge" repeats it.
+const TRANSPARENT_SEGMENTS = new Set(['capacity']);
+// Leaf names with a shorter word everyone on a boat already uses.
+const LEAF_LABELS = { stateOfCharge: 'SOC', revolutions: 'RPM', panelPower: 'solar power' };
+
+/** The name a container node gives itself, as the spec's `name` leaf. */
+function nodeName(node) {
+  const name = node?.name;
+  if (typeof name === 'string' && name.trim()) return name.trim();
+  if (typeof name?.value === 'string' && name.value.trim()) return name.value.trim();
+  return '';
+}
+
+// Plural group names in the spec, for naming an instance that is only a
+// number: `electrical.batteries.1` reads as "Battery 1".
+const SINGULAR = {
+  batteries: 'battery',
+  chargers: 'charger',
+  inverters: 'inverter',
+  alternators: 'alternator',
+};
+
+/**
+ * A card label for a path under `root`: the server's displayName when it has
+ * one; otherwise the segments below `root`, each replaced by the `name` its
+ * node carries when it carries one, so an instance reads as whatever the boat
+ * calls it.
+ *
+ * With `grouped`, the first segment below `root` is a kind (`batteries`,
+ * `solar`) and the second an instance of it. The kind is dropped when the
+ * instance has a name of its own — "House voltage", not "Batteries house
+ * voltage" — and kept, singular, when the instance is only a number.
+ */
+function autoLabel(path, root, grouped = false) {
+  const meta = metaAtPath(path);
+  if (typeof meta.displayName === 'string' && meta.displayName.trim()) {
+    return meta.displayName.trim();
+  }
+  const segments = path.slice(root.length + 1).split('.');
+  const words = [];
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
+    const isLeaf = i === segments.length - 1;
+    if (grouped && i === 0 && !isLeaf) continue;
+    if (!isLeaf && TRANSPARENT_SEGMENTS.has(segment)) continue;
+    const named = isLeaf ? '' : nodeName(nodeAtPath(`${root}.${segments.slice(0, i + 1).join('.')}`));
+    if (named) words.push(named);
+    else if (isLeaf && LEAF_LABELS[segment]) words.push(LEAF_LABELS[segment]);
+    else if (grouped && i === 1 && /^\d+$/.test(segment)) {
+      const kind = segments[0];
+      words.push(`${SINGULAR[kind] || humanizeSegment(kind)} ${segment}`);
+    } else words.push(humanizeSegment(segment));
+  }
+  return capitalize(words.join(' '));
+}
+
+// Keys on a Signal K node that are its own fields, not children.
+const NODE_FIELDS = new Set(['meta', 'value', 'values', 'timestamp', '$source', 'pgn', 'sentence', 'name']);
+
+/**
+ * Every leaf under `root` worth a card, in tree order: a number, or a short
+ * string like an engine state or a charger mode. Objects — positions,
+ * attitude, anything structured — are left to the panels that know them.
+ */
+function leafPaths(root) {
+  const out = [];
+  const visit = (node, path) => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    if ('value' in node) {
+      const { value } = node;
+      if ((typeof value === 'number' && Number.isFinite(value)) ||
+          (typeof value === 'string' && value && value.length <= 40)) {
+        out.push(path);
+      }
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (NODE_FIELDS.has(key)) continue;
+      visit(child, `${path}.${key}`);
+    }
+  };
+  visit(nodeAtPath(root), root);
+  return out;
+}
+
+/**
+ * One card for one path, labeled, formatted and colored from the tree alone.
+ * A number gets `data-path` and so a sparkline once the log has it; a string
+ * does not, because there is nothing to plot. `options` lets the tank cards
+ * put the level and the volume in one value and toggle on the volume.
+ */
+function pathCard(path, options = {}) {
+  const { label = labelForPath(path), valueHtml = null, extraAttrs = [] } = options;
+  const node = nodeAtPath(path);
+  const value = node?.value;
+  const raw = typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const meta = metaAtPath(path);
+  const described =
+    typeof meta.description === 'string' && meta.description.trim() ? meta.description.trim() : path;
+  const title = escapeHtml(tooltipFor(described, node));
+  if (raw === null && typeof value === 'string') {
+    return `
+      <div class="info-item" title="${title}">
+        <div class="label">${escapeHtml(label)}</div>
+        <div class="value value-text">${escapeHtml(value)}</div>
+      </div>`;
+  }
+  const group = unitGroupForPath(path);
+  const attrs = [
+    `data-path="${escapeHtml(path)}"`,
+    `data-label="${escapeHtml(label)}"`,
+    ...(extraAttrs.length
+      ? extraAttrs
+      : [group ? `data-unit-group="${group}"` : '', raw === null ? '' : `data-raw="${raw}"`]),
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return `
+    <div class="info-item" ${attrs} title="${title}">
+      <div class="label">${escapeHtml(label)}</div>
+      ${valueHtml ?? colorValue(formatPathValue(path, raw), classifyByZones(raw, zonesOf(node)))}
+    </div>`;
+}
+
+/**
+ * Paint a panel from the leaves under some roots, and hide the panel when
+ * the boat has none of them. An empty panel with a title is a claim that the
+ * boat has something there and it is broken.
+ *
+ * Two leaves that come out with the same label are one reading published
+ * twice — a bank carrying both the spec's `capacity.stateOfCharge` and an
+ * older plugin's `stateOfCharge` — and only the one the server describes
+ * better gets a card.
+ */
+function paintTreePanel(gridId, panelId, roots, { labelRoot = null, grouped = false } = {}) {
+  const byLabel = new Map();
+  const score = (path) => {
+    const meta = metaAtPath(path);
+    return (Array.isArray(meta.zones) ? 2 : 0) + (meta.units ? 1 : 0);
+  };
+  for (const root of roots) {
+    for (const path of leafPaths(root)) {
+      const label = autoLabel(path, labelRoot ?? root, grouped);
+      const held = byLabel.get(label);
+      if (!held || score(path) > score(held)) byLabel.set(label, path);
+    }
+  }
+  const cards = [...byLabel].map(([label, path]) => pathCard(path, { label }));
+  const panel = document.getElementById(panelId);
+  if (panel) panel.style.display = cards.length ? '' : 'none';
+  return paintPanel(gridId, () => cards.join(''));
+}
+
+/** The names under a tree node that are instances, not a node's own fields. */
+function childKeys(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return [];
+  return Object.keys(node).filter((key) => !NODE_FIELDS.has(key));
+}
+
+/**
+ * Tanks: one card per tank, whatever the boat has. The level is the value,
+ * the volume beside it when the sender reports one, and the level's zones
+ * color it. `tanks.<type>.<id>.name` names the card; with none it is the
+ * type and the id, which is at least the boat's own vocabulary.
+ */
+function tankCards() {
+  const tanks = nodeAtPath('tanks');
+  const cards = [];
+  for (const type of childKeys(tanks)) {
+    for (const id of childKeys(tanks[type])) {
+      const tank = tanks[type][id];
+      if (!tank || typeof tank !== 'object') continue;
+      const level = tank.currentLevel?.value;
+      const volume = tank.currentVolume?.value;
+      const hasLevel = Number.isFinite(level);
+      const hasVolume = Number.isFinite(volume);
+      if (!hasLevel && !hasVolume) continue;
+      const base = `tanks.${type}.${id}`;
+      const path = hasLevel ? `${base}.currentLevel` : `${base}.currentVolume`;
+      const displayName = metaAtPath(path).displayName;
+      const label =
+        nodeName(tank) ||
+        (typeof displayName === 'string' && displayName.trim()) ||
+        capitalize(`${humanizeSegment(type)} ${id}`);
+      const levelText = hasLevel ? `${(level * 100).toFixed(0)}%` : null;
+      const volumeText = hasVolume ? fmtUnit('volume', volume) : null;
+      const display = levelText && volumeText
+        ? `<span>${levelText}</span><span class="value-sub">${volumeText}</span>`
+        : levelText || volumeText;
+      const leaf = hasLevel ? tank.currentLevel : tank.currentVolume;
+      const valueHtml = colorValue(display, classifyByZones(leaf.value, zonesOf(leaf)));
+      // The volume is what a tap converts, so it is the card's raw value;
+      // the level rides along for the toggle handler to put back beside it.
+      const extraAttrs = hasVolume
+        ? ['data-unit-group="volume"', `data-raw="${volume}"`, levelText ? `data-level="${levelText}"` : '']
+        : [];
+      cards.push(pathCard(path, { label, valueHtml, extraAttrs }));
+    }
+  }
+  return cards;
+}
+
+/**
+ * Is any engine running? Any instance under `propulsion` that says it has
+ * started or is turning over 100 RPM. It used to read `propulsion.port`,
+ * which is one boat's engine and nobody else's.
+ */
+function engineStatus() {
+  const propulsion = nodeAtPath('propulsion');
+  let best = { on: false, rpm: null };
+  for (const id of childKeys(propulsion)) {
+    const engine = propulsion[id] || {};
+    const hz = engine.revolutions?.value;
+    const rpm = Number.isFinite(hz) ? Math.round(hz * 60) : null;
+    const on = engine.state?.value === 'started' || (rpm != null && rpm > 100);
+    if (on && (!best.on || (rpm ?? 0) > (best.rpm ?? 0))) best = { on, rpm };
+  }
+  return best;
+}
+
+/**
+ * Where a value came from, for its tooltip: the `$source` the server
+ * recorded, with the NMEA 2000 PGN or 0183 sentence when it names one.
+ *
+ * When more than one source reports the path the server keeps them all under
+ * `values` and shows one as `value`. Listing the others is how you notice two
+ * GPSs fighting over `navigation.position`, or a battery monitor and a
+ * charger disagreeing about the bank voltage. The snapshot already carries
+ * all of this; the tooltip is only where it becomes readable.
+ */
+function sourceText(node) {
+  if (!node || typeof node !== 'object') return '';
+  const describe = (id, entry) => {
+    const via = entry?.pgn != null ? `PGN ${entry.pgn}` : entry?.sentence ? `${entry.sentence} sentence` : '';
+    return via ? `${id} (${via})` : id;
+  };
+  const primary = typeof node.$source === 'string' ? node.$source : '';
+  const values =
+    node.values && typeof node.values === 'object' && !Array.isArray(node.values) ? node.values : {};
+  const others = Object.keys(values).filter((id) => id !== primary);
+  const lines = [];
+  if (primary) lines.push(`Source: ${describe(primary, node)}`);
+  if (others.length) {
+    const label = primary ? 'Also reported by' : 'Sources';
+    lines.push(`${label}: ${others.map((id) => describe(id, values[id])).join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+/** A card's tooltip: what the value is, where it came from, and when. */
+function tooltipFor(description, node) {
+  const stamped = formatTimestamp(node?.timestamp);
+  return [description, sourceText(node), stamped ? `Last updated: ${stamped}` : '']
+    .filter(Boolean)
+    .join('\n');
+}
+
 function paintOtherInstruments() {
   if (!document.getElementById('other-grid')) return;
   // The dashboard decides what counts as already covered, so wait for it.
@@ -561,44 +923,9 @@ function paintOtherInstruments() {
     return;
   }
 
-  paintPanel('other-grid', () =>
-    paths
-      .map((path) => {
-        const node = nodeAtPath(path);
-        const raw = typeof node?.value === 'number' ? node.value : null;
-        const group = unitGroupForPath(path);
-        const meta = metaAtPath(path);
-        const label = labelForPath(path);
-        const shown = group
-          ? fmtUnit(group, raw)
-          : raw === null
-            ? 'N/A'
-            : `${Number(raw.toFixed(3))}${meta.units ? '\u00a0' + meta.units : ''}`;
-        // The path is the tooltip: there is no hand-written description for
-        // a path nobody anticipated, and the server's own is used when it
-        // has one.
-        const described =
-          typeof meta.description === 'string' && meta.description.trim()
-            ? meta.description.trim()
-            : path;
-        const stamped = formatTimestamp(node?.timestamp);
-        const title = stamped ? `${described}\nLast updated: ${stamped}` : described;
-        const attrs = [
-          `data-path="${path}"`,
-          `data-label="${label}"`,
-          group ? `data-unit-group="${group}"` : '',
-          raw === null ? '' : `data-raw="${raw}"`,
-        ]
-          .filter(Boolean)
-          .join(' ');
-        return `
-          <div class="info-item" ${attrs} title="${title}">
-            <div class="label">${label}</div>
-            ${colorValue(shown, classifyByZones(raw, zonesOf(node)))}
-          </div>`;
-      })
-      .join(''),
-  );
+  // The path is the tooltip when the server has no description: there is no
+  // hand-written one for a path nobody anticipated.
+  paintPanel('other-grid', () => paths.map((path) => pathCard(path)).join(''));
 }
 
 function paintPanel(containerId, buildHtml) {
@@ -1349,7 +1676,6 @@ let polarChartInstance = null;
 let polarData = null;
 let currentEnv = null; // Global environment data
 let currentNav = null; // Global navigation data
-let currentPropulsion = null; // Global propulsion data
 let isDrawingPolarChart = false; // Flag to prevent multiple simultaneous chart draws
 let lastPolarChartUpdate = 0; // Timestamp of last chart update
 const SPARKLINE_MAX_POINTS = C.SPARKLINE_MAX_POINTS;
@@ -1470,7 +1796,7 @@ const SI_UNIT_TO_GROUP = {
  * everything else, which is every path the table has never heard of.
  */
 function unitGroupForPath(path) {
-  return PATH_TO_UNIT_GROUP[path] || SI_UNIT_TO_GROUP[metaAtPath(path).units] || '';
+  return PATH_TO_UNIT_GROUP[path] || SI_UNIT_TO_GROUP[unitsForPath(path)] || '';
 }
 
 /** A human label for a path: what the server calls it, else its own tail. */
@@ -1482,10 +1808,10 @@ function labelForPath(path) {
   if (typeof meta.shortName === 'string' && meta.shortName.trim()) {
     return meta.shortName.trim();
   }
-  // `electrical.batteries.house.voltage` -> `house voltage`, which beats the
-  // whole path in a grid cell and beats inventing a name.
-  const parts = String(path).split('.');
-  return parts.slice(-2).join(' ') || path;
+  // Named from the tree like the panels are, which beats the whole path in a
+  // grid cell and beats inventing a name.
+  const root = String(path).split('.')[0];
+  return String(path).includes('.') ? autoLabel(path, root, root === 'electrical') : path;
 }
 
 // Maps SignalK paths to a UNIT_GROUPS key for sparkline display config.
@@ -1508,12 +1834,9 @@ const PATH_TO_UNIT_GROUP = {
   'steering.rudderAngle':            'angle',
   'environment.wind.angleTrue':      'angle',
   'environment.wind.angleApparent':     'angle',
-  'propulsion.port.revolutions':        'rotation',
   'environment.wind.oneMinute.gustTrue':   'speed',
   'environment.wind.fiveMinutes.gustTrue': 'speed',
   'environment.wind.oneHour.gustTrue':     'speed',
-  'environment.rpi.gpu.temperature':       'temperature',
-  'environment.rpi.cpu.temperature':       'temperature',
 };
 
 // Persisted unit preferences: { groupName: cycleIndex }
@@ -2141,19 +2464,11 @@ async function loadData() {
     const fromServer = node?.meta?.description;
     const text =
       typeof fromServer === 'string' && fromServer.trim() ? fromServer.trim() : description;
-    const formatted = formatTimestamp(node?.timestamp);
-    return formatted ? `${text}\nLast updated: ${formatted}` : text;
+    // Escaped because a `$source` is whatever a plugin named its connection,
+    // and this lands in an attribute.
+    return escapeHtml(tooltipFor(text, node));
   };
 
-  const withUpdatedNodes = (description, ...nodes) => {
-    for (const node of nodes) {
-      const formatted = formatTimestamp(node?.timestamp);
-      if (formatted) {
-        return `${description}\nLast updated: ${formatted}`;
-      }
-    }
-    return description;
-  };
 
   // Build a Map<path, [{t, v}]> from instrument_log.json entries.
   // Each entry is {timestamp, values: {path: number}}.
@@ -2196,65 +2511,6 @@ async function loadData() {
         return seriesByPath;
       });
     return seriesPromise;
-  };
-
-  // Unit conversion config keyed by SignalK path.
-  // transform: converts raw SI value to display value; unit: label shown next to min/max.
-  const PATH_DISPLAY_CONFIG = {
-    'navigation.speedOverGround':                        { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'navigation.speedThroughWater':                      { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'navigation.trip.log':                               { transform: v => v / 1852,                       unit: 'nm'    },
-    'navigation.log':                                    { transform: v => v / 1852,                       unit: 'nm'    },
-    'navigation.attitude.roll':                          { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'navigation.attitude.pitch':                         { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'navigation.courseOverGroundTrue':                   { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'navigation.headingMagnetic':                        { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'navigation.magneticVariation':                      { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'navigation.anchor.currentRadius':                   { transform: v => v * 3.28084,                    unit: 'ft'    },
-    'navigation.anchor.bearingTrue':                     { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'steering.rudderAngle':                              { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'environment.wind.speedTrue':                        { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'environment.wind.angleTrue':                        { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'environment.wind.angleApparent':                    { transform: v => v * 180 / Math.PI,              unit: '°'     },
-    'environment.wind.speedApparent':                    { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'electrical.batteries.house.voltage':                { transform: v => v,                              unit: 'V'     },
-    'electrical.batteries.house.current':                { transform: v => v,                              unit: 'A'     },
-    'electrical.batteries.house.power':                  { transform: v => v,                              unit: 'W'     },
-    'electrical.batteries.house.capacity.stateOfCharge': { transform: v => v * 100,                        unit: '%'     },
-    'electrical.batteries.house.capacity.timeRemaining': { transform: v => v / 3600,                       unit: 'hrs'   },
-    'environment.water.temperature':                     { transform: v => (v - 273.15) * 9/5 + 32,       unit: '°F'    },
-    'environment.inside.temperature':                    { transform: v => (v - 273.15) * 9/5 + 32,       unit: '°F'    },
-    'environment.inside.humidity':                       { transform: v => v * 100,                        unit: '%'     },
-    'environment.inside.pressure':                       { transform: v => v / 100,                        unit: 'mbar'  },
-    'environment.inside.airQuality.tvoc':                { transform: v => v,                              unit: 'ppb'   },
-    'environment.inside.airQuality.eco2':                { transform: v => v,                              unit: 'ppm'   },
-    'internet.speed.download':                           { transform: v => v,                              unit: 'Mbps'  },
-    'internet.speed.upload':                             { transform: v => v,                              unit: 'Mbps'  },
-    'internet.ping.latency':                             { transform: v => v,                              unit: 'ms'    },
-    'internet.ping.jitter':                              { transform: v => v,                              unit: 'ms'    },
-    'internet.packetLoss':                               { transform: v => v <= 1 ? v * 100 : v,          unit: '%'     },
-    'propulsion.port.revolutions':                       { transform: v => v * 60,                         unit: 'RPM'   },
-    'tanks.fuel.0.currentLevel':                         { transform: v => v * 100,                        unit: '%'     },
-    'tanks.fuel.reserve.currentLevel':                   { transform: v => v * 100,                        unit: '%'     },
-    'tanks.freshWater.0.currentLevel':                   { transform: v => v * 100,                        unit: '%'     },
-    'tanks.freshWater.1.currentLevel':                   { transform: v => v * 100,                        unit: '%'     },
-    'tanks.propane.a.currentLevel':                      { transform: v => v * 100,                        unit: '%'     },
-    'tanks.propane.b.currentLevel':                      { transform: v => v * 100,                        unit: '%'     },
-    'tanks.blackwater.bow.currentLevel':                 { transform: v => v * 100,                        unit: '%'     },
-    'tanks.liveWell.0.currentLevel':                     { transform: v => v * 100,                        unit: '%'     },
-    'electrical.solar.bimini.panelPower':                { transform: v => v,                              unit: 'W'     },
-    'electrical.solar.bimini.current':                   { transform: v => v,                              unit: 'A'     },
-    'electrical.solar.bimini.voltage':                   { transform: v => v,                              unit: 'V'     },
-    'electrical.solar.bimini.yieldToday':                { transform: v => v / 3600,                       unit: 'Wh'    },
-    'electrical.batteries.house.capacity.dischargeSinceFull': { transform: v => v / 3600,                  unit: 'Ah'    },
-    'environment.wind.oneMinute.gustTrue':               { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'environment.wind.fiveMinutes.gustTrue':             { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'environment.wind.oneHour.gustTrue':                 { transform: v => v * 1.94384,                    unit: 'kts'   },
-    'environment.rpi.gpu.temperature':                   { transform: v => (v - 273.15) * 9/5 + 32,       unit: '°F'    },
-    'environment.rpi.cpu.temperature':                   { transform: v => (v - 273.15) * 9/5 + 32,       unit: '°F'    },
-    'environment.rpi.cpu.utilisation':                   { transform: v => v * 100,                        unit: '%'     },
-    'environment.rpi.memory.utilisation':                { transform: v => v * 100,                        unit: '%'     },
-    'environment.rpi.sd.utilisation':                    { transform: v => v * 100,                        unit: '%'     },
   };
 
   const SPARKLINE_FONT = '10px system-ui,-apple-system,sans-serif';
@@ -2602,10 +2858,7 @@ async function loadData() {
       }
 
       const points = windowPoints(list, cutoff);
-      const grp = unitGroupForPath(path);
-      const displayCfg = grp
-        ? { transform: getUnitCfg(grp).transform, unit: getUnitCfg(grp).unit }
-        : (PATH_DISPLAY_CONFIG[path] || {});
+      const displayCfg = displayConfigForPath(path);
       renderSparkline(canvas, points, displayCfg, { ...baseColors, line: lineColor }, item);
     });
 
@@ -2720,10 +2973,8 @@ async function loadData() {
     setRawDataPre('raw-signalk-latest', data);
     paintedPanels.clear();
     const nav = data.navigation || {};
-    const elec = data.electrical || {};
     const env = data.environment || {};
     const entertainment = data.entertainment || {};
-    const internet = data.internet || {};
 
     const signalkName = data.name;
     const signalkMmsi = data.mmsi;
@@ -2739,7 +2990,6 @@ async function loadData() {
     currentTree = data;
     currentNav = nav;
     currentEnv = env;
-    currentPropulsion = data.propulsion?.port || {};
 
     // Compute vessel state from SOG and anchor watch
     const sogKts = (nav?.speedOverGround?.value ?? 0) * 1.94384;
@@ -2932,32 +3182,6 @@ async function loadData() {
       classifyByZones(anchorRawSI, zonesOf(nav.anchor?.currentRadius)),
     );
 
-    const socNode = elec.batteries?.house?.capacity?.stateOfCharge;
-    const socRaw = socNode?.value;
-    const socPercent = socRaw != null ? socRaw * 100 : null;
-    const socDisplay = socPercent != null ? `${socPercent.toFixed(0)}%` : 'N/A';
-    const socValueHtml = colorValue(socDisplay, classifyByZones(socRaw, zonesOf(socNode)));
-
-    const timeRemainingNode = elec.batteries?.house?.capacity?.timeRemaining;
-    const timeRemainingRaw = timeRemainingNode?.value;
-    const timeRemainingHours = timeRemainingRaw != null ? timeRemainingRaw / 3600 : null;
-    const timeRemainingDisplay = timeRemainingHours != null ? `${timeRemainingHours.toFixed(1)} hrs` : 'N/A';
-    const timeRemainingHtml = colorValue(
-      timeRemainingDisplay,
-      classifyByZones(timeRemainingRaw, zonesOf(timeRemainingNode)),
-    );
-
-    const packetLossValueRaw = internet.packetLoss?.value;
-    const packetLossPercent = packetLossValueRaw != null ? (packetLossValueRaw <= 1 ? packetLossValueRaw * 100 : packetLossValueRaw) : null;
-    const packetLossDisplay = packetLossPercent != null ? `${packetLossPercent.toFixed(1)}%` : 'N/A';
-    const packetLossHtml = colorValue(
-      packetLossDisplay,
-      classifyByZones(packetLossValueRaw, zonesOf(internet.packetLoss)),
-    );
-
-    const tankValueWithBadge = (level, valueDisplay, zones = null) =>
-      colorValue(valueDisplay, classifyByZones(level, zones));
-
     paintPanel('navigation-grid', () => `
       <div class="info-item" title="${withUpdated('Current vessel latitude position', nav.position)}"><div class="label">Latitude</div><div class="value">${lat?.toFixed(6) ?? 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Current vessel longitude position', nav.position)}"><div class="label">Longitude</div><div class="value">${lon?.toFixed(6) ?? 'N/A'}</div></div>
@@ -2985,20 +3209,9 @@ async function loadData() {
       <div class="info-item" data-path="environment.wind.oneHour.gustTrue" data-label="1-Hour Gust" data-unit-group="speed" data-raw="${env.wind?.oneHour?.gustTrue?.value ?? ''}" title="${withUpdated('Maximum true wind gust over the past 1 hour', env.wind?.oneHour?.gustTrue)}"><div class="label">1-Hour Gust</div><div class="value">${fmtUnit('speed', env.wind?.oneHour?.gustTrue?.value)}</div></div>
     `);
 
-    // Update power data
-    paintPanel('power-grid', () => `
-      <div class="info-item" data-path="electrical.batteries.house.voltage" data-label="Battery Voltage" title="${withUpdated('House battery bank voltage', elec.batteries?.house?.voltage)}"><div class="label">Battery Voltage</div><div class="value">${elec.batteries?.house?.voltage?.value?.toFixed(2) ?? 'N/A'} V</div></div>
-      <div class="info-item" data-path="electrical.batteries.house.current" data-label="Battery Current" title="${withUpdated('House battery bank current - positive is charging, negative is discharging', elec.batteries?.house?.current)}"><div class="label">Battery Current</div><div class="value">${elec.batteries?.house?.current?.value?.toFixed(1) ?? 'N/A'} A</div></div>
-      <div class="info-item" data-path="electrical.batteries.house.power" data-label="Battery Power" title="${withUpdated('House battery bank power consumption or generation', elec.batteries?.house?.power)}"><div class="label">Battery Power</div><div class="value">${elec.batteries?.house?.power?.value?.toFixed(1) ?? 'N/A'} W</div></div>
-      <div class="info-item" data-path="electrical.batteries.house.capacity.stateOfCharge" data-label="SOC" title="${withUpdated('State of Charge - percentage of battery capacity remaining', elec.batteries?.house?.capacity?.stateOfCharge)}"><div class="label">SOC</div>${socValueHtml}</div>
-      <div class="info-item" data-path="electrical.batteries.house.capacity.timeRemaining" data-label="Battery Time Remaining" title="${withUpdated('Estimated time remaining until battery depletion', elec.batteries?.house?.capacity?.timeRemaining)}"><div class="label">Battery Time Remaining</div>${timeRemainingHtml}</div>
-      <div class="info-item" data-path="electrical.solar.bimini.panelPower" data-label="Solar Power" title="${withUpdated('Solar panel output power from bimini array (Victron MPPT)', elec.solar?.bimini?.panelPower)}"><div class="label">Solar Power</div><div class="value">${elec.solar?.bimini?.panelPower?.value?.toFixed(1) ?? 'N/A'} W</div></div>
-      <div class="info-item" data-path="electrical.solar.bimini.current" data-label="Solar Current" title="${withUpdated('Solar charging current from bimini array', elec.solar?.bimini?.current)}"><div class="label">Solar Current</div><div class="value">${elec.solar?.bimini?.current?.value?.toFixed(2) ?? 'N/A'} A</div></div>
-      <div class="info-item" data-path="electrical.solar.bimini.voltage" data-label="Solar Voltage" title="${withUpdated('Solar panel voltage from bimini array', elec.solar?.bimini?.voltage)}"><div class="label">Solar Voltage</div><div class="value">${elec.solar?.bimini?.voltage?.value?.toFixed(2) ?? 'N/A'} V</div></div>
-      <div class="info-item" data-path="electrical.solar.bimini.yieldToday" data-label="Solar Yield Today" title="${withUpdated('Total solar energy generated today from bimini array', elec.solar?.bimini?.yieldToday)}"><div class="label">Solar Yield Today</div><div class="value">${elec.solar?.bimini?.yieldToday?.value != null ? (elec.solar.bimini.yieldToday.value / 3600).toFixed(0) + ' Wh' : 'N/A'}</div></div>
-      <div class="info-item" data-path="electrical.batteries.house.capacity.dischargeSinceFull" data-label="Discharge Since Full" title="${withUpdated('Amp-hours drawn from the house bank since last full charge', elec.batteries?.house?.capacity?.dischargeSinceFull)}"><div class="label">Discharge Since Full</div><div class="value">${elec.batteries?.house?.capacity?.dischargeSinceFull?.value != null ? (elec.batteries.house.capacity.dischargeSinceFull.value / 3600).toFixed(1) + ' Ah' : 'N/A'}</div></div>
-      <div class="info-item" title="${withUpdated('Solar charge controller mode (off / bulk / absorption / float)', elec.solar?.bimini?.chargingMode)}"><div class="label">Solar Mode</div><div class="value value-text">${elec.solar?.bimini?.chargingMode?.value ?? 'N/A'}</div></div>
-    `);
+    // Every battery bank, solar array, charger, inverter and alternator the
+    // boat reports, under whatever instance names it gave them.
+    paintTreePanel('power-grid', 'power-panel', ['electrical'], { grouped: true });
 
     // Update the vessel information with static vessel data
     paintPanel('vessel-grid', () => `
@@ -3013,80 +3226,31 @@ async function loadData() {
       <div class="info-item" title="${withUpdated('US Coast Guard vessel registration number', vesselData)}"><div class="label">USCG #</div><div class="value value-text">${vesselData?.uscg_number || 'N/A'}</div></div>
     `);
 
-    const isNumericValue = (val) => typeof val === 'number' && Number.isFinite(val);
-    const toPercent = (val, digits = 0) =>
-      isNumericValue(val) ? `${(val * 100).toFixed(digits)}%` : 'N/A';
-    const formatTankDisplay = (level, volume) => {
-      const levelDisplay = toPercent(level);
-      const volumeDisplay = isNumericValue(volume) ? fmtUnit('volume', volume) : null;
-      if (levelDisplay !== 'N/A' && volumeDisplay) {
-        return `<span>${levelDisplay}</span><span class="value-sub">${volumeDisplay}</span>`;
-      }
-      return levelDisplay !== 'N/A' ? levelDisplay : (volumeDisplay || 'N/A');
-    };
-    // Update onboard sensor readings (water/inside temp, humidity, air quality, sun times)
+    // Onboard sensors: the spec's fixed paths, then whatever the boat reports
+    // inside and outside — a cabin, an engine room, a fridge, a barometer.
+    const climateCards = ['environment.inside', 'environment.outside']
+      .flatMap((root) => leafPaths(root).map((path) => pathCard(path, { label: autoLabel(path, 'environment') })))
+      .join('');
     paintPanel('sensors-grid', () => `
       <div class="info-item" data-path="environment.depth.belowTransducer" data-label="Depth" data-unit-group="length" data-raw="${data.environment?.depth?.belowTransducer?.value ?? ''}" title="${withUpdated('Water depth below the transducer', data.environment?.depth?.belowTransducer)}"><div class="label">Depth</div>${colorValue(fmtUnit('length', data.environment?.depth?.belowTransducer?.value), classifyByZones(data.environment?.depth?.belowTransducer?.value, zonesOf(data.environment?.depth?.belowTransducer)))}</div>
       <div class="info-item" data-path="environment.water.temperature" data-label="Water Temp" data-unit-group="temperature" data-raw="${env.water?.temperature?.value ?? ''}" title="${withUpdated('Water temperature at the surface', env.water?.temperature)}"><div class="label">Water Temp</div><div class="value">${fmtUnit('temperature', env.water?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.inside.temperature" data-label="Inside Temp" data-unit-group="temperature" data-raw="${data.environment?.inside?.temperature?.value ?? ''}" title="${withUpdated('Inside air temperature', data.environment?.inside?.temperature)}"><div class="label">Inside Temp</div><div class="value">${fmtUnit('temperature', data.environment?.inside?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.inside.humidity" data-label="Inside Humidity" title="${withUpdated('Inside humidity', data.environment?.inside?.humidity)}"><div class="label">Inside Humidity</div><div class="value">${data.environment?.inside?.humidity?.value ? (data.environment.inside.humidity.value * 100).toFixed(1) + '%' : 'N/A'}</div></div>
-      <div class="info-item" data-path="environment.inside.pressure" data-label="Barometric Pressure" data-unit-group="pressure" data-raw="${data.environment?.inside?.pressure?.value ?? ''}" title="${withUpdated('Inside barometric pressure', data.environment?.inside?.pressure)}"><div class="label">Barometric Pressure</div><div class="value">${fmtUnit('pressure', data.environment?.inside?.pressure?.value)}</div></div>
-      <div class="info-item" data-path="environment.inside.airQuality.tvoc" data-label="TVOC" title="${withUpdated('Indoor air quality - Total Volatile Organic Compounds', data.environment?.inside?.airQuality?.tvoc)}"><div class="label">TVOC</div><div class="value">${data.environment?.inside?.airQuality?.tvoc?.value ? data.environment.inside.airQuality.tvoc.value.toFixed(0) + ' ppb' : 'N/A'}</div></div>
-      <div class="info-item" data-path="environment.inside.airQuality.eco2" data-label="CO₂" title="${withUpdated('Indoor air quality - Carbon Dioxide equivalent', data.environment?.inside?.airQuality?.eco2)}"><div class="label">CO₂</div><div class="value">${data.environment?.inside?.airQuality?.eco2?.value ? data.environment.inside.airQuality.eco2.value.toFixed(0) + ' ppm' : 'N/A'}</div></div>
       <div class="info-item" data-path="navigation.magneticVariation" data-label="Magnetic Variation" title="${withUpdated('Magnetic variation at current position - difference between true and magnetic north', data.navigation?.magneticVariation)}"><div class="label">Magnetic Variation</div><div class="value">${data.navigation?.magneticVariation?.value ? (data.navigation.magneticVariation.value * 180 / Math.PI).toFixed(1) + '°' : 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Sunrise time today', data.environment?.sunlight?.times?.sunrise)}"><div class="label">Sunrise</div><div class="value">${data.environment?.sunlight?.times?.sunrise?.value ? new Date(data.environment.sunlight.times.sunrise.value).toLocaleTimeString() : 'N/A'}</div></div>
       <div class="info-item" title="${withUpdated('Sunset time today', data.environment?.sunlight?.times?.sunset)}"><div class="label">Sunset</div><div class="value">${data.environment?.sunlight?.times?.sunset?.value ? new Date(data.environment.sunlight.times.sunset.value).toLocaleTimeString() : 'N/A'}</div></div>
+      ${climateCards}
     `);
 
-    paintPanel('internet-grid', () => `
-      <div class="info-item" title="${withUpdated('Internet service provider', internet.ISP)}"><div class="label">ISP</div><div class="value value-text">${internet.ISP?.value || 'N/A'}</div></div>
-      <div class="info-item" data-path="internet.speed.download" data-label="Download" title="${withUpdated('Download speed', internet.speed?.download)}"><div class="label">Download</div><div class="value">${isNumericValue(internet.speed?.download?.value) ? internet.speed.download.value.toFixed(1) + ' Mbps' : 'N/A'}</div></div>
-      <div class="info-item" data-path="internet.speed.upload" data-label="Upload" title="${withUpdated('Upload speed', internet.speed?.upload)}"><div class="label">Upload</div><div class="value">${isNumericValue(internet.speed?.upload?.value) ? internet.speed.upload.value.toFixed(1) + ' Mbps' : 'N/A'}</div></div>
-      <div class="info-item" data-path="internet.ping.latency" data-label="Latency" title="${withUpdated('Ping latency', internet.ping?.latency)}"><div class="label">Latency</div><div class="value">${isNumericValue(internet.ping?.latency?.value) ? internet.ping.latency.value.toFixed(1) + ' ms' : 'N/A'}</div></div>
-      <div class="info-item" data-path="internet.ping.jitter" data-label="Jitter" title="${withUpdated('Ping jitter', internet.ping?.jitter)}"><div class="label">Jitter</div><div class="value">${isNumericValue(internet.ping?.jitter?.value) ? internet.ping.jitter.value.toFixed(1) + ' ms' : 'N/A'}</div></div>
-      <div class="info-item" data-path="internet.packetLoss" data-label="Packet Loss" title="${withUpdated('Packet loss percentage', internet.packetLoss)}"><div class="label">Packet Loss</div>${packetLossHtml}</div>
-    `);
+    // Not in the Signal K spec, so only a boat running a plugin that writes
+    // them has either panel; one that does not never sees the heading.
+    paintTreePanel('internet-grid', 'internet-panel', ['internet']);
+    paintTreePanel('system-grid', 'system-panel', ['environment.rpi']);
+    paintTreePanel('propulsion-grid', 'propulsion-panel', ['propulsion']);
 
-    // Update system health (RPi)
-    const rpi = env.rpi || {};
-    const fmtCelsius = (k) => Number.isFinite(k) ? `${(k - 273.15).toFixed(1)} °C` : 'N/A';
-    const fmtPercent = (v) => Number.isFinite(v) ? `${(v * 100).toFixed(0)}%` : 'N/A';
+    const tanks = tankCards();
+    const tanksPanel = document.getElementById('tanks-panel');
+    if (tanksPanel) tanksPanel.style.display = tanks.length ? '' : 'none';
+    paintPanel('tanks-grid', () => tanks.join(''));
     paintOtherInstruments();
-
-    paintPanel('system-grid', () => `
-      <div class="info-item" data-path="environment.rpi.cpu.temperature" data-label="CPU Temp" data-unit-group="temperature" data-raw="${rpi.cpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi CPU temperature', rpi.cpu?.temperature)}"><div class="label">CPU Temp</div><div class="value">${fmtCelsius(rpi.cpu?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.gpu.temperature" data-label="GPU Temp" data-unit-group="temperature" data-raw="${rpi.gpu?.temperature?.value ?? ''}" title="${withUpdated('Raspberry Pi GPU temperature', rpi.gpu?.temperature)}"><div class="label">GPU Temp</div><div class="value">${fmtCelsius(rpi.gpu?.temperature?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.cpu.utilisation" data-label="CPU Use" title="${withUpdated('Raspberry Pi CPU utilization', rpi.cpu?.utilisation)}"><div class="label">CPU Use</div><div class="value">${fmtPercent(rpi.cpu?.utilisation?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.memory.utilisation" data-label="RAM Use" title="${withUpdated('Raspberry Pi memory utilization', rpi.memory?.utilisation)}"><div class="label">RAM Use</div><div class="value">${fmtPercent(rpi.memory?.utilisation?.value)}</div></div>
-      <div class="info-item" data-path="environment.rpi.sd.utilisation" data-label="SD Use" title="${withUpdated('Raspberry Pi SD card utilization', rpi.sd?.utilisation)}"><div class="label">SD Use</div><div class="value">${fmtPercent(rpi.sd?.utilisation?.value)}</div></div>
-    `);
-
-    const propulsion = data.propulsion?.port || {};
-    const rpmValue = propulsion.revolutions?.value;
-    paintPanel('propulsion-grid', () => `
-      <div class="info-item" title="${withUpdated('Engine state', propulsion.state)}"><div class="label">State</div><div class="value value-text">${propulsion.state?.value || 'N/A'}</div></div>
-      <div class="info-item" data-path="propulsion.port.revolutions" data-label="RPM" data-unit-group="rotation" data-raw="${rpmValue ?? ''}" title="${withUpdated('Engine revolutions per minute', propulsion.revolutions)}"><div class="label">RPM</div><div class="value">${fmtUnit('rotation', rpmValue)}</div></div>
-    `);
-
-    const tanks = data.tanks || {};
-    const fuelMain = tanks.fuel?.['0'] || {};
-    const fuelReserve = tanks.fuel?.reserve || {};
-    const freshWater0 = tanks.freshWater?.['0'] || {};
-    const freshWater1 = tanks.freshWater?.['1'] || {};
-    const propaneA = tanks.propane?.a || {};
-    const propaneB = tanks.propane?.b || {};
-    const blackwaterBow = tanks.blackwater?.bow || {};
-    const liveWell0 = tanks.liveWell?.['0'] || {};
-    paintPanel('tanks-grid', () => `
-      <div class="info-item" data-path="tanks.fuel.0.currentLevel" data-label="Fuel (Main)" data-unit-group="volume" data-raw="${fuelMain.currentVolume?.value ?? ''}" data-level="${toPercent(fuelMain.currentLevel?.value)}" title="${withUpdatedNodes('Main fuel tank level, volume, and temperature (if available)', fuelMain.currentLevel, fuelMain.currentVolume, fuelMain.temperature)}"><div class="label">Fuel (Main)</div>${tankValueWithBadge(fuelMain.currentLevel?.value, formatTankDisplay(fuelMain.currentLevel?.value, fuelMain.currentVolume?.value), zonesOf(fuelMain.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.fuel.reserve.currentLevel" data-label="Fuel (Reserve)" data-unit-group="volume" data-raw="${fuelReserve.currentVolume?.value ?? ''}" data-level="${toPercent(fuelReserve.currentLevel?.value)}" title="${withUpdatedNodes('Reserve fuel tank level, volume, and temperature (if available)', fuelReserve.currentLevel, fuelReserve.currentVolume, fuelReserve.temperature)}"><div class="label">Fuel (Reserve)</div>${tankValueWithBadge(fuelReserve.currentLevel?.value, formatTankDisplay(fuelReserve.currentLevel?.value, fuelReserve.currentVolume?.value), zonesOf(fuelReserve.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.freshWater.0.currentLevel" data-label="Fresh Water 1" data-unit-group="volume" data-raw="${freshWater0.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater0.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 1 level and volume', freshWater0.currentLevel, freshWater0.currentVolume)}"><div class="label">Fresh Water 1</div>${tankValueWithBadge(freshWater0.currentLevel?.value, formatTankDisplay(freshWater0.currentLevel?.value, freshWater0.currentVolume?.value), zonesOf(freshWater0.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.freshWater.1.currentLevel" data-label="Fresh Water 2" data-unit-group="volume" data-raw="${freshWater1.currentVolume?.value ?? ''}" data-level="${toPercent(freshWater1.currentLevel?.value)}" title="${withUpdatedNodes('Fresh water tank 2 level and volume', freshWater1.currentLevel, freshWater1.currentVolume)}"><div class="label">Fresh Water 2</div>${tankValueWithBadge(freshWater1.currentLevel?.value, formatTankDisplay(freshWater1.currentLevel?.value, freshWater1.currentVolume?.value), zonesOf(freshWater1.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.propane.a.currentLevel" data-label="Propane A" title="${withUpdatedNodes('Propane tank A level and temperature', propaneA.currentLevel, propaneA.temperature)}"><div class="label">Propane A</div>${tankValueWithBadge(propaneA.currentLevel?.value, formatTankDisplay(propaneA.currentLevel?.value, null), zonesOf(propaneA.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.propane.b.currentLevel" data-label="Propane B" title="${withUpdatedNodes('Propane tank B level and temperature', propaneB.currentLevel, propaneB.temperature)}"><div class="label">Propane B</div>${tankValueWithBadge(propaneB.currentLevel?.value, formatTankDisplay(propaneB.currentLevel?.value, null), zonesOf(propaneB.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.blackwater.bow.currentLevel" data-label="Blackwater" title="${withUpdatedNodes('Blackwater tank level and temperature', blackwaterBow.currentLevel, blackwaterBow.temperature)}"><div class="label">Blackwater</div>${tankValueWithBadge(blackwaterBow.currentLevel?.value, formatTankDisplay(blackwaterBow.currentLevel?.value, null), zonesOf(blackwaterBow.currentLevel))}</div>
-      <div class="info-item" data-path="tanks.liveWell.0.currentLevel" data-label="Bilge" title="${withUpdated('Bilge level', liveWell0.currentLevel)}"><div class="label">Bilge</div>${tankValueWithBadge(liveWell0.currentLevel?.value, formatTankDisplay(liveWell0.currentLevel?.value, null), zonesOf(liveWell0.currentLevel))}</div>
-    `);
 
     // Render alert summary and inline sparklines now that all info-item cards
     // are in the DOM. Neither is worth losing the other, or the panels above.
@@ -3189,10 +3353,7 @@ function updatePolarPerformance() {
   const tws = windSpeed ? windSpeed * 1.94384 : 10; // Default to 10 knots
 
   // Engine / propulsion state
-  const engineState = currentPropulsion?.state?.value;
-  const engineHz    = currentPropulsion?.revolutions?.value;
-  const rpm         = engineHz != null ? Math.round(engineHz * 60) : null;
-  const engineOn    = engineState === 'started' || (rpm != null && rpm > 100);
+  const { on: engineOn, rpm } = engineStatus();
 
   // Show/hide motoring badge over the polar chart
   const indicator = document.getElementById('polar-engine-indicator');

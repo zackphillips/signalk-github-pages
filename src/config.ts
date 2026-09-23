@@ -60,8 +60,18 @@ export interface PluginConfig {
   privacyZones: PrivacyZone[];
   /** IANA zone tracks are grouped by: the server's, or the one overridden. */
   timezone: string;
+  /**
+   * Paths never published, from the Paths section: removed from the
+   * snapshot, never logged, and — for a `notifications.` line — never shown
+   * as a notification. The dashboard draws what the snapshot carries, so
+   * this is also what takes a card off the site.
+   */
+  hiddenPaths: string[];
   instrumentLog: {
-    /** Paths never logged. Everything else the provider has stored is. */
+    /**
+     * Paths never logged: the Paths section's "not graphed" list plus every
+     * hidden path. Everything else the provider has stored is logged.
+     */
     exclude: string[];
     entries: number;
   };
@@ -107,9 +117,10 @@ export interface PluginConfig {
    */
   publishNotifications: boolean;
   /**
-   * Notification paths never published. Empty means publish every one —
-   * like the instrument log exclusions, an empty blacklist is a real
-   * answer and must not fall back to the default.
+   * Notification paths never published, without the `notifications.` prefix:
+   * the `notifications.` lines of `hiddenPaths`. Empty means publish every
+   * one — an empty blacklist is a real answer and must not fall back to the
+   * default.
    */
   notificationExclude: string[];
   site: {
@@ -178,6 +189,17 @@ export const DEFAULT_INSTRUMENT_LOG_EXCLUDE = [
   'sensors',
   'notifications',
 ];
+
+/**
+ * Default hidden paths: the notification defaults, as full paths.
+ *
+ * One list covers the telemetry and the notifications because a notification
+ * is a Signal K path like any other, and an adopter hiding a sensor wants its
+ * alarm gone too without learning a second syntax for it.
+ */
+export const DEFAULT_HIDDEN_PATHS = DEFAULT_NOTIFICATION_EXCLUDE.map(
+  (path) => `notifications.${path}`,
+);
 
 /** Cadence while `navigation.state` says the boat is moving, in minutes. */
 export const DEFAULT_INTERVAL_UNDERWAY_MINUTES = 2;
@@ -423,10 +445,15 @@ function carryForwardMovedSettings(
   if (notifications.publish === undefined && saved.publishNotifications !== undefined) {
     properties.notifications.properties.publish.default = saved.publishNotifications !== false;
   }
-  if (notifications.exclude === undefined && saved.notificationExclude !== undefined) {
-    properties.notifications.properties.exclude.default = parsePathList(
-      saved.notificationExclude,
-    ).join('\n');
+  const paths = saved.paths ?? {};
+  if (paths.hide === undefined) {
+    const legacy = legacyNotificationExclude(notifications, saved);
+    if (legacy) properties.paths.properties.hide.default = legacy.join('\n');
+  }
+  if (paths.notGraphed === undefined && instrumentLog.exclude !== undefined) {
+    properties.paths.properties.notGraphed.default = parsePathList(instrumentLog.exclude).join(
+      '\n',
+    );
   }
   if (
     zeroOrMore(notifications.warnAfterMinutes) === null &&
@@ -705,19 +732,6 @@ export const configSchema = {
         'provider the site shows current values and omits the graphs. The map track ' +
         "is not part of this: it is always the plugin's own.",
       properties: {
-        exclude: {
-          type: 'string',
-          title: 'Never logged',
-          description:
-            'Every path the history provider has stored gets a sparkline except ' +
-            'these. One path per line; "*" matches one segment and a parent ' +
-            'excludes its subtree, so "design" drops every design path. Lines ' +
-            'starting with # are comments. Every logged path is uploaded on every ' +
-            'publish, so add the ones you do not need on a cellular plan. Positions ' +
-            'are never logged: the track comes from the boat, through the privacy ' +
-            'zones.',
-          default: DEFAULT_INSTRUMENT_LOG_EXCLUDE.join('\n'),
-        },
         hours: {
           type: 'number',
           title: 'History window (hours)',
@@ -736,6 +750,39 @@ export const configSchema = {
             'the one chosen in the server settings; pick another only when more than ' +
             'one is registered.',
           default: '',
+        },
+      },
+    },
+    paths: {
+      type: 'object',
+      title: 'Paths',
+      description:
+        'The dashboard is built from whatever the boat reports: every battery bank, ' +
+        'solar array, tank, engine and sensor in the Signal K tree gets a card, and ' +
+        'every logged number a sparkline. These two lists are how to take things off ' +
+        'it. One path per line; "*" matches one segment and a parent covers its ' +
+        'subtree, so "environment.rpi" drops every Raspberry Pi reading. Lines ' +
+        'starting with # are comments. Empty is a real answer: nothing is left out.',
+      properties: {
+        hide: {
+          type: 'string',
+          title: 'Never published',
+          description:
+            'Removed from the published snapshot and the instrument log, so no card ' +
+            'and no sparkline. Notifications go here too, as full paths: ' +
+            '"notifications.server" keeps every server notification off the site, and ' +
+            '"notifications" alone keeps all of them off.',
+          default: DEFAULT_HIDDEN_PATHS.join('\n'),
+        },
+        notGraphed: {
+          type: 'string',
+          title: 'Published, never graphed',
+          description:
+            'Shown as current values but left out of the instrument log. Every logged ' +
+            'path is uploaded on every publish, so add the ones not worth a sparkline ' +
+            'on a cellular plan. Positions are never logged: the track comes from the ' +
+            'boat, through the privacy zones.',
+          default: DEFAULT_INSTRUMENT_LOG_EXCLUDE.join('\n'),
         },
       },
     },
@@ -775,15 +822,6 @@ export const configSchema = {
             'raised it, published verbatim — turn this off if yours say anything you ' +
             'would not put on a public page.',
           default: true,
-        },
-        exclude: {
-          type: 'string',
-          title: 'Never published',
-          description:
-            'One notification path per line, without the "notifications." prefix. ' +
-            '"*" matches one segment and a parent excludes its subtree, so "server" ' +
-            'drops every server notification. Empty publishes every one.',
-          default: DEFAULT_NOTIFICATION_EXCLUDE.join('\n'),
         },
         warnAfterMinutes: {
           type: 'number',
@@ -946,8 +984,10 @@ export const configSchema = {
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
-  instrumentLog: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 10 } } },
-  notifications: { exclude: { 'ui:widget': 'textarea', 'ui:options': { rows: 4 } } },
+  paths: {
+    hide: { 'ui:widget': 'textarea', 'ui:options': { rows: 6 } },
+    notGraphed: { 'ui:widget': 'textarea', 'ui:options': { rows: 10 } },
+  },
   overrides: {
     // Each typed box directly under its own checkbox. A name the schema does
     // not currently have — every typed box while its override is unticked —
@@ -1250,31 +1290,61 @@ function resolveInstrumentLogHours(
 }
 
 /**
- * Notification paths never published.
+ * The notification exclusions a config written before the Paths section kept,
+ * as full paths, or null when it never had any.
  *
- * Empty is a real answer — publish every one — so it must not fall back to
- * the default the way an empty path list does. That holds for the key this
- * setting had before it moved into the notifications section too: only a
- * config that has never carried either gets the default.
+ * They were written without the `notifications.` prefix, in the notifications
+ * section or, before that, at the top level.
  */
-function notificationExclude(
+function legacyNotificationExclude(
   notifications: Record<string, any>,
   input: Record<string, any>,
-): string[] {
+): string[] | null {
   const value = notifications.exclude ?? input.notificationExclude;
-  return value === undefined ? [...DEFAULT_NOTIFICATION_EXCLUDE] : parsePathList(value);
+  if (value === undefined) return null;
+  return parsePathList(value).map((path) => `notifications.${path}`);
 }
 
 /**
- * Instrument paths never logged.
+ * Paths never published.
  *
- * Empty is a real answer here too: log everything the provider has. The
- * allowlist this replaced, `instrumentLog.paths`, is not read — an opt-in list
+ * Empty is a real answer — publish everything — so it must not fall back to
+ * the default the way a missing setting does. A config from before this
+ * section existed keeps the notification exclusions it had.
+ */
+function hiddenPaths(paths: Record<string, any>, input: Record<string, any>): string[] {
+  if (paths.hide !== undefined) return parsePathList(paths.hide);
+  return legacyNotificationExclude(input.notifications ?? {}, input) ?? [...DEFAULT_HIDDEN_PATHS];
+}
+
+/**
+ * Paths published but never logged.
+ *
+ * Empty is a real answer here too: log everything the provider has. It used
+ * to be `instrumentLog.exclude`, which is still read when this is unset. The
+ * allowlist before that, `instrumentLog.paths`, is not read — an opt-in list
  * carried over as an opt-out one would exclude exactly the paths it named.
  */
-function instrumentLogExclude(instrumentLog: Record<string, any>): string[] {
-  const value = instrumentLog.exclude;
+function notGraphedPaths(paths: Record<string, any>, instrumentLog: Record<string, any>): string[] {
+  const value = paths.notGraphed ?? instrumentLog.exclude;
   return value === undefined ? [...DEFAULT_INSTRUMENT_LOG_EXCLUDE] : parsePathList(value);
+}
+
+/**
+ * The `notifications.` lines of the hidden list, as the notification code
+ * wants them: without the prefix. A bare `notifications` hides every one,
+ * which is the same as turning publishing off.
+ */
+export function notificationPatterns(hidden: string[]): { all: boolean; exclude: string[] } {
+  const exclude: string[] = [];
+  let all = false;
+  for (const pattern of hidden) {
+    if (pattern === 'notifications') all = true;
+    else if (pattern.startsWith('notifications.')) {
+      exclude.push(pattern.slice('notifications.'.length));
+    }
+  }
+  return { all, exclude };
 }
 
 /** The track timezone: the server's, unless the override is ticked. */
@@ -1326,6 +1396,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const notifications = input.notifications ?? {};
   const track = input.track ?? {};
   const site = input.site ?? {};
+  const paths = input.paths ?? {};
   const overrides = readOverrides(input);
   const problems: string[] = [];
 
@@ -1416,6 +1487,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     );
   }
 
+  const hidden = hiddenPaths(paths, input);
+  const notificationsHidden = notificationPatterns(hidden);
+
   return {
     ok: true,
     warnings,
@@ -1433,8 +1507,18 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
       },
       privacyZones: zones,
       timezone: resolveTimezone(overrides),
+      hiddenPaths: hidden,
       instrumentLog: {
-        exclude: instrumentLogExclude(instrumentLog),
+        // A hidden path is not in the snapshot, and the provider still has it
+        // stored: logging it would publish, as a sparkline, exactly what the
+        // adopter asked to keep off the site.
+        // Notification paths are left off: `notifications` is never logged.
+        exclude: [
+          ...new Set([
+            ...notGraphedPaths(paths, instrumentLog),
+            ...hidden.filter((path) => path !== 'notifications' && !path.startsWith('notifications.')),
+          ]),
+        ],
         entries,
       },
       polars: resolvePolars(overrides),
@@ -1457,11 +1541,9 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         zeroOrMore(input.notifyAfterFailureMinutes) ??
         DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
       publishNotifications:
-        (notifications.publish ?? input.publishNotifications) !== false,
-      // No fallback to the default when the box is empty: for a blacklist it
-      // means "publish all of them", which is a choice the adopter is
-      // allowed to make. The instrument log exclusions follow the same rule.
-      notificationExclude: notificationExclude(notifications, input),
+        (notifications.publish ?? input.publishNotifications) !== false &&
+        !notificationsHidden.all,
+      notificationExclude: notificationsHidden.exclude,
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,

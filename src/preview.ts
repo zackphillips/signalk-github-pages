@@ -28,7 +28,7 @@ import {
 } from './notifications';
 import { parsePositionIndex, redactStoredEntry, renderPositionIndex } from './positions';
 import { TRACKS_DIR } from './prune';
-import { filterStaleData, redactPositions, type Tree } from './snapshot';
+import { filterStaleData, hidePaths, redactPositions, type Tree } from './snapshot';
 import type { StateStore } from './state';
 import { localDay } from './time';
 import { mergeVesselIdentity, readVesselDetails, renderSiteConfig, type VesselIdentity } from './siteConfig';
@@ -76,6 +76,7 @@ export async function renderPreviewData(
     maxAgeMinutes: config.staleMaxAgeMinutes,
     referenceTime: now,
   });
+  hidePaths(tree, config.hiddenPaths);
   const merged = mergeVesselIdentity(identity, readVesselDetails(tree));
   redactPositions(tree, config.privacyZones);
 

@@ -10,6 +10,7 @@ import {
   POLARS_FIELD_DESCRIPTION,
   DEFAULT_INSTRUMENT_LOG_HOURS,
   DEFAULT_INSTRUMENT_LOG_EXCLUDE,
+  DEFAULT_HIDDEN_PATHS,
   DEFAULT_INTERVAL_STATIONARY,
   DEFAULT_INTERVAL_UNDERWAY,
   DEFAULT_BRANCH,
@@ -22,6 +23,7 @@ import {
   resolveSiteUrl,
   siteBasePath,
 } from '../src/config';
+import { DEFAULT_NOTIFICATION_EXCLUDE } from '../src/notifications';
 import { serverTimezone } from '../src/timezones';
 import { COMPLETE_FORM, makeConfig } from './helpers/config';
 
@@ -521,8 +523,9 @@ describe('buildConfigSchema', () => {
     expect(properties.instrumentLog.properties.providerId.default).toBe('signalk-to-influxdb2');
     expect(properties.track.properties.detailMeters.default).toBe(30);
     expect(properties.notifications.properties.publish.default).toBe(false);
-    expect(properties.notifications.properties.exclude.default).toBe(
-      'server\nsignalk-github-pages',
+    // Into the Paths section, as full paths.
+    expect(properties.paths.properties.hide.default).toBe(
+      'notifications.server\nnotifications.signalk-github-pages',
     );
     expect(properties.notifications.properties.warnAfterMinutes.default).toBe(0);
   });
@@ -671,14 +674,70 @@ describe('parsePathList', () => {
   });
 });
 
+describe('the Paths section', () => {
+  it('hides the notification defaults and nothing else out of the box', () => {
+    const config = makeConfig();
+    expect(config.hiddenPaths).toEqual(DEFAULT_HIDDEN_PATHS);
+    expect(config.notificationExclude).toEqual(DEFAULT_NOTIFICATION_EXCLUDE);
+    expect(config.publishNotifications).toBe(true);
+  });
+
+  it('takes notifications out of the same list, as full paths', () => {
+    const config = makeConfig({
+      paths: { hide: 'environment.rpi\nnotifications.server\nnotifications.*.bilge' },
+    });
+    expect(config.hiddenPaths).toEqual([
+      'environment.rpi',
+      'notifications.server',
+      'notifications.*.bilge',
+    ]);
+    expect(config.notificationExclude).toEqual(['server', '*.bilge']);
+    // A hidden path is never logged either, and a notification line is not
+    // an instrument path at all.
+    expect(config.instrumentLog.exclude).toContain('environment.rpi');
+    expect(config.instrumentLog.exclude).not.toContain('notifications.server');
+  });
+
+  it('turns notifications off when the whole subtree is hidden', () => {
+    expect(makeConfig({ paths: { hide: 'notifications' } }).publishNotifications).toBe(false);
+  });
+
+  it('treats an empty list as an answer, not as the default', () => {
+    const config = makeConfig({ paths: { hide: '', notGraphed: '' } });
+    expect(config.hiddenPaths).toEqual([]);
+    expect(config.notificationExclude).toEqual([]);
+    expect(config.instrumentLog.exclude).toEqual([]);
+  });
+
+  it('keeps the exclusions a config from before the section carried', () => {
+    const config = makeConfig({
+      notifications: { exclude: 'server' },
+      instrumentLog: { exclude: 'design\nenvironment.rpi' },
+    });
+    expect(config.hiddenPaths).toEqual(['notifications.server']);
+    expect(config.notificationExclude).toEqual(['server']);
+    expect(config.instrumentLog.exclude).toEqual(['design', 'environment.rpi']);
+    expect(makeConfig({ notificationExclude: '' }).notificationExclude).toEqual([]);
+  });
+
+  it('prefills the old instrument exclusions into the new box', () => {
+    const built = buildConfigSchema({
+      saved: { instrumentLog: { exclude: 'design\nenvironment.rpi' } },
+    }) as any;
+    expect(built.properties.paths.properties.notGraphed.default).toBe('design\nenvironment.rpi');
+    expect(built.properties.instrumentLog.properties.exclude).toBeUndefined();
+    expect(built.properties.notifications.properties.exclude).toBeUndefined();
+  });
+});
+
 describe('the instrument log settings', () => {
   it('logs everything but an exclusion list, and an empty list is an answer', () => {
     expect(makeConfig({ instrumentLog: {} }).instrumentLog.exclude).toEqual(
       DEFAULT_INSTRUMENT_LOG_EXCLUDE,
     );
-    expect(makeConfig({ instrumentLog: { exclude: '' } }).instrumentLog.exclude).toEqual([]);
+    expect(makeConfig({ paths: { notGraphed: '' } }).instrumentLog.exclude).toEqual([]);
     expect(
-      makeConfig({ instrumentLog: { exclude: 'design\n# a comment\nenvironment.rpi' } })
+      makeConfig({ paths: { notGraphed: 'design\n# a comment\nenvironment.rpi' } })
         .instrumentLog.exclude,
     ).toEqual(['design', 'environment.rpi']);
     // The allowlist this replaced is not carried over as an exclusion list.

@@ -124,13 +124,13 @@ only. Give Pages a minute, then open the URL.
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](#privacy-zones) |
-| `instrumentLog.exclude` | design, course, GNSS housekeeping… | Paths never logged, one per line; everything else the boat reports gets a sparkline — [see below](#instrument-paths) |
+| `paths.hide` | `notifications.server.history.defaultProvider` | Paths never published: no card, no sparkline, and for `notifications.` lines no notification — [see below](#instrument-paths) |
+| `paths.notGraphed` | design, course, GNSS housekeeping… | Paths shown as current values but never logged, one per line — [see below](#instrument-paths) |
 | `instrumentLog.hours` | `1` | How far back the sparklines plot; 0 publishes no log — [see below](#history-provider) |
 | `instrumentLog.providerId` | *server default* | A dropdown of the history providers registered on the server |
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `track.detailMeters` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [see below](#the-track) |
 | `notifications.publish` | on | Publish active notifications and the 24-hour firing log — [see below](#zones-and-notifications) |
-| `notifications.exclude` | `server.history.defaultProvider` | Notification paths never published, one per line — [see below](#notifications) |
 | `notifications.warnAfterMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](#branding) |
 | `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](#branding) |
@@ -296,17 +296,37 @@ every install can carry; six hours is the longest window that keeps full
 
 ## Instrument paths
 
+The dashboard is built from the tree, not from a list of one boat's paths.
+Every battery bank, solar array, charger, inverter and alternator under
+`electrical`, every tank under `tanks`, every engine under `propulsion`, and
+every reading under `environment.inside` and `environment.outside` gets a
+card, named from the instance's `name` or `meta.displayName` when it has one
+and from its path when it does not (`electrical.batteries.1.voltage` reads
+"Battery 1 voltage"). The Internet and System Health panels appear only when
+something writes `internet.*` or `environment.rpi.*`. A panel the boat has
+nothing for is not shown.
+
+The config page's **Paths** section is how to take things off it. Both
+boxes take one path per line; `*` matches one segment, a parent covers its
+whole subtree, lines starting with `#` are comments, and empty is a real
+answer.
+
+**Never published** (`paths.hide`) removes the path from the published
+snapshot, so there is no card, and from the instrument log, so there is no
+sparkline. Notifications go in the same box as full paths:
+`notifications.server` drops every server notification, and `notifications`
+alone drops them all. Hiding `navigation.position` stops the track too.
+
 Every path gets a sparkline unless you exclude it. A path is logged when the
 history provider has stored it **and** the boat is reporting a number for it
 right now. The first condition is what makes a sparkline possible. The second
 keeps out everything the database remembers but the boat no longer has: the
 sensor you unplugged in March, the bank you renamed.
 
-**Never logged** (`instrumentLog.exclude`) is the list to leave out. One path
-per line; `*` matches one segment, a parent excludes its whole subtree
-(`design` drops every `design.*` path), and lines starting with `#` are
-comments. Empty logs everything the boat reports. The default leaves out
-what is not worth a graph:
+**Published, never graphed** (`paths.notGraphed`) is the list to leave out of
+the log while still showing the current value. It used to be
+`instrumentLog.exclude`, which is carried over. Empty logs everything the
+boat reports. The default leaves out what is not worth a graph:
 
 ```
 design
@@ -335,7 +355,7 @@ publishes for it.
 The log is the entire bandwidth cost of a cycle, and its size now follows the
 boat rather than the config page. The plugin logs the file's size every
 cycle and warns past 512 kB. If it is more than you want on a cellular plan,
-add paths to *Never logged* — `environment.rpi`, per-cell battery voltages,
+add paths to *Published, never graphed* — `environment.rpi`, per-cell battery voltages,
 whatever you never look at — or shorten the window.
 
 The old allowlist, `instrumentLog.paths`, is not read any more. Carried over
@@ -371,7 +391,10 @@ copy.
 That is what lets a path this release has never heard of be rendered
 properly: `propulsion.port.coolantTemperature` shows as "Port Coolant" in
 your preferred temperature unit, colored by the zones you set on the
-server's Data Fiddler page, with the server's description as its tooltip. Set
+server's Data Fiddler page, with the server's description as its tooltip.
+The tooltip also names the value's source (`$source`, plus the PGN or 0183
+sentence when there is one) and any other source reporting the same path,
+which is how two GPSs fighting over a position show up. Set
 the zone in Signal K and the site follows; there is nowhere here to set a
 threshold, on purpose, because the server is where the alarm that sounds the
 buzzer is already configured.
@@ -463,12 +486,14 @@ silently.
 
 ### Notifications
 
-Not every notification belongs on a public page. `notifications.exclude` is a
-list of paths — without the `notifications.` prefix — that are never
-published: `*` matches one segment, and naming a parent drops its whole
-subtree, so `server` silences every server notification at once.
+Not every notification belongs on a public page. They are hidden in the
+same **Never published** box as everything else, as full paths: `*` matches
+one segment, and naming a parent drops its whole subtree, so
+`notifications.server` silences every server notification at once. A config
+from before the Paths section keeps its old `notifications.exclude` list,
+prefixed.
 
-`server.history.defaultProvider` is excluded by default. It is the server
+`notifications.server.history.defaultProvider` is hidden by default. It is the server
 telling its own admin UI that no default history provider is configured:
 true, useful on the Pi, and meaningless in a banner above a map, where it
 would sit indefinitely saying nothing about the boat.
