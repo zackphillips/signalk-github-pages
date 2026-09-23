@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MaintenanceInputError } from '../src/docsSeed';
 import { GitHubClient } from '../src/github';
+import { GitHubAuth } from '../src/githubAuth';
 import { Publisher } from '../src/publisher';
 import { StateStore } from '../src/state';
 import {
@@ -157,6 +158,30 @@ describe('readJsonBody', () => {
   });
 });
 describe('the preview routes', () => {
+  it('answers the sign-in routes while the plugin is stopped', async () => {
+    // A fresh install is stopped until it has an owner, and signing in first
+    // must still work. Every other route says 503.
+    const { router, call } = fakeRouter();
+    const auth = new GitHubAuth({ store: { readText: async () => null } as never, clientId: '' });
+    registerRoutes(router, () => null, () => auth);
+    const result = await call('get', '/auth');
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ state: 'unavailable', publishingWith: null, repo: null });
+    expect((await call('get', '/status')).status).toBe(503);
+  });
+
+  it('says which credential the running plugin publishes with', async () => {
+    const { router, call } = fakeRouter();
+    const auth = new GitHubAuth({ store: { readText: async () => null } as never, clientId: 'Iv1.x' });
+    registerRoutes(router, () => deps(), () => auth);
+    const result = await call('get', '/auth');
+    expect(result.body).toMatchObject({
+      state: 'signed-out',
+      publishingWith: 'token',
+      installUrl: 'https://github.com/apps/signalk-github-pages/installations/new',
+    });
+  });
+
   it('serves the site for /preview/ rather than redirecting to itself', async () => {
     // Express does not run in strict-routing mode, so `/preview` also matches
     // `/preview/`. Registered first, it answered `/preview/` with a redirect

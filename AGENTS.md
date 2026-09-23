@@ -36,6 +36,7 @@ src/
   logo.ts           The config page's logo and icon fields, decoded into bytes and a path
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
+  githubAuth.ts     The console sign-in: GitHub App device flow and refresh
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
   track.ts          navigation.position deltas, decimated by shape
@@ -376,6 +377,26 @@ Run `npm test` and `npm run typecheck` before committing.
   on. A setting that *leaves* is the opposite case: the position retention
   window was taken off the page and is no longer read at all, because a
   saved value with no box left to change it is a setting nobody can see.
+- **Two credentials, and the typed one wins.** `github.token` is a PAT from
+  the config page; left empty, the client asks `GitHubAuth` for the console
+  sign-in's token on every request (`config.github.auth` says which). The
+  sign-in is a GitHub App device flow: no redirect and no client secret,
+  which is what lets it ship in an npm package and work from a boat nothing
+  can reach. Three things to keep. The grant lives in `github-auth.json`
+  (mode 0600), never in the plugin config, which the admin UI echoes to any
+  browser, and never in `state.json`, which every cycle rewrites. An
+  expiring token's refresh spends its refresh token, so refreshes are
+  single-flight and the new pair is fsynced before it is used; a second
+  concurrent refresh signs the boat out. And the sign-in routes work while
+  the plugin is stopped, because a fresh install is stopped until it has an
+  owner: `GitHubAuth` lives for the server's life, not one start.
+- **Seeding runs before every cycle and never swallows a failure.**
+  `seed()` is a no-op once it has worked. It used to run once at start with
+  every `getFile` error caught, so a boot with no hotspot, or nobody signed
+  in yet, recorded `seeded` with nothing in the store, and the first cycle
+  that got through published a track index missing the rest of the day.
+  `getFile` already answers null for a missing file; anything it throws
+  means GitHub was not asked, and the cycle fails instead.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.

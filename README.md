@@ -64,7 +64,17 @@ live `HEAD`.
 unless you override the name; anything else is served at `/<repo>/`.
 Settings → Pages → Deploy from a branch → `main` / `(root)`.
 
-**2. A token.** [Make a fine-grained
+**2. Sign in, or make a token.** The easy way is to leave the token field
+empty and sign in from the plugin's console (step 3). It shows a code; you
+type it at [github.com/login/device](https://github.com/login/device) on
+your phone. Nothing to copy, nothing to scope, nothing that expires the day
+you forgot about it. The plugin publishes through the *signalk-github-pages*
+GitHub App, which can write only the repositories you install it on, so
+install it on the Pages repository when the console offers the link. If the
+console has no sign-in panel, this build ships without the app: use a
+token.
+
+Or, for a token: [make a fine-grained
 PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
 this much:
 
@@ -103,7 +113,9 @@ package's `prepare` script, leaving a loadable plugin in
 `~/.signalk/node_modules/signalk-github-pages`.
 
 Then open **Server → Plugin Config → GitHub Pages Vessel Tracker**, fill in
-the repository owner and the token, enable. Everything else has a working
+the repository owner (and the token, if you made one), enable. To sign in
+instead, open the console at `/signalk-github-pages/` and press **Sign in
+with GitHub**. A token, when set, wins over the sign-in. Everything else has a working
 default or is derived.
 
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
@@ -119,7 +131,7 @@ only. Give Pages a minute, then open the URL.
 | Field | Default | Notes |
 |---|---|---|
 | `github.owner` | **required** | The user or organization, e.g. `yourname` |
-| `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
+| `github.token` | empty | Fine-grained PAT, Contents: read/write, this repo only. Leave empty to publish as the console sign-in |
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](#privacy-zones) |
@@ -174,7 +186,9 @@ and past days survive as GPX regardless.
 > Signal K stores plugin configuration as plain JSON under
 > `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
 > shell on the server. Scope it to the one repository, and rotate it if the Pi
-> ever leaves your hands.
+> ever leaves your hands. The console sign-in is kept apart from the config,
+> in `github-auth.json` in the plugin's data directory, readable only by the
+> user the server runs as; revoke it under GitHub → Settings → Applications.
 
 ## The track
 
@@ -980,7 +994,12 @@ is reported in the admin UI, and never reaches the server's event loop. That
 is the cost of reading the tree in-process, and it buys away an HTTP poll
 that could freeze the site on stale data.
 
-**The token sits in plain text**, as above.
+**The token sits in plain text**, as above. So does the sign-in, in a file
+only the server's user can read.
+
+**The console is as open as the server.** Anyone who can reach the plugin's
+console can sign it in or out, exactly as they can prune voyages. Turn on
+Signal K security if the boat's network is not yours alone.
 
 **One commit per cycle.** The repository grows at the rate you publish.
 Exclude the instrument paths you do not look at.
@@ -991,3 +1010,32 @@ people ashore, and it stays up when the boat's link does not.
 ## License
 
 MIT.
+
+## Registering the GitHub App
+
+For whoever publishes this package; adopters never do this. The console
+sign-in needs one public GitHub App whose client ID ships in
+`src/githubAuth.ts` (`GITHUB_APP.clientId`). The client ID is not a secret:
+the device flow is built for clients that cannot keep one, and neither
+signing in nor refreshing asks for the client secret.
+
+GitHub → Settings → Developer settings → GitHub Apps → New GitHub App:
+
+| Field | Set it to |
+|---|---|
+| GitHub App name | `signalk-github-pages` (the slug in `GITHUB_APP.slug` must match) |
+| Homepage URL | This repository |
+| Callback URL | Empty. The device flow has no redirect |
+| Expire user authorization tokens | Your call, see below |
+| Enable Device Flow | **Ticked**. Without it every sign-in fails with `device_flow_disabled` |
+| Webhook → Active | Unticked |
+| Repository permissions → Contents | **Read and write** |
+| Repository permissions → Metadata | Read-only (forced) |
+| Where can this GitHub App be installed? | Any account |
+
+Both token settings work. Unticked, a sign-in lasts until it is revoked.
+Ticked, the access token lasts eight hours and the refresh token six months,
+renewed on every refresh; a boat laid up longer than that signs in again, and
+a power cut in the few milliseconds between GitHub issuing a new pair and
+the plugin's fsync can lose the sign-in. Unticked is the simpler thing to run
+on a boat.

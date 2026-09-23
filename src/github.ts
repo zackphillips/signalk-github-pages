@@ -17,7 +17,16 @@
 export interface GitHubOptions {
   repo: string;
   branch: string;
-  token: string;
+  /**
+   * A personal access token, or where to get the signed-in user's token for
+   * each request — it can be refreshed between two calls of one cycle.
+   */
+  token: string | (() => Promise<string>);
+  /**
+   * GitHub answered 401. Resolve true once a fresh token is ready and the
+   * request should be sent once more; a PAT has no such remedy.
+   */
+  onUnauthorized?: () => Promise<boolean>;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   userAgent?: string;
@@ -43,6 +52,9 @@ export class GitHubError extends Error {
   }
 }
 
+/** How the plugin is authenticating, which decides what a failure means. */
+export type AuthMode = 'token' | 'app';
+
 /**
  * What a failing status usually means for the token.
  *
@@ -51,7 +63,13 @@ export class GitHubError extends Error {
  * "Contents: read and write" reads the repository perfectly and fails on the
  * first commit.
  */
-export function tokenHint(status: number | undefined, repo: string): string {
+export function tokenHint(
+  status: number | undefined,
+  repo: string,
+  mode: AuthMode = 'token',
+  installUrl?: string,
+): string {
+  if (mode === 'app') return signInHint(status, repo, installUrl);
   if (status === 401) {
     return ' The token was rejected: it is wrong, revoked, or past its expiry date.';
   }
@@ -65,6 +83,34 @@ export function tokenHint(status: number | undefined, repo: string): string {
     return (
       ` ${repo} is not visible to this token. Check the owner and the repository name, and` +
       " that the token's repository access includes this one."
+    );
+  }
+  return '';
+}
+
+/**
+ * The same three statuses, for a sign-in through the GitHub App.
+ *
+ * The fixes are different ones: nobody made a token, so there is no
+ * permission box to go back and tick. A 404 almost always means the app was
+ * never installed on this repository — signing in authorizes the app to act
+ * as you, and installing it is what says which repositories it may touch.
+ */
+function signInHint(status: number | undefined, repo: string, installUrl?: string): string {
+  if (status === 401) {
+    return ' GitHub rejected the sign-in: it was revoked or has lapsed. Sign in again from the console.';
+  }
+  if (status === 403) {
+    return (
+      ` The GitHub App can reach GitHub but may not write ${repo}. Accept its requested` +
+      ' permissions under GitHub > Settings > Applications, and check that your own account' +
+      ' can push to the repository.'
+    );
+  }
+  if (status === 404) {
+    return (
+      ` ${repo} is not visible to the sign-in. Install the GitHub App on it` +
+      `${installUrl ? ` (${installUrl})` : ''}, and check the owner and repository name.`
     );
   }
   return '';
@@ -97,7 +143,8 @@ const emptyStats = (): RequestStats => ({
 export class GitHubClient {
   private readonly repo: string;
   private readonly branch: string;
-  private readonly token: string;
+  private readonly token: () => Promise<string>;
+  private readonly onUnauthorized: (() => Promise<boolean>) | undefined;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
@@ -106,7 +153,9 @@ export class GitHubClient {
   constructor(options: GitHubOptions) {
     this.repo = options.repo;
     this.branch = options.branch;
-    this.token = options.token;
+    const token = options.token;
+    this.token = typeof token === 'string' ? async () => token : token;
+    this.onUnauthorized = options.onUnauthorized;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.userAgent = options.userAgent ?? 'signalk-github-pages';
@@ -120,21 +169,29 @@ export class GitHubClient {
   ): Promise<{ status: number; data: T; headers: Headers }> {
     const url = `https://api.github.com${path}`;
     const payload = body === undefined ? undefined : JSON.stringify(body);
-    this.stats.requests += 1;
-    if (payload) this.stats.bytesUploaded += Buffer.byteLength(payload, 'utf-8');
-    const response = await this.fetchImpl(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': this.userAgent,
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...extraHeaders,
-      },
-      body: payload,
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const send = async () => {
+      this.stats.requests += 1;
+      if (payload) this.stats.bytesUploaded += Buffer.byteLength(payload, 'utf-8');
+      return this.fetchImpl(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await this.token()}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': this.userAgent,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...extraHeaders,
+        },
+        body: payload,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    };
+    let response = await send();
+    // Once, not in a loop: a token refreshed a moment ago and still refused
+    // is a revoked sign-in, and retrying it only spends the rate limit.
+    if (response.status === 401 && this.onUnauthorized && (await this.onUnauthorized())) {
+      response = await send();
+    }
 
     const remaining = response.headers.get('x-ratelimit-remaining');
     if (remaining !== null) this.stats.rateLimitRemaining = Number(remaining);

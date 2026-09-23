@@ -158,6 +158,47 @@ describe('tokenHint', () => {
     expect(tokenHint(404, 'owner/site')).toContain('owner/site is not visible');
   });
 
+  it('points a sign-in that cannot see the repository at installing the app', () => {
+    const url = 'https://github.com/apps/signalk-github-pages/installations/new';
+    expect(tokenHint(404, 'owner/site', 'app', url)).toContain(`Install the GitHub App on it (${url})`);
+    expect(tokenHint(401, 'owner/site', 'app')).toContain('Sign in again');
+    // Nobody made a token, so there is no permission box to go back and tick.
+    expect(tokenHint(403, 'owner/site', 'app')).not.toContain('fine-grained');
+  });
+
+  it('asks for a fresh token on every request, so a refresh lands mid-cycle', async () => {
+    const fake = new FakeGitHub({ repo: 'owner/site', branch: 'main' });
+    const seen: string[] = [];
+    let n = 0;
+    const client = new GitHubClient({
+      repo: 'owner/site',
+      branch: 'main',
+      token: async () => `t${++n}`,
+      fetchImpl: (async (input: any, init: any) => {
+        seen.push(init.headers.Authorization);
+        return fake.fetch(input, init);
+      }) as typeof fetch,
+    });
+    await client.getRef();
+    await client.getRef();
+    expect(seen).toEqual(['Bearer t1', 'Bearer t2']);
+  });
+
+  it('does not retry a 401 for a personal access token', async () => {
+    let calls = 0;
+    const client = new GitHubClient({
+      repo: 'owner/site',
+      branch: 'main',
+      token: 'ghp_revoked',
+      fetchImpl: (async () => {
+        calls += 1;
+        return new Response('{"message":"Bad credentials"}', { status: 401 });
+      }) as unknown as typeof fetch,
+    });
+    await expect(client.getRef()).rejects.toMatchObject({ status: 401 });
+    expect(calls).toBe(1);
+  });
+
   it('says nothing about the token for a failure that is not about it', () => {
     expect(tokenHint(502, 'owner/site')).toBe('');
     expect(tokenHint(undefined, 'owner/site')).toBe('');

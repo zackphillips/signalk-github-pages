@@ -7,7 +7,9 @@ import {
   HISTORY_RESOLUTION_SECONDS,
   HISTORY_TIMEOUT_MS,
   instrumentLogShape,
+  PAT_GUIDANCE,
   POLARS_FIELD_DESCRIPTION,
+  tokenDescription,
   DEFAULT_INSTRUMENT_LOG_HOURS,
   DEFAULT_INSTRUMENT_LOG_EXCLUDE,
   DEFAULT_INTERVAL_STATIONARY,
@@ -34,6 +36,24 @@ describe('resolveConfig', () => {
       'GitHub repository owner is not set (your username, or the organization).',
       'GitHub personal access token is not set.',
     ]);
+  });
+
+  it('starts without a token when the console sign-in can stand in for it', () => {
+    const resolved = resolveConfig({ github: { owner: 'owner' } }, { signInAvailable: true });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    expect(resolved.config.github.token).toBe('');
+    expect(resolved.config.github.auth).toBe('app');
+    // Not a warning either: leaving it empty is how you choose the sign-in.
+    expect(resolved.warnings).toEqual([]);
+  });
+
+  it('publishes with a token whenever one is set, sign-in or not', () => {
+    const resolved = resolveConfig(
+      { github: { owner: 'owner', token: 'ghp_x' } },
+      { signInAvailable: true },
+    );
+    expect(resolved.ok && resolved.config.github.auth).toBe('token');
   });
 
   it('runs on the documented defaults when only the repository is given', () => {
@@ -602,7 +622,9 @@ describe('the Overrides section', () => {
   it('asks only for the owner and the token in the repository section', () => {
     const github = (configSchema.properties as any).github;
     expect(Object.keys(github.properties).sort()).toEqual(['owner', 'token']);
-    expect(github.required).toEqual(['owner', 'token']);
+    // Not required by the form: with the console sign-in it is optional, and
+    // without one `resolveConfig` names it as the problem.
+    expect(github.required).toEqual(['owner']);
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
@@ -630,6 +652,12 @@ describe('the Overrides section', () => {
       expect(order.indexOf(field), field).toBe(order.indexOf(flag) + 1);
     }
     expect(order[order.length - 1]).toBe('*');
+  });
+
+  it('offers the sign-in in the token help only when this build has an app', () => {
+    expect(tokenDescription(true)).toMatch(/^Optional: leave empty and sign in/);
+    expect(tokenDescription(true)).toContain(PAT_GUIDANCE);
+    expect(tokenDescription(false)).toBe(PAT_GUIDANCE);
   });
 
   it('says what to tick when making the token, and nothing more', () => {

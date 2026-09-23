@@ -28,6 +28,7 @@ import { loadTideStations, nearestTideStation } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
+import { appInstallUrl, GitHubAuth, GITHUB_APP } from './githubAuth';
 import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
@@ -175,6 +176,20 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   let historyProviders: SchemaContext['historyProviders'] = null;
   // The site's tide station list, read the first time the config page wants it.
   let tideStations: ReturnType<typeof loadTideStations> | undefined;
+  // The console sign-in. One for the server's life rather than one per start,
+  // because signing in has to work while the plugin is stopped — a fresh
+  // install is stopped until it has a repository owner — and a flow someone
+  // is halfway through must survive the restart that saving the config page
+  // causes. Built on first use: the data directory is the server's to hand
+  // out, and not every release has it ready while plugins are constructed.
+  let githubAuth: GitHubAuth | undefined;
+  const auth = (): GitHubAuth =>
+    (githubAuth ??= new GitHubAuth({
+      store: new StateStore(app.getDataDirPath()),
+      clientId: GITHUB_APP.clientId,
+      userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
+      log: (message) => app.debug(message),
+    }));
 
   /**
    * What to tell the config page about the polar table.
@@ -319,7 +334,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       }
 
       app.debug(
-        `Starting: ${config.github.repo}@${config.github.branch}, ` +
+        `Starting: ${config.github.repo}@${config.github.branch} ` +
+          `${config.github.auth === 'app' ? 'as the console sign-in' : 'with a personal access token'}, ` +
           `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
           `${config.instrumentLog.exclude.length} instrument path exclusion(s), ` +
           `${config.positionRetentionHours}h position retention, ` +
@@ -376,9 +392,13 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       const client = new GitHubClient({
         repo: config.github.repo,
         branch: config.github.branch,
-        token: config.github.token,
+        ...(config.github.auth === 'app'
+          ? { token: () => auth().token(), onUnauthorized: () => auth().onUnauthorized() }
+          : { token: config.github.token }),
         userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
       });
+      const hint = (status: number | undefined) =>
+        tokenHint(status, config.github.repo, config.github.auth, appInstallUrl());
       const history = new HistoryReader({
         app,
         history: config.history,
@@ -479,6 +499,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
         }
         app.debug(`Publishing on request (${reason}).`);
+        await publisher.seed();
         passage = await readPassage(app, (problem) => app.error(problem));
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
@@ -559,6 +580,10 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // never sparser than one fix per cycle and never denser than that
           // when the boat is not moving.
           recorder?.setPublishInterval(seconds);
+          // A no-op once it has worked. Here rather than only at start, so a
+          // boot with no hotspot or nobody signed in seeds on the first cycle
+          // that reaches GitHub instead of publishing over the day's track.
+          await publisher.seed();
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
@@ -592,7 +617,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           const detail = error?.status ? ` (HTTP ${error.status}: ${error.body ?? ''})` : '';
           app.error(
             `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}` +
-              tokenHint(error?.status, config.github.repo),
+              hint(error?.status),
           );
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
@@ -666,13 +691,43 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         log: (message) => app.debug(message),
       };
 
-      void refreshHistoryProviders();
-      void (async () => {
+      /**
+       * A sign-in just landed: look at the repository, then publish.
+       *
+       * The look is what the console shows beside "Signed in", and the one
+       * thing it most often says is that the app was never installed on this
+       * repository — worth hearing while the person is still holding the
+       * phone, not an hour later from the plugin status line. The publish is
+       * a whole tick rather than `publishNow`, so the status line and the
+       * failure alarm catch up at once instead of on the next scheduled
+       * cycle, which at the stationary cadence could be an hour away.
+       */
+      auth().setOnSignedIn(async () => {
+        if (stopped || config.github.auth !== 'app') return;
         try {
-          await publisher.seed();
+          await client.getRef();
+          auth().recordRepoCheck({
+            ok: true,
+            detail: `Can read ${config.github.repo}@${config.github.branch}.`,
+          });
         } catch (error: any) {
-          app.error(`Could not seed state from the repository: ${error?.message ?? error}`);
+          // The explanation first and the request line not at all: this is
+          // read on a phone, and the console links the install page itself.
+          const why = tokenHint(error?.status, config.github.repo, 'app').trim();
+          auth().recordRepoCheck({
+            ok: false,
+            detail: why ? `${why} (HTTP ${error.status})` : String(error?.message ?? error),
+          });
+          return;
         }
+        if (timer) clearTimeout(timer);
+        await tick();
+      });
+
+      void refreshHistoryProviders();
+      // Seeding is the first thing every cycle does, so there is nothing to
+      // do before the first one.
+      void (async () => {
         await tick();
         watchState();
       })();
@@ -680,6 +735,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     stop() {
       stopped = true;
+      githubAuth?.setOnSignedIn(undefined);
       if (timer) clearTimeout(timer);
       timer = undefined;
       webapp = null;
@@ -699,7 +755,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     /** The console's backend. Signal K mounts it once, for the server's life. */
     registerWithRouter(router: Router) {
-      registerRoutes(router, () => webapp);
+      registerRoutes(router, () => webapp, auth);
     },
   };
 

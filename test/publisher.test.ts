@@ -123,6 +123,26 @@ describe('Publisher', () => {
     expect(fake.files.get('README.md')).toBe('# Site\n');
   });
 
+  it('does not mark the store seeded when GitHub could not be asked', async () => {
+    // A boot with no hotspot, or nobody signed in yet. Swallowing the failure
+    // used to record `seeded` with nothing in the store, and the first cycle
+    // that got through published a track index missing the rest of the day.
+    const reachable = fake;
+    fake = {
+      get fetch() {
+        return (async () => {
+          throw new TypeError('fetch failed');
+        }) as unknown as typeof fetch;
+      },
+    } as unknown as FakeGitHub;
+    await expect(makePublisher().seed()).rejects.toThrow('fetch failed');
+    expect((await store.readState()).seeded).toBeUndefined();
+
+    fake = reachable;
+    await makePublisher().seed();
+    expect((await store.readState()).seeded).toBe(true);
+  });
+
   it('does not republish the frontend on a later cycle', async () => {
     const publisher = makePublisher();
     await publisher.seed();

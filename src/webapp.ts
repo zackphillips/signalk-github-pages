@@ -13,6 +13,9 @@
  *   GET  /docs              what docs/ holds, and what a maintenance form needs
  *   POST /docs/init         write the starter documents, if there are none
  *   POST /docs/maintenance  add one entry to the top of the maintenance log
+ *   GET  /auth              whether the plugin is signed in to GitHub, and as whom
+ *   POST /auth/device       start signing in: a code to enter at github.com/login/device
+ *   POST /auth/signout      forget the sign-in, or abandon one in progress
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -37,6 +40,7 @@ import type { Tree } from './snapshot';
 import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
+import { appInstallUrl, type GitHubAuth } from './githubAuth';
 
 /** The bits of an Express response this module uses. */
 interface Response {
@@ -136,7 +140,11 @@ export function resolveSitePath(siteDir: string, requested: string): string | nu
  * arrives while it is stopped gets a 503 that says so rather than a stack
  * trace from a publisher that no longer exists.
  */
-export function registerRoutes(router: Router, deps: () => WebappDeps | null): void {
+export function registerRoutes(
+  router: Router,
+  deps: () => WebappDeps | null,
+  auth?: () => GitHubAuth,
+): void {
   const fail = (response: Response, error: any, status = 500) => {
     const message = error?.message ?? String(error);
     deps()?.log(`Webapp request failed: ${message}`);
@@ -154,6 +162,54 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     }
     return current;
   };
+
+  /**
+   * The sign-in, which does not need the plugin running.
+   *
+   * A fresh install is stopped until it has a repository owner, and the
+   * person setting it up should be able to sign in in whichever order they
+   * get to things. So these answer from `auth` alone, and `publishingWith`
+   * is null when there is no running config to say which credential it uses.
+   */
+  if (auth) {
+    const authStatus = async () => {
+      const current = deps();
+      return {
+        ...(await auth().status()),
+        publishingWith: current ? current.config.github.auth : null,
+        repo: current ? current.config.github.repo : null,
+        installUrl: appInstallUrl(),
+      };
+    };
+
+    router.get('/auth', async (_request, response) => {
+      try {
+        response.json(await authStatus());
+      } catch (error) {
+        fail(response, error);
+      }
+    });
+
+    // POSTs, like every other route that makes the boat do something: this
+    // one asks GitHub for a code and polls until it is entered.
+    router.post('/auth/device', async (_request, response) => {
+      try {
+        await auth().startDeviceFlow();
+        response.json(await authStatus());
+      } catch (error) {
+        fail(response, error, 502);
+      }
+    });
+
+    router.post('/auth/signout', async (_request, response) => {
+      try {
+        await auth().signOut();
+        response.json(await authStatus());
+      } catch (error) {
+        fail(response, error);
+      }
+    });
+  }
 
   router.get('/status', async (_request, response) => {
     const current = running(response);
