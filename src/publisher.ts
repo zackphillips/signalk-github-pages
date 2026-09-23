@@ -9,7 +9,7 @@
  * or a network.
  */
 import { createHash } from 'node:crypto';import type { Passage } from './course';
-import { renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
+import { isExcludedPath, renderInstrumentLog, type InstrumentLogEntry } from './instrumentLog';
 import {
   parseNotificationLog,
   readNotifications,
@@ -57,6 +57,7 @@ import {
 import {
   extractPositionFix,
   filterStaleData,
+  hidePaths,
   isUnderway,
   navigationState,
   redactPositions,
@@ -321,6 +322,8 @@ export class Publisher {
       maxAgeMinutes: config.staleMaxAgeMinutes,
       referenceTime: now,
     });
+    const hidden = hidePaths(tree, config.hiddenPaths);
+    if (hidden.length) log(`Paths: ${hidden.length} hidden path(s) left out of the snapshot.`);
     const navState = navigationState(tree);
     // Read every cycle, not once at start: on a cold boot the plugin is
     // running before the first product-information frame arrives, and an
@@ -359,7 +362,12 @@ export class Publisher {
     // With no recorder — an older server, or one whose streams this plugin
     // could not subscribe to — the tree fix is the whole track, exactly as
     // it was before deltas.
-    const recorded = input.fixes ?? [];
+    // Hiding the position hides the track too: the recorder subscribes to
+    // the stream, not the snapshot, so it would otherwise go on publishing
+    // the one path the adopter asked to keep off the site.
+    const recorded = isExcludedPath('navigation.position', config.hiddenPaths)
+      ? []
+      : (input.fixes ?? []);
     const newFixes = recorded.length ? recorded : fix ? [fix] : [];
     // Stored entries go through the current zones again: they were redacted
     // against whatever zones were in force when each fix was taken, and a

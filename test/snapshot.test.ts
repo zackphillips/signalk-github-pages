@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   extractPositionFix,
   filterStaleData,
+  hidePaths,
   isUnderway,
   navigationState,
   readSelfTree,
@@ -210,5 +211,38 @@ describe('readSelfTree', () => {
     const copy = readSelfTree({ getSelfPath: () => tree });
     (copy as any).navigation.position.value.latitude = 99;
     expect(tree.navigation.position.value.latitude).toBe(1);
+  });
+});
+
+describe('hidePaths', () => {
+  const blob = () => ({
+    name: 'Boat',
+    electrical: {
+      batteries: {
+        house: { voltage: { value: 12.7, meta: { units: 'V' } } },
+        start: { voltage: { value: 12.9 } },
+      },
+    },
+    environment: { rpi: { cpu: { temperature: { value: 320 } } }, wind: { speedTrue: { value: 5 } } },
+  });
+
+  it('removes a subtree, a wildcard match and an exact path', () => {
+    const tree: any = blob();
+    const removed = hidePaths(tree, ['environment.rpi', 'electrical.batteries.*.voltage']);
+    expect(removed.sort()).toEqual([
+      'electrical.batteries.house.voltage',
+      'electrical.batteries.start.voltage',
+      'environment.rpi',
+    ]);
+    expect(tree.environment.rpi).toBeUndefined();
+    expect(tree.environment.wind.speedTrue.value).toBe(5);
+    expect(tree.electrical.batteries.house).toEqual({});
+    expect(tree.name).toBe('Boat');
+  });
+
+  it('leaves the tree alone with nothing hidden', () => {
+    const tree = blob();
+    expect(hidePaths(tree, [])).toEqual([]);
+    expect(tree).toEqual(blob());
   });
 });
