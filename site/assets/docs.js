@@ -466,7 +466,7 @@ function showEmptyState() {
       <h3>Start it from the boat</h3>
       <p>
         Open the Signal K server on the boat's network, go to <strong>Webapps →
-        GitHub Pages Tracker</strong>, and press <strong>Initialize ship's
+        GitHub Pages Vessel Tracker</strong>, and press <strong>Initialize ship's
         docs</strong>. It commits a start-here page and an
         <code>AGENTS.md</code> that spells out the conventions, and nothing
         else. It refuses to run once any document exists, so it can never

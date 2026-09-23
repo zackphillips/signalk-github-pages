@@ -1,7 +1,8 @@
 # AGENTS.md — the ship's docs in this repository
 
 This repository is a GitHub Pages site published by the Signal K plugin
-[`signalk-github-pages`](https://github.com/zackphillips/signalk-github-pages)
+GitHub Pages Vessel Tracker
+([`signalk-github-pages`](https://github.com/zackphillips/signalk-github-pages))
 running on **{{VESSEL_NAME}}**. Most of it is machine-written. This directory,
 `docs/`, is not: it is the ship's documentation, and it is yours to edit.
 
