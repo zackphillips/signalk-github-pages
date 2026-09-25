@@ -28,6 +28,7 @@ src/
   siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
+  logbook.ts        data/telemetry/logbook/<day>.json, from signalk-logbook's files
   timezones.ts      The IANA list the timezone dropdown offers
   tideStations.ts   The NOAA station nearest the boat, for the tide override's note
   logo.ts           The config page's logo and icon fields, decoded into bytes and a path
@@ -461,6 +462,18 @@ Run `npm test` and `npm run typecheck` before committing.
   is always the link to what is on screen and no `hashchange` loops back. A
   date the index does not have says so above the list. A crawler never runs
   the script, so a pasted link unfurls as the site, not the voyage.
+- **The logbook is signalk-logbook's; this plugin only publishes it.** Its
+  day files are read in `index.ts` (another plugin's files, like the Course
+  API is another plugin's data) and handed to the cycle as rendered days.
+  Three rules. Every entry is rebuilt from a whitelist in `publishedEntry`,
+  never copied and pruned: an entry carries `position` and `waypoint`, and a
+  blacklist would publish the next position-shaped field a logbook release
+  adds. Only days on the voyage list are published, which is what makes a
+  prune take the log with it and keeps notes written at the dock (inside a
+  zone, with no track) off the site. And `null` means no logbook on this
+  server, which leaves what is published alone, while an empty map means
+  publishing is off, which takes it all down. With `crewNames` off the
+  automatic crew-change entries go too: their text is the names.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.

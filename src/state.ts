@@ -41,6 +41,12 @@ export interface PersistedState {
    * person asked for that day to go, not for it to come back truncated.
    */
   removedDays?: string[];
+  /**
+   * The logbook days in the repository, each with a hash of its published
+   * content, so an unchanged day costs nothing and a day that left the
+   * voyage list can be deleted. Recorded only after the commit landed.
+   */
+  logbook?: Record<string, string>;
 }
 
 export class StateStore {

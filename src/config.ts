@@ -116,6 +116,20 @@ export interface PluginConfig {
    * default.
    */
   notificationExclude: string[];
+  /**
+   * What the plugin publishes from signalk-logbook, per local day, into
+   * `data/telemetry/logbook/`. See `logbook.ts`.
+   */
+  logbook: {
+    /** Off takes every published day off the site on the next cycle. */
+    publish: boolean;
+    /**
+     * Crew and skipper names, each entry's author, and the entries that
+     * announce crew changes. Other people's names on a public page, so it is
+     * a switch of its own.
+     */
+    crewNames: boolean;
+  };
   site: {
     /**
      * The site's own address, with a trailing slash.
@@ -786,6 +800,31 @@ export const configSchema = {
         },
       },
     },
+    logbook: {
+      type: 'object',
+      title: 'Logbook',
+      description:
+        'Entries from the signalk-logbook plugin, shown on each voyage. Positions ' +
+        'are never published: the track is the only way a position reaches the site.',
+      properties: {
+        publish: {
+          type: 'boolean',
+          title: 'Publish the logbook',
+          description:
+            'Publish every logbook entry, grouped by local day, with its time, text, ' +
+            'category and conditions. Entry text is published verbatim.',
+          default: true,
+        },
+        crewNames: {
+          type: 'boolean',
+          title: 'Publish crew names',
+          description:
+            'Include the crew list, the skipper, who wrote each entry, and the ' +
+            'entries that record crew changes.',
+          default: true,
+        },
+      },
+    },
     site: {
       type: 'object',
       title: 'Site details',
@@ -1322,6 +1361,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   // A config written before the merge kept these in sections of their own.
   const history = input.history ?? {};
   const notifications = input.notifications ?? {};
+  const logbook = input.logbook ?? {};
   const track = input.track ?? {};
   const site = input.site ?? {};
   const paths = input.paths ?? {};
@@ -1471,6 +1511,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         (notifications.publish ?? input.publishNotifications) !== false &&
         !notificationsHidden.all,
       notificationExclude: notificationsHidden.exclude,
+      logbook: {
+        publish: logbook.publish !== false,
+        crewNames: logbook.crewNames !== false,
+      },
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,

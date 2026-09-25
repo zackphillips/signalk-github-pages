@@ -585,6 +585,78 @@ describe('Publisher', () => {
     });
   });
 
+  describe('the logbook', () => {
+    const day = (text: string) =>
+      `${JSON.stringify({ schema_version: 1, date: '2026-03-01', entries: [{ text }] })}\n`;
+    const PATH = 'data/telemetry/logbook/2026-03-01.json';
+
+    it('publishes the log for a voyage day, and not for a day with no voyage', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), {
+        logbook: new Map([
+          ['2026-03-01', day('Departed')],
+          ['2026-02-20', day('At the dock')],
+        ]),
+      });
+      expect(fake.files.get(PATH)).toContain('Departed');
+      expect(fake.files.has('data/telemetry/logbook/2026-02-20.json')).toBe(false);
+    });
+
+    it('costs nothing while a day is unchanged, and republishes an edit', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      const second = await publisher.runCycle(tree(), {
+        logbook: new Map([['2026-03-01', day('Departed')]]),
+      });
+      expect(second.files).not.toContain(PATH);
+
+      const third = await publisher.runCycle(tree(), {
+        logbook: new Map([['2026-03-01', day('Departed, then reefed')]]),
+      });
+      expect(third.files).toContain(PATH);
+      expect(fake.files.get(PATH)).toContain('reefed');
+    });
+
+    it('takes the log down when publishing is off, and leaves it when there is no logbook', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+
+      // No logbook on the server this cycle: nothing to say, so nothing changes.
+      await publisher.runCycle(tree(), { logbook: null });
+      expect(fake.files.has(PATH)).toBe(true);
+
+      // Switched off: an empty map, and the published day goes.
+      await publisher.runCycle(tree(), { logbook: new Map() });
+      expect(fake.files.has(PATH)).toBe(false);
+      expect((await store.readState()).logbook).toEqual({});
+    });
+
+    it('survives a published day deleted by hand on GitHub', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      fake.deleteFile(PATH);
+      // Deleting a path the tree does not have is a 422 for the whole commit.
+      await expect(publisher.runCycle(tree(), { logbook: new Map() })).resolves.toBeDefined();
+      expect((await store.readState()).logbook).toEqual({});
+    });
+
+    it('goes with its voyage when the voyage is pruned', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      // Today is never pruned, so prune it from tomorrow.
+      const tomorrow = makePublisher({}, '2026-03-02T20:00:00Z');
+      await tomorrow.pruneTracks({ date: '2026-03-01' });
+      expect(fake.files.has(PATH)).toBe(false);
+      expect((await store.readState()).logbook).toEqual({});
+
+      // A day removed by hand stays removed, logbook and all.
+      await tomorrow.runCycle(tree({ timestamp: '2026-03-02T20:00:00Z' }), {
+        logbook: new Map([['2026-03-01', day('Departed')]]),
+      });
+      expect(fake.files.has(PATH)).toBe(false);
+    });
+  });
+
   describe('pruning voyages', () => {
     const INDEX = {
       schema_version: 1,

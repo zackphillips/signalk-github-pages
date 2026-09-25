@@ -70,6 +70,7 @@ const deps = (over: Partial<WebappDeps> = {}): WebappDeps =>
     readTree: () => ({}),
     polars: () => ({ csv: '', status: null }),
     passage: () => null,
+    logbook: () => null,
     publishNow: async () => ({ published: true, files: ['a'], bytes: 10 }),
     log: () => {},
     ...over,

@@ -1612,6 +1612,7 @@ function toggleVoyageDetail(item) {
   item.querySelector('.voyage-row')?.setAttribute('aria-expanded', 'true');
 
   renderVoyageMiniMap(item, entry);
+  loadVoyageLog(item, entry.date);
 }
 
 function voyageDetailHtml(entry) {
@@ -1650,7 +1651,80 @@ function voyageDetailHtml(entry) {
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       <button type="button" class="voyage-detail-btn voyage-detail-btn--ghost voyage-share">Share</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-    </div>`;
+    </div>
+    <div class="voyage-log" hidden></div>`;
+}
+
+// ── Voyage logbook ───────────────────────────────────────────────────────
+// data/telemetry/logbook/<day>.json, published from signalk-logbook for the
+// days on the voyage list. A 404 is the normal answer for a boat without the
+// logbook, or a voyage nobody wrote anything for, and leaves the card as it
+// was. Units are the logbook's own: knots, degrees, hPa.
+async function loadVoyageLog(item, date) {
+  const target = item.querySelector('.voyage-log');
+  if (!target) return;
+  let day;
+  try {
+    const response = await fetch(`data/telemetry/logbook/${date}.json?ts=${Date.now()}`);
+    if (!response.ok) return;
+    day = await response.json();
+  } catch (e) {
+    return;
+  }
+  const entries = Array.isArray(day?.entries) ? day.entries : [];
+  // The card may have been closed, or another opened, while this was loading.
+  if (!entries.length || !item.classList.contains('is-open')) return;
+  target.innerHTML = voyageLogHtml(entries);
+  target.hidden = false;
+}
+
+function voyageLogHtml(entries) {
+  // The last crew list and skipper of the day: the logbook stamps them on
+  // every entry, so the latest is who was aboard at the end.
+  const last = (key) => entries.reduce((found, e) => (e[key] ? e[key] : found), null);
+  const skipper = last('skipperName');
+  const crew = last('crewNames');
+  const aboard = [
+    skipper ? `<span><span class="voyage-log-label">Skipper</span> ${escapeHtml(skipper)}</span>` : '',
+    Array.isArray(crew) && crew.length
+      ? `<span><span class="voyage-log-label">Crew</span> ${crew.map(escapeHtml).join(', ')}</span>`
+      : '',
+  ].filter(Boolean).join('');
+
+  const time = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+  const n = (v, digits) => (Number.isFinite(v) ? v.toFixed(digits) : null);
+  const conditions = (e) => [
+    n(e.wind?.speed, 0) ? `Wind ${n(e.wind.speed, 0)} kn${n(e.wind?.direction, 0) ? ` from ${n(e.wind.direction, 0)}°` : ''}` : '',
+    n(e.speed?.sog, 1) ? `SOG ${n(e.speed.sog, 1)} kn` : '',
+    n(e.barometer, 0) ? `${n(e.barometer, 0)} hPa` : '',
+    Number.isFinite(e.observations?.seaState) ? `Sea state ${e.observations.seaState}` : '',
+    n(e.engine?.hours, 1) ? `Engine ${n(e.engine.hours, 1)} h` : '',
+    e.vhf ? `VHF ${escapeHtml(e.vhf)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  const rows = entries.map((e) => {
+    const auto = e.origin === 'auto';
+    const meta = conditions(e);
+    return `
+      <li class="voyage-log-entry${auto ? ' voyage-log-entry--auto' : ''}">
+        <span class="voyage-log-time">${time(e.datetime)}</span>
+        <div class="voyage-log-body">
+          ${e.text ? `<p class="voyage-log-text">${escapeHtml(e.text)}</p>` : ''}
+          ${meta ? `<p class="voyage-log-meta">${meta}</p>` : ''}
+          ${e.author ? `<p class="voyage-log-meta">— ${escapeHtml(e.author)}</p>` : ''}
+        </div>
+      </li>`;
+  }).join('');
+
+  return `
+    <div class="voyage-log-header">
+      <span class="voyage-detail-stat-label">Logbook</span>
+      ${aboard ? `<div class="voyage-log-aboard">${aboard}</div>` : ''}
+    </div>
+    <ol class="voyage-log-list">${rows}</ol>`;
 }
 
 function renderVoyageMiniMap(item, entry) {

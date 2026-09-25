@@ -20,6 +20,8 @@ is read from the server.
 | `staleMaxAgeMinutes` | `60` | Older values are dropped from the snapshot |
 | `track.detailMeters` | `15` | Keep a fix when dropping it would move the drawn track by more than this — [details](instruments.md#the-track) |
 | `notifications.publish` | on | Publish active notifications and the 24-hour firing log — [details](site.md#zones-and-notifications) |
+| `logbook.publish` | on | Publish each voyage's entries from signalk-logbook — see [The logbook](site.md#the-logbook) |
+| `logbook.crewNames` | on | Include the crew list, the skipper, each entry's author and the crew-change entries |
 | `notifications.warnAfterMinutes` | `30` | Raise a Signal K notification after this long without a successful publish; 0 turns it off |
 | `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](site.md#branding) |
 | `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](site.md#branding) |

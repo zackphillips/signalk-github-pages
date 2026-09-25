@@ -32,6 +32,7 @@ import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { readActivePolar } from './polars';
+import { LogbookReader, logbookDir, renderLogbookDays } from './logbook';
 import { isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { NotificationRecorder } from './notificationRecorder';
@@ -158,6 +159,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // The passage the last cycle read, for the console's preview. Same rule as
   // the polar CSV: a page open must not make the boat call the Course API.
   let passage: Passage | null = null;
+  // The logbook days the last cycle rendered, for the preview. Same rule:
+  // opening the console must not make the boat read another plugin's files.
+  let logbookDays: Map<string, string> | null = null;
   // Set on start, cleared on stop: the console's routes are registered once,
   // when the server loads the plugin, and answer 503 while it is not running.
   let webapp: WebappDeps | null = null;
@@ -404,6 +408,36 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       // Problems are logged only when they change. A polar that will not
       // convert would otherwise say so every two minutes for as long as it is
       // selected, which buries everything else in the log.
+      // signalk-logbook's day files, read every cycle and re-parsed only when
+      // one changes. Null means the logbook plugin has never written here,
+      // which leaves whatever was published alone; publishing switched off
+      // is an empty map, which takes it down.
+      const logbookReader = new LogbookReader();
+      const logbookSource = logbookDir(app.getDataDirPath());
+      let lastLogbookReport = '';
+      const readLogbook = async (): Promise<Map<string, string> | null> => {
+        if (!config.logbook.publish) return (logbookDays = new Map());
+        try {
+          const read = await logbookReader.read(logbookSource);
+          const report = read ? read.problems.join(' ') : 'none';
+          if (report !== lastLogbookReport) {
+            lastLogbookReport = report;
+            if (!read) app.debug(`Logbook: nothing at ${logbookSource}; publishing none.`);
+            for (const problem of read?.problems ?? []) app.error(`Logbook: ${problem}`);
+          }
+          logbookDays = read
+            ? renderLogbookDays(read.entries, {
+                timezone: config.timezone,
+                crewNames: config.logbook.crewNames,
+              })
+            : null;
+          return logbookDays;
+        } catch (error: any) {
+          app.error(`Logbook: could not read ${logbookSource}: ${error?.message ?? error}`);
+          return null;
+        }
+      };
+
       let lastPolarReport = '';
       const polarsCsv = async (tree: ReturnType<typeof readSelfTree>): Promise<string> => {
         const { csv, source, problems, summary } = await readActivePolar(app, tree);
@@ -448,6 +482,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         passage = await readPassage(app, (problem) => app.error(problem));
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
+          logbook: await readLogbook(),
           history: await history.read(new Date(), tree),
           passage,
           fixes: recorder?.drain(),
@@ -531,6 +566,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           passage = await readPassage(app, (problem) => app.error(problem));
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
+          logbook: await readLogbook(),
             history: await history.read(new Date(), tree),
             passage,
             fixes: recorder?.drain(),
@@ -627,6 +663,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         version: PLUGIN_VERSION,
         readTree: () => readSelfTree(app),
         polars: () => ({ csv: polarCsv, status: polarStatus }),
+        logbook: () => logbookDays,
         passage: () => passage,
         publishNow,
         log: (message) => app.debug(message),

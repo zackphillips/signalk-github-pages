@@ -853,6 +853,79 @@ body.map-fills .footer {
   font-variant-numeric: tabular-nums;
 }
 
+/* The voyage's logbook, from signalk-logbook. Entries a person wrote read at
+   full strength; the automatic hourly ones step back. */
+.voyage-log {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+}
+
+.voyage-log-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 14px;
+  margin-bottom: 8px;
+}
+
+.voyage-log-aboard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 0.85em;
+  color: var(--text-primary);
+}
+
+.voyage-log-label {
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+
+.voyage-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.voyage-log-entry {
+  display: grid;
+  grid-template-columns: minmax(4.2em, auto) 1fr;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.voyage-log-entry:last-child { border-bottom: none; }
+
+.voyage-log-time {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding-top: 1px;
+}
+
+.voyage-log-text {
+  margin: 0;
+  font-size: 0.92em;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.voyage-log-meta {
+  margin: 2px 0 0;
+  font-size: 0.78em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.voyage-log-entry--auto .voyage-log-text {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
 .voyage-detail-actions {
   display: flex;
   flex-wrap: wrap;

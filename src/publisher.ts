@@ -58,6 +58,7 @@ import {
   type TrackMeta,
 } from './gpx';
 import { POLARS_PATH } from './polars';
+import { logbookPath } from './logbook';
 import {
   mergeVesselIdentity,
   readVesselDetails,
@@ -130,6 +131,14 @@ export interface CycleInput {
   notificationEdges?: NotificationEvent[];
   /** True while a recorder is running, which is what makes the counts real. */
   recordingNotifications?: boolean;
+  /**
+   * Every logbook day, rendered, keyed by local day — read from
+   * signalk-logbook's files in `index.ts`, so this module does no file
+   * reading of another plugin's. Null or absent when there is no logbook on
+   * this server, which leaves whatever is published alone. An empty map
+   * means publish none, and takes down what was published.
+   */
+  logbook?: Map<string, string> | null;
 }
 
 export interface CycleResult {
@@ -334,6 +343,9 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now, input)));
 
+    const logbook = await this.logbookFiles(state, input.logbook);
+    files.push(...logbook.files);
+
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
@@ -362,7 +374,7 @@ export class Publisher {
       audit.deletions.filter((path) => !byPath.has(path)).map((path) => ({ path })),
       this.manifestOptions(polars),
     ).owned.map((file) => file.path);
-    const deletions = [...retiring, ...auditDeletions];
+    const deletions = [...retiring, ...auditDeletions, ...logbook.deletions];
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -389,6 +401,9 @@ export class Publisher {
       // must leave the work to be retried, not recorded as done.
       ...(result && retiring.length ? { retired: [...(state.retired ?? []), ...retiring] } : {}),
       ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
+      ...(logbook.next && (result || (!logbook.files.length && !logbook.deletions.length))
+        ? { logbook: logbook.next }
+        : {}),
       // A cycle with nothing to commit has nothing the audit needed either.
       ...(audit.fingerprint && (result || (!audit.files.length && !auditDeletions.length))
         ? { privacyAudit: audit.fingerprint }
@@ -575,8 +590,13 @@ export class Publisher {
     // Deletions go through the same ownership check as writes: the manifest is
     // what stops a bug here reaching a path that belongs to the user, and a
     // deletion is the one that could not be undone by the next cycle.
+    // A pruned voyage takes its logbook day with it, in the same commit.
+    const before = await store.readState();
+    const logbookDays = plan.remove
+      .map((track) => track.date)
+      .filter((day) => before.logbook?.[day] !== undefined);
     const { owned, rejected } = partitionOwned(
-      plan.paths.map((path) => ({ path })),
+      [...plan.paths, ...logbookDays.map(logbookPath)].map((path) => ({ path })),
       this.manifestOptions(''),
     );
     for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
@@ -603,6 +623,13 @@ export class Publisher {
     await store.writeText('tracks_index.json', index);
     const removed = new Set(plan.remove.map((track) => track.date));
     const state = await store.readState();
+    if (logbookDays.length && state.logbook) {
+      await store.mergeState({
+        logbook: Object.fromEntries(
+          Object.entries(state.logbook).filter(([day]) => !removed.has(day)),
+        ),
+      });
+    }
     if (request.date) {
       // One day, removed by hand: it stays gone. Yesterday's points are still
       // in the position index for most of today, and letting the day "return"
@@ -813,6 +840,58 @@ export class Publisher {
         : `Site configuration changed; rewriting ${SITE_CONFIG_PATH}.`,
     );
     return [{ path: SITE_CONFIG_PATH, content: contents }];
+  }
+
+  /**
+   * The logbook days to write and to delete this cycle.
+   *
+   * A day is published only while it is on the voyage list. The site shows
+   * the log on a voyage's card and nowhere else, so a logbook day with no
+   * voyage — a day at the dock, whose fixes the privacy zones dropped — would
+   * be a file nothing reads, carrying notes from inside a zone. The same rule
+   * is what makes a prune take the log down with the track.
+   *
+   * What landed is tracked by hash in state rather than re-read from the
+   * repository. A deletion is checked against the repository first all the
+   * same: a file removed by hand on GitHub would otherwise fail every commit
+   * with a 422 from here on.
+   */
+  private async logbookFiles(
+    state: PersistedState,
+    logbook: Map<string, string> | null | undefined,
+  ): Promise<{ files: PublishFile[]; deletions: string[]; next?: Record<string, string> }> {
+    if (!logbook) return { files: [], deletions: [] };
+    const { store, client, log } = this.deps;
+
+    const voyages = new Set(
+      parseTracksIndex(await store.readText('tracks_index.json')).map((track) => track.date),
+    );
+    const removed = new Set(state.removedDays ?? []);
+    const published = state.logbook ?? {};
+    const next: Record<string, string> = {};
+    const files: PublishFile[] = [];
+    for (const [day, content] of logbook) {
+      if (!voyages.has(day) || removed.has(day)) continue;
+      const hash = createHash('sha256').update(content).digest('hex');
+      next[day] = hash;
+      if (published[day] !== hash) files.push({ path: logbookPath(day), content });
+    }
+
+    const deletions: string[] = [];
+    for (const day of Object.keys(published)) {
+      if (day in next) continue;
+      if ((await client.getFile(logbookPath(day)).catch(() => null)) !== null) {
+        deletions.push(logbookPath(day));
+      }
+    }
+    if (files.length || deletions.length) {
+      log(
+        `Logbook: ${files.length} day(s) to publish` +
+          (deletions.length ? `, ${deletions.length} to remove` : '') +
+          '.',
+      );
+    }
+    return { files, deletions, next };
   }
 
   /**

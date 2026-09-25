@@ -48,7 +48,8 @@
   ],
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@js-temporal/polyfill": "^0.5.1"
+    "@js-temporal/polyfill": "^0.5.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@signalk/server-api": "^2.32.0",

@@ -1,6 +1,6 @@
 # The site
 
-Where each part of the published site gets its data: the server's metadata, the self tree, the Course API, Polar Management and the config page.
+Where each part of the published site gets its data: the server's metadata, the self tree, the Course API, Polar Management, signalk-logbook and the config page.
 
 ## Units, names and thresholds come from the server
 
@@ -105,6 +105,44 @@ grow the file without bound.
 > it, and it is published verbatim to a public website. Everything else the
 > plugin publishes is a number off a known path, which is why this one has an
 > off switch: `notifications.publish`.
+
+## The logbook
+
+Writing the log is the job of
+[signalk-logbook](https://www.npmjs.com/package/@meri-imperiumi/signalk-logbook).
+Install it and you get a page in the Signal K admin for writing entries at sea
+from a phone, a crew list and skipper, an automatic entry every hour underway
+with the wind, barometer, speed and sea state, and entries for sail, engine and
+crew changes. It keeps them on the boat, one YAML file per day. This plugin
+publishes them.
+
+Each voyage card on the Voyages tab shows that day's log under the stats: who
+was aboard, then every entry with its time and conditions. Entries a person
+wrote read at full strength; the automatic ones step back.
+
+What is published, and what is not:
+
+- **Grouped by local day,** the same way the tracks are, so an evening sail
+  that crosses UTC midnight is one voyage with one log.
+- **Only for days on the voyage list.** A day at the dock, with no voyage, has
+  no card to show its log on, so it is not published. Pruning a voyage takes
+  its log down in the same commit, and a day removed by hand stays removed.
+- **Never a position.** Every logbook entry carries the boat's position and
+  the active waypoint's. Each entry is rebuilt from a fixed list of fields
+  that has neither, so a field a later logbook release adds is left out too.
+  The track is the only way a position reaches the site.
+- **Text as written.** Like a notification message, an entry's text goes to
+  the public site verbatim.
+- **Crew names, unless you say otherwise.** `logbook.crewNames` off drops the
+  crew list, the skipper, each entry's author, and the entries the logbook
+  writes when the crew changes, since their text is the names. A name typed
+  into a note by hand is still published: the plugin cannot tell it from any
+  other word.
+
+An edit in the logbook reaches the site on the next cycle, including an entry
+on a past day. Turning `logbook.publish` off takes every published day down
+on the next cycle. Without signalk-logbook installed, nothing is published and
+nothing is taken down.
 
 ## Branding
 

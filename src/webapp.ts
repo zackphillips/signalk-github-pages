@@ -79,6 +79,8 @@ export interface WebappDeps {
   polars: () => { csv: string; status: PolarStatus | null };
   /** The passage the last cycle read, for the preview's banner. */
   passage: () => Passage | null;
+  /** The logbook days the last cycle rendered, for the preview's voyage cards. */
+  logbook: () => Map<string, string> | null;
   /**
    * Run a publish cycle now. Supplied by `index.ts`, which is where the
    * async reads a cycle needs — the polar, the history, the course — happen,
@@ -293,6 +295,7 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
             tree: current.readTree(),
             polars: current.polars().csv,
             passage: current.passage(),
+            logbook: current.logbook(),
           },
         );
         const contents = files.get(requested);
