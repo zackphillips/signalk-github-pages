@@ -16,10 +16,6 @@ import path from 'node:path';
 export interface PersistedState {
   /** Frontend version last written to the repository. */
   frontendVersion?: string;
-  /** ETag of the last docs tree listing, for conditional requests. */
-  docsEtag?: string;
-  /** Blob SHA and last-changed date per document, so `updated` stays stable. */
-  docs?: Record<string, { sha: string; updated: string }>;
   /** Local days whose GPX file is already published. */
   publishedDays?: string[];
   lastCommit?: string;

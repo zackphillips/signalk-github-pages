@@ -392,7 +392,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         config,
         identity,
         siteDir: path.join(__dirname, '..', 'site'),
-        seedDir: path.join(__dirname, '..', 'seed'),
         version: PLUGIN_VERSION,
         log: (message) => app.debug(message),
       });

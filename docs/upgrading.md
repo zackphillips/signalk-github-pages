@@ -35,11 +35,24 @@ instead. With no active polar, the plugin stops writing `polars.csv` and leaves
 the last published copy in place, so the chart keeps the table you typed until
 you set a polar in Polar Management.
 
+## The ship's docs are gone
+
+The plugin no longer renders `docs/*.md`. It used to publish a reader
+(`docs.html`), rebuild `docs/index.json` every time the docs changed, and offer
+two console buttons: *Initialize ship's docs* and *Maintenance entry*. All of
+that is removed. Keep your docs in a repository of their own, or anywhere
+else, and link to them with a `site.customLinks` button.
+
+On the first cycle after the upgrade the plugin deletes `docs.html`,
+`assets/docs.js` and `docs/index.json` from the site repository, once. Your
+Markdown under `docs/` stays exactly where it is; nothing renders it any more.
+The removed code is on the `archive/ships-docs` branch of this repository.
+
 ## Files the plugin used to write
 
-`data/vessel/info.yaml`, which carried the site configuration and the
-`passage:` block, is deleted once on upgrade. Its contents now come from the
-config page and the Course API.
+`data/vessel/info.yaml` carried the site configuration and the `passage:`
+block. It is deleted once on upgrade; its contents now come from the config
+page and the Course API.
 
 ## Devices stuck on an old site
 

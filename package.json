@@ -43,19 +43,16 @@
     "dist",
     "site",
     "public",
-    "seed",
     "README.md",
     "LICENSE"
   ],
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@js-temporal/polyfill": "^0.5.1",
-    "js-yaml": "^4.1.0"
+    "@js-temporal/polyfill": "^0.5.1"
   },
   "devDependencies": {
     "@signalk/server-api": "^2.32.0",
     "@types/express": "^5.0.6",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.7.0",

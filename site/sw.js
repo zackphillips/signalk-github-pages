@@ -26,14 +26,12 @@ const DATA_CACHE    = 'tracker-data-v1';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
-  '/docs.html',
   '/manifest.json',
   '/assets/styles.css',
   '/assets/utils.js',
   '/assets/constants.js',
   '/assets/tabs.js',
   '/assets/app.js',
-  '/assets/docs.js',
 ];
 
 // ── Install: pre-cache shell ──────────────────────────────────────────────────
@@ -83,14 +81,6 @@ self.addEventListener('fetch', (event) => {
   // polar table — is network-first with a cache fallback: current when there
   // is a signal, and the last known state when there is not.
   if (url.pathname.startsWith('/data/')) {
-    event.respondWith(networkFirstWithCache(request, DATA_CACHE));
-    return;
-  }
-
-  // Ship's docs (Markdown + index) — network-first so an edit published from
-  // the GitHub UI shows up immediately, but cached so the SOPs stay readable
-  // offshore with no signal. docs.js pre-fetches every document to fill this.
-  if (url.pathname.startsWith('/docs/')) {
     event.respondWith(networkFirstWithCache(request, DATA_CACHE));
     return;
   }

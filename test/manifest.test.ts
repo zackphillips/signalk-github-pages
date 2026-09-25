@@ -28,7 +28,6 @@ describe('ownership', () => {
       'data/telemetry/positions_index.json',
       'data/telemetry/tracks/2026-03-01.gpx',
       'data/vessel/site.json',
-      'docs/index.json',
       'assets/app.js',
       'index.html',
       '.nojekyll',
@@ -45,6 +44,12 @@ describe('ownership', () => {
     expect(isOwnedPath('data/vessel/info.yaml', FULL)).toBe(false);
     expect(ownedPatterns(FULL)).not.toContain('data/vessel/info.yaml');
     expect(isRemovablePath('data/vessel/info.yaml', FULL)).toBe(true);
+    // Likewise the ship's docs reader and its index: removed once, never
+    // listed as maintained.
+    for (const path of ['docs.html', 'docs/index.json']) {
+      expect(isOwnedPath(path, FULL), path).toBe(false);
+      expect(isRemovablePath(path, FULL), path).toBe(true);
+    }
     // A retirement is not a license to delete the user's files.
     expect(isRemovablePath('docs/mob-procedure.md', FULL)).toBe(false);
     expect(isRemovablePath('assets/custom.css', FULL)).toBe(false);
@@ -105,11 +110,8 @@ describe('ownership', () => {
     ).toBe(false);
   });
 
-  it('owns the docs index, the frontend and the telemetry unconditionally', () => {
-    // None of the three has a setting: the docs index used to have one, for
-    // an adopter who built it with a GitHub Action instead.
+  it('owns the frontend and the telemetry unconditionally', () => {
     const minimal = {};
-    expect(isOwnedPath('docs/index.json', minimal)).toBe(true);
     expect(isOwnedPath('assets/app.js', minimal)).toBe(true);
     expect(isOwnedPath('data/telemetry/positions_index.json', minimal)).toBe(true);
   });
@@ -147,21 +149,11 @@ describe('renderManifest', () => {
     expect(manifest.version).toBe('0.1.0');
   });
 
-  it('publishes the seeded paths, and never claims to own one', () => {
-    // Seeded is not owned: the console writes these once, on request, and
-    // they belong to the boat's owner from that moment. A manifest that
-    // listed them under "owned" would be telling the reader the plugin will
-    // overwrite their maintenance log.
+  it('claims nothing under docs/, which is the owner\'s', () => {
     const manifest = JSON.parse(
       renderManifest({ ...FULL, version: '0.1.0', generated: '2026-03-01T12:00:00Z' }),
     );
-    expect(manifest.seeded).toEqual([
-      'docs/AGENTS.md',
-      'docs/ships-docs.md',
-      'docs/maintenance/log.md',
-    ]);
-    for (const seeded of manifest.seeded) {
-      expect(isOwnedPath(seeded, FULL), seeded).toBe(false);
-    }
+    expect(manifest.seeded).toBeUndefined();
+    expect(manifest.owned.filter((pattern: string) => pattern.startsWith('docs'))).toEqual([]);
   });
 });

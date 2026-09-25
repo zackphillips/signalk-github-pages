@@ -3,7 +3,7 @@
 <p align="center">
   <em>Your boat publishes its own website.</em><br>
   <code>signalk-github-pages</code>: a Signal K plugin that turns live vessel data into a static GitHub Pages site —
-  position, tracks, instruments and the ship's docs — with no server ashore
+  position, tracks, instruments and conditions — with no server ashore
   and no git checkout on board.
 </p>
 
@@ -28,11 +28,11 @@ does not go down when the hotspot does, and costs nothing.
 │  environment.*     ├─────────────▶│  blobs → tree    ├───────▶│  your-site   │
 │  electrical.*      │    plugin    │  → commit → ref  │        │  .github.io  │
 └─────────┬──────────┘              └──────────────────┘        └──────────────┘
-          │                                   ▲
-          │ navigation.state                  │ docs/*.md edited
-          │ sets the cadence                  │ from a phone, any time
-          ▼                                   │
-   plugin data dir ───────────────────────────┘
+          │
+          │ navigation.state
+          │ sets the cadence
+          ▼
+   plugin data dir
    (rolling state)
 ```
 
@@ -53,7 +53,7 @@ live `HEAD`.
 | **Where it is going** | A passage banner from the waypoint or route active on the plotter, gone on arrival |
 | **How it is doing** | Instruments colored by the zones set on the server, sparklines from your history provider, active notifications and how often each has fired |
 | **Conditions** | Tides from the nearest NOAA station and a 48-hour wind, swell and temperature forecast |
-| **The ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone |
+| **Your own links** | Buttons to anything else the boat has online, from `site.customLinks` |
 
 **How it behaves**
 
@@ -180,7 +180,7 @@ Details are in [Privacy](https://github.com/zackphillips/signalk-github-pages/bl
 | [Track and instruments](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/instruments.md) | Track thinning, the history provider, sparkline windows, instrument paths and bandwidth |
 | [Privacy](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/privacy.md) | Privacy zones in full |
 | [The site](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/site.md) | Units and alarm zones, notifications, branding, what is read from Signal K, the passage banner, tides, polars |
-| [The repository and the console](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/repository.md) | What the plugin writes, the on-boat console, the ship's docs |
+| [The repository and the console](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/repository.md) | What the plugin writes, and the on-boat console |
 | [Troubleshooting](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/troubleshooting.md) | The cycle log, "Data unavailable", a plugin missing from the list |
 | [Upgrading](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/upgrading.md) | Settings that moved or went away |
 

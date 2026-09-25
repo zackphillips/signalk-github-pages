@@ -57,36 +57,9 @@ var VESSEL_CONSTANTS = Object.freeze({
   // they do not come at all.
 
   // ── Theming ──────────────────────────────────────────────────────────────
-  // Cycle order for the floating theme button. Shared by index.html and
-  // docs.html so the two pages never drift apart.
+  // Cycle order for the floating theme button.
   THEMES:      ['marine', 'amber', 'bright'],
   DARK_THEMES: ['marine', 'amber'],
-
-  // ── Ship's docs (docs.html) ──────────────────────────────────────────────
-  DOCS_INDEX_URL: 'docs/index.json',
-  // Sidebar section order. docs/index.json itself sorts categories
-  // alphabetically (see scripts/build_docs_index.py) so the index stays
-  // predictable to diff; this list is what actually controls the order
-  // the sections render in. Categories not listed here sort alphabetically
-  // after the ones that are.
-  DOCS_CATEGORY_ORDER: ['Operations', 'Systems', 'Maintenance', 'Voyages'],
-  // Checklist ticks are per-device UI state, not vessel data — they live in
-  // localStorage under this prefix and are never committed anywhere.
-  DOCS_CHECKLIST_PREFIX: 'tracker.checklist.',
-
-  // ── GitHub (edit-in-place links) ────────────────────────────────────────
-  // "Edit on GitHub" links (docs.js) point here. Anyone can open the editor,
-  // but only collaborators with push access can commit straight to
-  // GITHUB_DEFAULT_BRANCH — GitHub routes everyone else through
-  // "fork + pull request" automatically, so this alone is what keeps edits
-  // gated to contributors.
-  // Placeholders: src/frontend.ts substitutes the configured repository on the
-  // way into the repository, and throws if it cannot find these lines. They
-  // used to ship as one particular repository, which meant a substitution that
-  // silently stopped matching sent every adopter's "edit on GitHub" links to
-  // somebody else's repo.
-  GITHUB_REPO: 'OWNER/REPO',
-  GITHUB_DEFAULT_BRANCH: 'main',
 
   // ── Data URLs ────────────────────────────────────────────────────────────
   TRACKS_INDEX_URL:     'data/telemetry/tracks_index.json',

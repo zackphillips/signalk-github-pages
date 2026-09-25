@@ -11,7 +11,7 @@ src/
   index.ts          Plugin entry: schema, start/stop, tick scheduling, router
   config.ts         Config schema, defaults, normalization, validation
   publisher.ts      One cycle end to end — the only module that orchestrates
-  webapp.ts         The console's routes: status, preview, prune, docs
+  webapp.ts         The console's routes: status, preview, prune, publish
   preview.ts        The site's data files rendered live, never published
   prune.ts          Which voyages a prune takes, decided without doing it
   snapshot.ts       Reading the self tree, stale filter, position redaction
@@ -25,9 +25,6 @@ src/
   history.ts        The Signal K History API: the instrument log, read back
                     from a provider instead of accumulated here
   gpx.ts            Per-day GPX files and tracks_index.json
-  docsIndex.ts      docs/index.json (port of the old Python builder)
-  docsSeed.ts       The starter documents and the maintenance log: the only
-                    writes that reach a path the plugin does not own
   siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
@@ -43,7 +40,6 @@ src/
   signalk.ts        The server's own types, and the two this plugin narrows
 site/               The published site, shipped in the npm package
 public/             The console webapp; Signal K mounts it at /signalk-github-pages/
-seed/               Starter documents copied into docs/ once, on request
 sample/             Fixture telemetry for `npm run dev`
 test/               vitest, including an in-memory GitHub fake
 ```
@@ -80,8 +76,7 @@ Run `npm test` and `npm run typecheck` before committing.
   the boat already knows is read from the server; a value the adopter chooses
   is a typed field on the config page. If a new feature needs a person to
   edit a file in the published repository, that is a design smell — the one
-  deliberate exception is `docs/*.md`, which is prose with no other source,
-  and `assets/custom.css`.
+  deliberate exception is `assets/custom.css`.
 - **`site.json` is site configuration, not the boat.** Everything about the
   vessel — name, MMSI, callsign, UUID, IMO, flag, home port, registrations,
   dimensions — is in `data/telemetry/signalk_latest.json`, which is the whole
@@ -108,7 +103,7 @@ Run `npm test` and `npm run typecheck` before committing.
 - **A retired path is removable but not owned.** `ownedPatterns` is what the
   published manifest lists and what `isOwnedPath` allows writing.
   `RETIRED_PATTERNS` is a path this plugin used to write and now only deletes
-  — `data/vessel/info.yaml` so far — so it is absent from the manifest, which
+  — `data/vessel/info.yaml` and the ship's docs reader — so it is absent from the manifest, which
   would otherwise tell the repository's owner it is still maintained, while
   `isRemovablePath` still lets the one-time deletion through the same
   ownership check every other deletion passes. The deletion is recorded in
@@ -405,7 +400,7 @@ Run `npm test` and `npm run typecheck` before committing.
   `manifest.ts` first; `partitionOwned` drops anything else on the way into a
   commit.
 - **The ref is never force-updated.** On a lost race, re-read HEAD and rebuild
-  the tree, so a concurrent docs edit survives.
+  the tree, so a concurrent edit from a phone survives.
 - **Check every privacy zone, not just the first.** An early version had this
   bug: the map track was redacted while positions from every other zone went
   straight into the published GPX.
@@ -483,43 +478,21 @@ Run `npm test` and `npm run typecheck` before committing.
   "Vessel" until the next restart. Round anything numeric that goes into
   `info.yaml` — the file is rewritten whenever its content changes, and a
   draft that wobbles in the last decimal place would commit every two minutes.
-- **Seeded is not owned, and the difference is the whole feature.** The
-  manifest allowlist stays exactly as it was: no cycle writes a document, and
-  `partitionOwned` drops one that tries. The console's two docs actions go
-  round it on purpose, and `assertDocsPath` is what stands in its place — a
-  positive check that the path is Markdown under `docs/`, so a composed path
-  can never reach `index.html` or `data/`. Seeded paths are listed in the
-  manifest under `seeded` with a note saying they are written once and then
-  belong to the owner. Do not move them into `owned` to simplify the code: the
-  manifest is a promise to the person whose repository this is, and `owned`
-  means "overwritten without warning".
-- **Initializing is refused, not merged.** Two different questions, two
-  different guards. *A published document that is not part of the starter set*
-  means the boat has its own docs, and initializing is declined outright —
-  that is the whole of "only if the docs do not yet exist". The starter files
-  and `docs/maintenance/log.md` are excluded from that count on purpose: they
-  are the plugin's own doing, and counting the log would lock the starter set
-  out of any repository where somebody logged an oil change first. *This exact
-  path* existing means that one file is skipped, so a half-written starter set
-  can be completed without the other half being touched. A truncated tree
-  listing refuses everything: past GitHub's 100k cap, absence proves nothing,
-  and "there are no documents" would be a guess.
-- **A maintenance entry is an insert.** `insertMaintenanceEntry` splices one
-  block in above the first `##` and returns the rest of the file unchanged; it
-  never parses, reformats or reorders what is already there. The published copy
-  is read back on every entry for the same reason `info.yaml` is — the file is
-  edited from a phone between publishes and the boat's idea of it is never
-  authoritative. There is deliberately no local cache of the log.
-- **`AGENTS.md` and `CLAUDE.md` are not ship's documents.** `isPublishedDoc`
-  excludes them by name. They are instructions for whoever edits the docs, and
-  a sidebar entry called "Agents" is noise on a page that is meant to be read
-  at sea.
+- **The ship's docs are not this plugin's.** It used to render `docs/*.md`
+  (`docs.html`, `docs/index.json`) and write starter documents and a
+  maintenance log from the console. That was a second product in the same
+  repository, and the only code that wrote a path the plugin did not own. It
+  is on the `archive/ships-docs` branch. `docs.html`, `assets/docs.js` and
+  `docs/index.json` are in `RETIRED_PATTERNS`, so an upgraded site loses the
+  reader once and keeps every document. A boat's docs are a
+  `site.customLinks` button now. Do not add a writer for a path outside the
+  manifest back.
 - **The pages carry the boat's identity, and it is substituted, not scripted.**
   `document.title` and the name in the status hero are patched from the
   published snapshot after the page loads, but the OpenGraph and Twitter tags,
   the web app manifest and the tab icon cannot be: a link pasted into a chat
   is unfurled by a crawler that never runs the JavaScript. Those are `{{TOKEN}}`
-  placeholders in `index.html`, `docs.html` and `manifest.json`, filled in by
+  placeholders in `index.html` and `manifest.json`, filled in by
   `frontend.ts` at publish time from the config and the tree. Every value goes
   through an escaper chosen by the file's type — a vessel named `Nancy "Nan"
   Blackett` is a broken attribute in one and an unparseable document in the
@@ -535,26 +508,17 @@ Run `npm test` and `npm run typecheck` before committing.
   icon are `site.logo` and `site.icon` on the config page now, two separate
   uploads published to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
   with `assets/icon.svg` as the generic icon fallback.
-- **The shipped constants are placeholders, and a missed substitution throws.**
-  `GITHUB_REPO: 'OWNER/REPO'` in `constants.js` is not a value, it is a slot.
-  It used to ship as one real repository, so `renderConstants` failing to match
-  — after a reformat, say — published a site whose "edit on GitHub" links all
-  pointed at somebody else's repo, silently. `replaceOrThrow` fails the publish
-  instead.
 - **The preview renders through the same `template` the publisher uses.** It is
   the only place the substitutions can be checked before a commit goes out, so
   a preview showing raw `{{TOKEN}}`s — or, worse, showing the right thing while
   the published copy is wrong — defeats the point of having one. `npm run dev`
-  has its own stand-in values for the same reason.- **`site/` is published; `public/` is not.** Two directories with different
+  has its own stand-in values for the same reason.
+- **`site/` is published; `public/` is not.** Two directories with different
   jobs, and the split is load-bearing: Signal K mounts a package's `public/`
   as its webapp, so anything put there is served to the boat, and everything
   in `site/` is walked by `loadFrontend` and committed to the repository. A
   file in the wrong one either fails to appear in the admin UI or turns up on
   a public website.
-- **The console writes documents; a cycle never does.** The two docs actions
-  live on the publisher because they need the client and the config, but
-  nothing in `runCycle` reaches them. A publish that could rewrite a document
-  is a publish that can lose one, and the cadence is every two minutes.
 - **The console's GET routes never write plugin state; its POST routes are
   what buttons are for.** `preview.ts` assembles the data files from the
   store and the tree and returns them; it does not call `runCycle`. Someone
@@ -707,8 +671,8 @@ Run `npm test` and `npm run typecheck` before committing.
   the failure alarm. Treating it as a non-event would leave an alarm up on a
   boat sitting quietly at anchor with everything already published.
 - **The service worker's cache name must carry the version.** `sw.js` declares
-  `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it, the
-  same way it templates `constants.js`. The shell cache was once a constant
+  `SITE_VERSION` and `frontend.ts` substitutes the plugin's version into it.
+  The shell cache was once a constant
   (`mermug-shell-v4`) served cache-first with no revalidation: a device that had
   loaded the site once kept that release's HTML and JavaScript forever while the
   telemetry beside it went on updating. Old code against new data is a dashboard

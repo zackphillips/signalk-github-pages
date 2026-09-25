@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 import {
   frontendOptions,
   loadFrontend,
-  renderConstants,
   renderServiceWorker,
   substituteTokens,
   template,
@@ -27,36 +26,6 @@ const options = (overrides: Partial<FrontendOptions> = {}): FrontendOptions => (
   iconType: 'image/svg+xml',
   basePath: '/site/',
   ...overrides,
-});
-
-describe('renderConstants', () => {
-  const source = `var VESSEL_CONSTANTS = Object.freeze({
-  GITHUB_REPO: 'OWNER/REPO',
-  GITHUB_DEFAULT_BRANCH: 'main',
-});`;
-
-  it("points the edit links at the adopter's own repository", () => {
-    const rendered = renderConstants(
-      source,
-      options({ repo: 'someone/their-site', branch: 'gh-pages' }),
-    );
-    expect(rendered).toContain("GITHUB_REPO: 'someone/their-site'");
-    expect(rendered).toContain("GITHUB_DEFAULT_BRANCH: 'gh-pages'");
-  });
-
-  it('still declares the constants with var, which the page depends on', () => {
-    // const at the top level of a classic script does not become
-    // window.VESSEL_CONSTANTS, and app.js throws on the missing global.
-    expect(renderConstants(source, options())).toMatch(/^var VESSEL_CONSTANTS/);
-  });
-
-  it('refuses to publish a constants file it could not substitute', () => {
-    // Failing open here shipped the placeholder, and every adopter's "edit on
-    // GitHub" link pointed at whatever repository the placeholder named.
-    expect(() => renderConstants('var VESSEL_CONSTANTS = {};', options())).toThrow(
-      /GITHUB_REPO/,
-    );
-  });
 });
 
 describe('substituteTokens', () => {
@@ -173,7 +142,6 @@ describe('loadFrontend', () => {
     const paths = files.map((file) => file.path);
     for (const expected of [
       'index.html',
-      'docs.html',
       'manifest.json',
       'assets/app.js',
       'assets/styles.css',
@@ -195,10 +163,18 @@ describe('loadFrontend', () => {
     expect(page?.content).toBe('<title>Mermug</title>');
   });
 
-  it("substitutes the adopter's repository into the shipped constants", async () => {
-    const files = await loadFrontend(SITE_DIR, options({ repo: 'owner/site' }));
+  it('ships the constants declared with var, which the page depends on', async () => {
+    // const at the top level of a classic script does not become
+    // window.VESSEL_CONSTANTS, and app.js throws on the missing global.
+    const files = await loadFrontend(SITE_DIR, options());
     const constants = files.find((file) => file.path === 'assets/constants.js');
-    expect(String(constants?.content)).toContain("GITHUB_REPO: 'owner/site'");
+    expect(String(constants?.content)).toMatch(/^var VESSEL_CONSTANTS/m);
+  });
+
+  it('no longer ships the ship\'s docs reader', async () => {
+    const paths = (await loadFrontend(SITE_DIR, options())).map((file) => file.path);
+    expect(paths).not.toContain('docs.html');
+    expect(paths).not.toContain('assets/docs.js');
   });
 
   it('leaves no placeholder in anything it publishes', async () => {

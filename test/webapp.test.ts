@@ -1,21 +1,13 @@
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MaintenanceInputError } from '../src/docsSeed';
-import { GitHubClient } from '../src/github';
-import { Publisher } from '../src/publisher';
-import { StateStore } from '../src/state';
+import { describe, expect, it, vi } from 'vitest';
 import {
   parsePruneRequest,
-  readJsonBody,
   registerRoutes,
   resolveSitePath,
   type Router,
   type WebappDeps,
 } from '../src/webapp';
 import { makeConfig } from './helpers/config';
-import { FakeGitHub } from './helpers/fakeGitHub';
 const SITE = path.join(__dirname, '..', 'site');
 
 /**
@@ -134,28 +126,6 @@ describe('resolveSitePath', () => {
   });
 });
 
-describe('readJsonBody', () => {
-  it('takes the body Signal K already parsed', () => {
-    expect(readJsonBody({ body: { title: 'Oil change' } })).toEqual({ title: 'Oil change' });
-  });
-
-  it('parses a body that arrived as text or as a buffer', () => {
-    expect(readJsonBody({ body: '{"title":"Oil change"}' })).toEqual({ title: 'Oil change' });
-    expect(readJsonBody({ body: Buffer.from('{"title":"Oil change"}') })).toEqual({
-      title: 'Oil change',
-    });
-  });
-
-  it('says so when no body arrived, rather than blaming the form', () => {
-    // Without this, a server that does not parse JSON bodies reports "a
-    // maintenance entry needs a title" over a form that plainly has one.
-    for (const request of [{}, { body: undefined }, { body: '' }, { body: 'not json' }]) {
-      expect(() => readJsonBody(request), JSON.stringify(request)).toThrow(
-        MaintenanceInputError,
-      );
-    }
-  });
-});
 describe('the preview routes', () => {
   it('serves the site for /preview/ rather than redirecting to itself', async () => {
     // Express does not run in strict-routing mode, so `/preview` also matches
@@ -237,111 +207,12 @@ describe('publishing on request', () => {
   });
 });
 
-/**
- * The docs routes, driven the way Signal K drives them.
- *
- * A real publisher over the in-memory GitHub, because the thing worth pinning
- * down is the status code each outcome gets: that is what the console page
- * reads to tell "already initialized" from "something went wrong".
- */
-describe('the docs routes', () => {
-  let dataDir: string;
-  let fake: FakeGitHub;
-  let router: ReturnType<typeof fakeRouter>;
-
-  beforeEach(async () => {
-    dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'skgp-routes-'));
-    fake = new FakeGitHub({
-      repo: 'owner/site',
-      branch: 'main',
-      files: { 'README.md': '# Site\n' },
-    });
-    const config = makeConfig({ timezone: { override: true, zone: 'America/Los_Angeles' } });
-    const store = new StateStore(dataDir);
-    const publisher = new Publisher({
-      client: new GitHubClient({
-        repo: 'owner/site',
-        branch: 'main',
-        token: 'token',
-        fetchImpl: fake.fetch,
-      }),
-      store,
-      config,
-      identity: { name: 'S.V.Mermug', mmsi: '338543654' },
-      siteDir: SITE,
-      seedDir: path.join(__dirname, '..', 'seed'),
-      version: '0.1.0',
-      log: () => {},
-    });
-
-    router = fakeRouter();
-    registerRoutes(router.router, () =>
-      deps({
-        config: config as never,
-        store,
-        publisher,
-        readTree: () => ({ propulsion: { main: { runTime: { value: 4_336_200 } } } }) as never,
-      }),
-    );
-  });
-
-  afterEach(async () => {
-    await fs.rm(dataDir, { recursive: true, force: true });
-  });
-
-  it('reports an empty docs directory, with the form values the page needs', async () => {
-    const result = await router.call('get', '/docs');
-    expect(result.body.initialized).toBe(false);
-    expect(result.body.missing).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-    // The engine-hours box left the form, and its prefill with it.
-    expect(result.body.engineHours).toBeUndefined();
-    expect(result.body.today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(result.body.docsUrl).toBe('https://owner.github.io/site/docs.html');
-  });
-
-  it('initializes once, and a second press writes nothing', async () => {
-    expect((await router.call('post', '/docs/init')).body.created).toEqual([
-      'docs/AGENTS.md',
-      'docs/ships-docs.md',
-    ]);
-
-    const second = await router.call('post', '/docs/init');
-    expect(second.body.created).toEqual([]);
-    expect(second.body.skipped).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-    expect((await router.call('get', '/docs')).body.canInitialize).toBe(false);
-  });
-
-  it('answers 409, not 500, over documents the boat already has', async () => {
-    fake.commitFile('docs/mob.md', '# Man Overboard\n');
-    const result = await router.call('post', '/docs/init');
-    expect(result.status).toBe(409);
-    expect(result.body.error).toMatch(/already in docs/);
-  });
-
-  it('adds a maintenance entry and answers 201', async () => {
-    const result = await router.call('post', '/docs/maintenance', {
-      title: 'Replaced the impeller',
-      date: '2026-03-01',
-      engineHours: 1204.5,
-    });
-    expect(result.status).toBe(201);
-    expect(result.body.created).toBe(true);
-    expect(fake.files.get('docs/maintenance/log.md')).toContain(
-      '## 2026-03-01: Replaced the impeller',
-    );
-  });
-
-  it('answers 400 for a form the plugin cannot use, and writes nothing', async () => {
-    const before = fake.commits.length;
-    const result = await router.call('post', '/docs/maintenance', { title: '  ' });
-    expect(result.status).toBe(400);
-    expect(result.body.error).toMatch(/needs a title/);
-    expect(fake.commits.length).toBe(before);
-  });
-
-  it('answers 503 while the plugin is stopped', async () => {
+describe('while the plugin is stopped', () => {
+  it('answers 503 to every button', async () => {
     const stopped = fakeRouter();
     registerRoutes(stopped.router, () => null);
-    expect((await stopped.call('post', '/docs/init')).status).toBe(503);
+    for (const route of ['/publish', '/publish/site']) {
+      expect((await stopped.call('post', route)).status, route).toBe(503);
+    }
   });
 });

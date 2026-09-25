@@ -1754,8 +1754,7 @@ let historyWindowHours = (() => {
 let bannerState = 'ok'; // 'ok' | 'error' — persists across theme switches
 
 // ── Theme cycling ──────────────────────────────────────────────────────────
-// The lists live in constants.js so docs.html gets the same cycle without
-// pulling in this whole file.
+// The lists live in constants.js with the rest of the page's settings.
 const THEMES = C.THEMES;
 const DARK_THEMES = new Set(C.DARK_THEMES);
 function isDarkTheme(theme) { return DARK_THEMES.has(theme); }
@@ -4459,8 +4458,8 @@ function initDarkMode() {
   // No vessel-config fallback: there is no theme setting and never was a
   // `theme:` key to read. The button cycles THEMES and localStorage remembers.
   //
-  // A remembered theme only counts if this release still has it. docs.js has
-  // always checked; this side did not, so a theme renamed between releases
+  // A remembered theme only counts if this release still has it. This side
+  // once did not check, so a theme renamed between releases
   // left the page with a data-theme nothing in the stylesheet matched — every
   // token falling back to the light defaults under a "Dark Mode" button.
   let savedTheme = localStorage.getItem('theme') || 'marine';
