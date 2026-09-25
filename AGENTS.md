@@ -458,6 +458,14 @@ Run `npm test` and `npm run typecheck` before committing.
   drops a point inside a zone rather than snapping it, and withholds speed
   and course — because a night at the dock would otherwise be a pile of
   identical points saying exactly where you sleep.
+- **A voyage's link is a fragment, `#voyages/<date>`.** `tabs.js` reads the
+  first segment as the tab and leaves the rest alone; `app.js` opens the card
+  whose `data-date` matches, after every render of the list, because the
+  second render is the one with the GPX loaded for the mini map. Opening or
+  closing a card rewrites the fragment with `replaceState`, so the address bar
+  is always the link to what is on screen and no `hashchange` loops back. A
+  date the index does not have says so above the list. A crawler never runs
+  the script, so a pasted link unfurls as the site, not the voyage.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.

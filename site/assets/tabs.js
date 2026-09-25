@@ -19,8 +19,10 @@
     return TAB_IDS.indexOf(id) !== -1;
   }
 
+  // The tab is the hash's first segment. `#voyages/2026-08-14` opens the
+  // Voyages tab, and app.js reads the rest to open that voyage.
   function tabFromHash() {
-    var id = (window.location.hash || '').replace(/^#/, '');
+    var id = (window.location.hash || '').replace(/^#/, '').split('/')[0];
     return isValidTab(id) ? id : null;
   }
 
@@ -58,7 +60,7 @@
 
     try { localStorage.setItem(STORAGE_KEY, tabId); } catch (e) {}
 
-    if (opts.updateHash !== false && window.location.hash !== '#' + tabId) {
+    if (opts.updateHash !== false && tabFromHash() !== tabId) {
       history.replaceState(null, '', '#' + tabId);
     }
 

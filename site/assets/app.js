@@ -1468,6 +1468,73 @@ function renderVoyageList() {
     </div>`).join('');
 
   bindVoyageListOnce(container);
+  openVoyageFromHash();
+}
+
+// ── Voyage links ─────────────────────────────────────────────────────────
+// `#voyages/2026-08-14` opens the Voyages tab (tabs.js) with that day's card
+// expanded. A fragment rather than a query string: nothing reaches a server,
+// the service worker's cache key is the same page, and back and forward move
+// between voyages. Opening or closing a card rewrites the fragment, so the
+// address bar is always the link to what is on screen.
+const VOYAGE_HASH = /^#voyages\/(\d{4}-\d{2}-\d{2})$/;
+
+function voyageFromHash() {
+  const match = VOYAGE_HASH.exec(window.location.hash || '');
+  return match ? match[1] : null;
+}
+
+function setVoyageHash(date) {
+  const hash = date ? `#voyages/${date}` : '#voyages';
+  if (window.location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+// Runs after every list render: the list is drawn once from the index and
+// again when the GPX files arrive, and the second pass is the one with a
+// track for the mini map.
+function openVoyageFromHash() {
+  const date = voyageFromHash();
+  const container = document.getElementById('voyage-list');
+  if (!container) return;
+  container.querySelector('.voyage-list-missing')?.remove();
+  if (!date) return;
+
+  const item = container.querySelector(`.voyage-item[data-date="${date}"]`);
+  if (!item) {
+    // Pruned, never recorded, or a mistyped link. Say so rather than showing
+    // the list as though the link had worked.
+    container.insertAdjacentHTML('afterbegin',
+      `<div class="voyage-list-empty voyage-list-missing">No voyage on ${fmtVoyageDate(date)} is published here.</div>`);
+    return;
+  }
+  if (!item.classList.contains('is-open')) toggleVoyageDetail(item);
+  item.scrollIntoView({ block: 'start', behavior: 'instant' });
+}
+
+window.addEventListener('hashchange', () => {
+  if (voyageFromHash()) openVoyageFromHash();
+});
+
+// The system share sheet where there is one (a phone), the clipboard
+// otherwise. The button says which happened.
+async function shareVoyage(button, date) {
+  const url = `${window.location.origin}${window.location.pathname}#voyages/${date}`;
+  const label = button.textContent;
+  const flash = (text) => {
+    button.textContent = text;
+    setTimeout(() => { button.textContent = label; }, 2000);
+  };
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: `${document.title}: ${fmtVoyageDate(date)}`, url });
+      return;
+    }
+    await navigator.clipboard.writeText(url);
+    flash('Link copied');
+  } catch (e) {
+    // A dismissed share sheet is not a failure worth a message.
+    if (e?.name !== 'AbortError') flash('Could not copy');
+  }
 }
 
 // One delegated listener on the list survives every renderVoyageList() rerender.
@@ -1479,6 +1546,11 @@ function bindVoyageListOnce(container) {
   container.addEventListener('click', (e) => {
     const item = e.target.closest('.voyage-item');
     if (!item) return;
+
+    if (e.target.closest('.voyage-share')) {
+      shareVoyage(e.target.closest('.voyage-share'), item.dataset.date);
+      return;
+    }
 
     if (e.target.closest('.voyage-show-on-map')) {
       const date = item.dataset.date;
@@ -1527,6 +1599,7 @@ function closeVoyageDetail(item) {
 function toggleVoyageDetail(item) {
   const wasOpen = item.classList.contains('is-open');
   item.parentElement.querySelectorAll('.voyage-item.is-open').forEach(closeVoyageDetail);
+  setVoyageHash(wasOpen ? null : item.dataset.date);
   if (wasOpen) return;
 
   const entry = tracksIndex.find((t) => t.date === item.dataset.date);
@@ -1575,6 +1648,7 @@ function voyageDetailHtml(entry) {
     </div>
     <div class="voyage-detail-actions">
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
+      <button type="button" class="voyage-detail-btn voyage-detail-btn--ghost voyage-share">Share</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
     </div>`;
 }

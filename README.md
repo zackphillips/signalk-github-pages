@@ -49,7 +49,7 @@ live `HEAD`.
 | | |
 |---|---|
 | **Where the boat is** | Live position on a map, redacted inside your [privacy zones](#privacy) |
-| **Where it has been** | A track per local calendar day, as GPX, listed on a Voyages tab |
+| **Where it has been** | A track per local calendar day, as GPX, listed on a Voyages tab. Each voyage has its own link to share |
 | **Where it is going** | A passage banner from the waypoint or route active on the plotter, gone on arrival |
 | **How it is doing** | Instruments colored by the zones set on the server, sparklines from your history provider, active notifications and how often each has fired |
 | **Conditions** | Tides from the nearest NOAA station and a 48-hour wind, swell and temperature forecast |
