@@ -22,9 +22,7 @@
  * JSON rather than YAML because nothing edits it by hand any more. That
  * takes a 30 KB js-yaml script off the page's critical path — fetched from a
  * CDN, on a phone tethered to a marina hotspot — along with the runtime
- * parse and the `typeof jsyaml === 'undefined'` guard around it. The plugin
- * still depends on js-yaml, for the Markdown front matter in `docsIndex.ts`;
- * the browser no longer does.
+ * parse and the `typeof jsyaml === 'undefined'` guard around it.
  */
 import type { PluginConfig } from './config';
 import type { Passage } from './course';

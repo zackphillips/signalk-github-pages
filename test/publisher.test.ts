@@ -4,14 +4,13 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { GitHubClient } from '../src/github';
-import { DocsExistError, INSTRUMENT_LOG_WARN_BYTES, Publisher } from '../src/publisher';
+import { INSTRUMENT_LOG_WARN_BYTES, Publisher } from '../src/publisher';
 import { renderGpxDocument } from '../src/gpx';
 import { StateStore } from '../src/state';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
 
 const SITE_DIR = path.join(__dirname, '..', 'site');
-const SEED_DIR = path.join(__dirname, '..', 'seed');
 const HOME = { name: 'South Beach Harbor', lat: 37.7802069, lon: -122.385804, radius_m: 200 };
 
 const tree = (over: { lat?: number; lon?: number; state?: string; timestamp?: string } = {}) => ({
@@ -72,7 +71,6 @@ describe('Publisher', () => {
       config,
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
       siteDir: SITE_DIR,
-      seedDir: SEED_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date(now),
@@ -125,7 +123,7 @@ describe('Publisher', () => {
     expect(fake.files.has('data/telemetry/positions_index.json')).toBe(false);
   });
 
-  it('publishes telemetry, the frontend, the config and the docs index on the first cycle', async () => {
+  it('publishes telemetry, the frontend and the config on the first cycle', async () => {
     const publisher = makePublisher();
     await publisher.seed();
     const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
@@ -138,7 +136,6 @@ describe('Publisher', () => {
       'data/telemetry/tracks_index.json',
       'data/telemetry/tracks/2026-03-01.gpx',
       'data/vessel/site.json',
-      'docs/index.json',
       'index.html',
       'assets/app.js',
       '.tracker-manifest.json',
@@ -315,7 +312,6 @@ describe('Publisher', () => {
       config: makeConfig(),
       identity: { name: 'Vessel', mmsi: '' },
       siteDir: SITE_DIR,
-      seedDir: SEED_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date('2026-03-01T20:00:00Z'),
@@ -562,142 +558,102 @@ describe('Publisher', () => {
   });
 
 
-  describe("the ship's docs", () => {
-    /** A repository with the frontend published but no documents at all. */
-    const empty = () => {
-      fake = new FakeGitHub({
-        repo: 'owner/site',
-        branch: 'main',
-        files: { 'README.md': '# Site\n', 'index.html': '<!doctype html>' },
-      });
-      return makePublisher();
-    };
-
-    it('reports what docs/ holds, ignoring drafts and agent instructions', async () => {
-      fake.commitFile('docs/AGENTS.md', '# Agents\n');
-      const status = await makePublisher().docsStatus();
-
-      expect(status.initialized).toBe(true);
-      // docs/_template.md is a draft and docs/AGENTS.md is not a document.
-      expect(status.documentPaths).toEqual(['docs/mob-procedure.md']);
-      expect(status.missing).toEqual(['docs/ships-docs.md']);
-      expect(status.maintenanceLog).toEqual({ path: 'docs/maintenance/log.md', exists: false });
-    });
-
-    it('writes the starter set into a repository with no documents', async () => {
-      const publisher = empty();
-      const before = fake.commits.length;
-      const result = await publisher.initializeDocs();
-
-      expect(result.created).toEqual(['docs/AGENTS.md', 'docs/ships-docs.md']);
-      expect(fake.commits.length).toBe(before + 1);
-      expect(fake.files.get('docs/ships-docs.md')).toContain('S.V.Mermug');
-      expect(fake.files.get('docs/ships-docs.md')).toContain('owner/site');
-      expect(fake.files.get('docs/AGENTS.md')).toContain('AGENTS.md');
-      expect(result.status.initialized).toBe(true);
-    });
-
-    it('refuses outright once the repository has a document of its own', async () => {
-      // The fixture repository already carries docs/mob-procedure.md. A boat
-      // with its own docs does not want this plugin's opinion about them, and
-      // the refusal is what makes the button safe to press twice.
+  describe("the ship's docs reader", () => {
+    it('removes the reader and its index once, and never a document', async () => {
+      fake.commitFile('docs.html', '<!doctype html>');
+      fake.commitFile('assets/docs.js', '// reader');
+      fake.commitFile('docs/index.json', '{"docs":[]}');
       const publisher = makePublisher();
-      const before = fake.commits.length;
+      await publisher.runCycle(tree());
 
-      await expect(publisher.initializeDocs()).rejects.toBeInstanceOf(DocsExistError);
-      expect(fake.commits.length).toBe(before);
-      expect(fake.files.has('docs/ships-docs.md')).toBe(false);
+      for (const retired of ['docs.html', 'assets/docs.js', 'docs/index.json']) {
+        expect(fake.files.has(retired), retired).toBe(false);
+      }
+      expect(fake.files.get('docs/mob-procedure.md')).toContain('Man Overboard');
+      expect(fake.files.has('docs/_template.md')).toBe(true);
+
+      // Retired is retired: a file of the same name committed later stays.
+      fake.commitFile('docs.html', '<!doctype html><title>Mine</title>');
+      await publisher.runCycle(tree());
+      expect(fake.files.get('docs.html')).toContain('Mine');
     });
 
-    it('completes a half-written starter set without touching the half that is there', async () => {
-      const publisher = empty();
-      fake.commitFile('docs/AGENTS.md', '# My own agent rules\n');
-      const result = await publisher.initializeDocs();
-
-      expect(result.created).toEqual(['docs/ships-docs.md']);
-      expect(result.skipped).toEqual(['docs/AGENTS.md']);
-      expect(fake.files.get('docs/AGENTS.md')).toBe('# My own agent rules\n');
-    });
-
-    it('still offers the starter set to a repository whose only doc is the log', async () => {
-      // Logging an oil change before pressing the button must not lock the
-      // starter set out: the log is the plugin's own doing, not evidence that
-      // the boat has documentation of its own.
-      const publisher = empty();
-      await publisher.addMaintenanceEntry({ date: '2026-03-01', title: 'Oil change' });
-      const status = await publisher.docsStatus();
-
-      expect(status.initialized).toBe(true);
-      expect(status.ownDocuments).toBe(0);
-      expect(status.canInitialize).toBe(true);
-      expect((await publisher.initializeDocs()).created).toEqual([
-        'docs/AGENTS.md',
-        'docs/ships-docs.md',
-      ]);
-      expect(fake.files.get('docs/maintenance/log.md')).toContain('## 2026-03-01: Oil change');
-    });
-
-    it('starts the maintenance log with the first entry', async () => {
+    it('never writes under docs/ on a normal cycle', async () => {
       const publisher = makePublisher();
-      const result = await publisher.addMaintenanceEntry({
-        date: '2026-03-01',
-        title: 'Replaced the raw-water impeller',
-        system: 'Engine',
-        engineHours: 1204.5,
-      });
-
-      expect(result.created).toBe(true);
-      expect(result.path).toBe('docs/maintenance/log.md');
-      const log = fake.files.get('docs/maintenance/log.md')!;
-      expect(log).toContain('category: Maintenance');
-      expect(log).toContain('## 2026-03-01: Replaced the raw-water impeller');
-      expect(log).toContain('- Engine hours: 1204.5');
-      expect(fake.commits[fake.commits.length - 1]!.message).toBe(
-        'Maintenance 2026-03-01: Replaced the raw-water impeller',
-      );
-    });
-
-    it('adds later entries at the top, keeping what is already logged', async () => {
-      const publisher = makePublisher();
-      await publisher.addMaintenanceEntry({ date: '2026-02-01', title: 'Oil change' });
-      // Edited on GitHub between the two entries: the published copy is read
-      // back every time, so nothing here is composed against a local cache.
-      fake.commitFile(
-        'docs/maintenance/log.md',
-        `${fake.files.get('docs/maintenance/log.md')}\nA note added from a phone.\n`,
-      );
-      const result = await publisher.addMaintenanceEntry({
-        date: '2026-03-01',
-        title: 'New impeller',
-      });
-
-      expect(result.created).toBe(false);
-      const log = fake.files.get('docs/maintenance/log.md')!;
-      const headings = [...log.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
-      expect(headings).toEqual(['2026-03-01: New impeller', '2026-02-01: Oil change']);
-      expect(log).toContain('A note added from a phone.');
-    });
-
-    it('writes nothing but the log when an entry is added', async () => {
-      const publisher = makePublisher();
-      const before = new Map(fake.files);
-      await publisher.addMaintenanceEntry({ date: '2026-03-01', title: 'Oil change' });
-
-      const changed = [...fake.files.entries()].filter(
-        ([path, contents]) => before.get(path) !== contents,
-      );
-      expect(changed.map(([path]) => path)).toEqual(['docs/maintenance/log.md']);
-    });
-
-    it('never writes a document on a normal cycle', async () => {
-      // The manifest is what enforces this, and it is the reason the console's
-      // two writes are the only way into docs/ at all.
-      const publisher = makePublisher();
-      await publisher.seed();
       const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
+      expect(result.files.filter((file) => file.startsWith('docs'))).toEqual([]);
+    });
+  });
 
-      expect(result.files.filter((file) => /^docs\/.*\.md$/.test(file))).toEqual([]);
-      expect(result.files).toContain('docs/index.json');
+  describe('the logbook', () => {
+    const day = (text: string) =>
+      `${JSON.stringify({ schema_version: 1, date: '2026-03-01', entries: [{ text }] })}\n`;
+    const PATH = 'data/telemetry/logbook/2026-03-01.json';
+
+    it('publishes the log for a voyage day, and not for a day with no voyage', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), {
+        logbook: new Map([
+          ['2026-03-01', day('Departed')],
+          ['2026-02-20', day('At the dock')],
+        ]),
+      });
+      expect(fake.files.get(PATH)).toContain('Departed');
+      expect(fake.files.has('data/telemetry/logbook/2026-02-20.json')).toBe(false);
+    });
+
+    it('costs nothing while a day is unchanged, and republishes an edit', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      const second = await publisher.runCycle(tree(), {
+        logbook: new Map([['2026-03-01', day('Departed')]]),
+      });
+      expect(second.files).not.toContain(PATH);
+
+      const third = await publisher.runCycle(tree(), {
+        logbook: new Map([['2026-03-01', day('Departed, then reefed')]]),
+      });
+      expect(third.files).toContain(PATH);
+      expect(fake.files.get(PATH)).toContain('reefed');
+    });
+
+    it('takes the log down when publishing is off, and leaves it when there is no logbook', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+
+      // No logbook on the server this cycle: nothing to say, so nothing changes.
+      await publisher.runCycle(tree(), { logbook: null });
+      expect(fake.files.has(PATH)).toBe(true);
+
+      // Switched off: an empty map, and the published day goes.
+      await publisher.runCycle(tree(), { logbook: new Map() });
+      expect(fake.files.has(PATH)).toBe(false);
+      expect((await store.readState()).logbook).toEqual({});
+    });
+
+    it('survives a published day deleted by hand on GitHub', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      fake.deleteFile(PATH);
+      // Deleting a path the tree does not have is a 422 for the whole commit.
+      await expect(publisher.runCycle(tree(), { logbook: new Map() })).resolves.toBeDefined();
+      expect((await store.readState()).logbook).toEqual({});
+    });
+
+    it('goes with its voyage when the voyage is pruned', async () => {
+      const publisher = makePublisher();
+      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
+      // Today is never pruned, so prune it from tomorrow.
+      const tomorrow = makePublisher({}, '2026-03-02T20:00:00Z');
+      await tomorrow.pruneTracks({ date: '2026-03-01' });
+      expect(fake.files.has(PATH)).toBe(false);
+      expect((await store.readState()).logbook).toEqual({});
+
+      // A day removed by hand stays removed, logbook and all.
+      await tomorrow.runCycle(tree({ timestamp: '2026-03-02T20:00:00Z' }), {
+        logbook: new Map([['2026-03-01', day('Departed')]]),
+      });
+      expect(fake.files.has(PATH)).toBe(false);
     });
   });
 
@@ -961,31 +917,6 @@ describe('Publisher', () => {
     });
   });
 
-  it('builds the docs index from the published Markdown, skipping drafts', async () => {
-    const publisher = makePublisher();
-    await publisher.runCycle(tree());
-    const index = JSON.parse(fake.files.get('docs/index.json')!);
-    expect(index.docs.map((entry: any) => entry.slug)).toEqual(['mob-procedure']);
-    expect(index.docs[0].category).toBe('Operations');
-    expect(index.docs[0].description).toBe('Stop the boat.');
-  });
-
-  it('rebuilds the docs index when a document changes, and not otherwise', async () => {
-    const publisher = makePublisher();
-    await publisher.runCycle(tree());
-    const second = await publisher.runCycle(tree());
-    expect(second.files).not.toContain('docs/index.json');
-
-    fake.commitFile('docs/anchoring.md', '# Anchoring\n\nDrop it.\n');
-    const third = await publisher.runCycle(tree());
-    expect(third.files).toContain('docs/index.json');
-    const index = JSON.parse(fake.files.get('docs/index.json')!);
-    expect(index.docs.map((entry: any) => entry.slug).sort()).toEqual([
-      'anchoring',
-      'mob-procedure',
-    ]);
-  });
-
   it('seeds its rolling state from the repository after a reinstall', async () => {
     // Without this, the first commit after a reinstall truncates the day's
     // track back to a single point.
@@ -1066,7 +997,6 @@ describe('cycle accounting', () => {
       config: makeConfig(config),
       identity: { name: 'S.V.Mermug', mmsi: '338543654' },
       siteDir: SITE_DIR,
-      seedDir: SEED_DIR,
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date('2026-03-01T20:00:00Z'),

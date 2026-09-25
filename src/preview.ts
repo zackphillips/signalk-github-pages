@@ -17,6 +17,7 @@
  * where they can be and simply missing where they cannot. The frontend already
  * isolates a panel that fails to load, which is what makes that acceptable.
  */
+import { logbookPath } from './logbook';
 import type { Passage } from './course';
 import type { PluginConfig } from './config';
 import { groupPointsByDay, renderGpxDocument, TRACKS_INDEX_SCHEMA_VERSION } from './gpx';
@@ -52,6 +53,11 @@ export interface PreviewInput {
    * here: the console must not be able to make the boat call the Course API.
    */
   passage?: Passage | null;
+  /**
+   * The logbook days the last cycle rendered, by local day. From the cycle
+   * rather than read here, for the same reason as the passage.
+   */
+  logbook?: Map<string, string> | null;
 }
 
 /**
@@ -138,6 +144,7 @@ export async function renderPreviewData(
   // call, and the console must not be able to make the boat do work.
   files.set('data/vessel/site.json', renderSiteConfig(config, merged, input.passage ?? null));
   if (input.polars) files.set('data/vessel/polars.csv', input.polars);
+  for (const [day, content] of input.logbook ?? []) files.set(logbookPath(day), content);
 
   return files;
 }

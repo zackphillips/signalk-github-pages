@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "date": "2026-03-01",
+  "entries": [
+    {
+      "datetime": "2026-03-01T18:02:00.000Z",
+      "category": "navigation",
+      "origin": "auto",
+      "text": "Crew changed to Zack, Ronan",
+      "crewNames": [
+        "Zack",
+        "Ronan"
+      ],
+      "skipperName": "Zack"
+    },
+    {
+      "datetime": "2026-03-01T18:05:00.000Z",
+      "category": "navigation",
+      "origin": "auto",
+      "text": "Started trip",
+      "heading": 95,
+      "speed": {
+        "sog": 3.1
+      },
+      "barometer": 1017.4,
+      "wind": {
+        "speed": 9.2,
+        "direction": 265
+      },
+      "engine": {
+        "hours": 1204.5
+      },
+      "crewNames": [
+        "Zack",
+        "Ronan"
+      ],
+      "skipperName": "Zack"
+    },
+    {
+      "datetime": "2026-03-01T18:40:00.000Z",
+      "category": "navigation",
+      "origin": "manual",
+      "text": "Tucked a reef in off Anita Rock. Ronan on the jib sheet.",
+      "author": "zack",
+      "speed": {
+        "sog": 6.2,
+        "stw": 5.9
+      },
+      "wind": {
+        "speed": 16.1,
+        "direction": 270
+      },
+      "crewNames": [
+        "Zack",
+        "Ronan"
+      ],
+      "skipperName": "Zack"
+    },
+    {
+      "datetime": "2026-03-01T19:00:00.000Z",
+      "category": "navigation",
+      "origin": "auto",
+      "text": "Automatic hourly log entry",
+      "log": 5.2,
+      "heading": 280,
+      "course": 282,
+      "speed": {
+        "sog": 6.8,
+        "stw": 6.4
+      },
+      "barometer": 1016.9,
+      "wind": {
+        "speed": 17.4,
+        "direction": 272
+      },
+      "observations": {
+        "seaState": 3
+      },
+      "crewNames": [
+        "Zack",
+        "Ronan"
+      ],
+      "skipperName": "Zack"
+    },
+    {
+      "datetime": "2026-03-01T20:00:00.000Z",
+      "category": "navigation",
+      "origin": "auto",
+      "text": "Stopped trip",
+      "end": true,
+      "speed": {
+        "sog": 0.4
+      },
+      "barometer": 1016.5,
+      "wind": {
+        "speed": 12,
+        "direction": 268
+      },
+      "engine": {
+        "hours": 1205.2
+      },
+      "crewNames": [
+        "Zack",
+        "Ronan"
+      ],
+      "skipperName": "Zack"
+    }
+  ]
+}

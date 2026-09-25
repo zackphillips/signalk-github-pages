@@ -52,3 +52,11 @@ main map and on each voyage's map.
 > A zone missing its radius is a hard configuration error, not a warning. A
 > half-entered zone hides nothing while looking like it does, and the failure
 > mode is a published position someone believed was redacted.
+
+## The logbook
+
+Logbook entries from signalk-logbook carry the boat's position and the active
+waypoint's. Neither is published: each entry is rebuilt from a fixed list of
+fields that includes no position, and only days on the voyage list are
+published, so notes written at the dock stay on the boat. See
+[The logbook](site.md#the-logbook).

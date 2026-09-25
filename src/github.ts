@@ -280,21 +280,7 @@ export class GitHubClient {
     };
   }
 
-  /** Committer date of the newest commit touching a path, or null. */
-  async getLastCommitDate(path: string): Promise<string | null> {
-    try {
-      const { data } = await this.request<Array<{ commit: { committer?: { date?: string } } }>>(
-        'GET',
-        `/repos/${this.repo}/commits?path=${encodeURIComponent(path)}&sha=${encodeURIComponent(this.branch)}&per_page=1`,
-      );
-      return data?.[0]?.commit?.committer?.date ?? null;
-    } catch (error) {
-      if (error instanceof GitHubError && error.status === 404) return null;
-      throw error;
-    }
-  }
-
-  /** Raw file contents by blob SHA (used to read docs without a checkout). */
+  /** Raw file contents by blob SHA (used to read GPX files without a checkout). */
   async getBlobText(sha: string): Promise<string> {
     const { data } = await this.request<{ content: string; encoding: string }>(
       'GET',

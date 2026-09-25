@@ -58,6 +58,22 @@ export class FakeGitHub {
     this.treeEtag = `W/"tree-${this.etagCounter}"`;
   }
 
+  /** Delete a file the way a human on GitHub would. */
+  deleteFile(path: string): void {
+    this.files.delete(path);
+    const treeSha = sha(`tree-${this.commits.length}-rm-${path}`);
+    this.trees.set(treeSha, new Map(this.files));
+    this.head = sha(`commit-${this.commits.length}-rm-${path}`);
+    this.commits.push({
+      sha: this.head,
+      tree: treeSha,
+      message: `Delete ${path}`,
+      parents: [this.commits[this.commits.length - 1]!.sha],
+      date: new Date().toISOString(),
+    });
+    this.bumpEtag();
+  }
+
   /** Write a file the way a human editing on GitHub would. */
   commitFile(path: string, contents: string): void {
     this.files.set(path, contents);
@@ -110,8 +126,14 @@ export class FakeGitHub {
         if (!base) return json(422, { message: 'base_tree not found' });
         const next = new Map(base);
         for (const entry of body.tree) {
-          // A null sha is a deletion, which is how voyages are pruned.
-          if (entry.sha === null) next.delete(entry.path);
+          // A null sha is a deletion, which is how voyages are pruned. GitHub
+          // rejects the whole tree when one names a path the base does not have.
+          if (entry.sha === null) {
+            if (!next.has(entry.path)) {
+              return json(422, { message: `GitRPC::BadObjectState: ${entry.path} is not in the tree` });
+            }
+            next.delete(entry.path);
+          }
           else if (entry.sha) next.set(entry.path, `base64:${this.blobs.get(entry.sha) ?? ''}`);
           else next.set(entry.path, entry.content);
         }

@@ -19,23 +19,6 @@ import {
   type NotificationEvent,
 } from './notifications';
 import type { HistoryResult } from './history';
-import {
-  buildDocsIndex,
-  DOCS_INDEX_PATH,
-  docsIndexChanged,
-  isPublishedDoc,
-  renderDocsIndex,
-  type DocSource,
-} from './docsIndex';
-import {
-  assertDocsPath,
-  insertMaintenanceEntry,
-  loadDocsSeed,
-  MAINTENANCE_LOG_PATH,
-  renderMaintenanceLog,
-  type MaintenanceEntry,
-  type SeedContext,
-} from './docsSeed';
 import { frontendOptions, loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
@@ -75,6 +58,7 @@ import {
   type TrackMeta,
 } from './gpx';
 import { POLARS_PATH } from './polars';
+import { logbookPath } from './logbook';
 import {
   mergeVesselIdentity,
   readVesselDetails,
@@ -147,6 +131,14 @@ export interface CycleInput {
   notificationEdges?: NotificationEvent[];
   /** True while a recorder is running, which is what makes the counts real. */
   recordingNotifications?: boolean;
+  /**
+   * Every logbook day, rendered, keyed by local day — read from
+   * signalk-logbook's files in `index.ts`, so this module does no file
+   * reading of another plugin's. Null or absent when there is no logbook on
+   * this server, which leaves whatever is published alone. An empty map
+   * means publish none, and takes down what was published.
+   */
+  logbook?: Map<string, string> | null;
 }
 
 export interface CycleResult {
@@ -196,66 +188,10 @@ export interface PublisherDeps {
   identity: VesselIdentity;
   /** Directory holding the bundled frontend (`site/`). */
   siteDir: string;
-  /** Directory holding the starter documents (`seed/`). */
-  seedDir: string;
   /** Plugin version, used to decide when the frontend needs republishing. */
   version: string;
   log: (message: string) => void;
   now?: () => Date;
-}
-
-/** What `docs/` holds, as the console asks before it offers to write anything. */
-export interface DocsStatus {
-  /** True once the repository has at least one published document. */
-  initialized: boolean;
-  documents: number;
-  documentPaths: string[];
-  /**
-   * Documents that are not part of the starter set.
-   *
-   * This is the count that decides whether initializing is still on offer. A
-   * maintenance log written from the console is a document, but it is not
-   * evidence that the boat has docs of its own — and counting it as such
-   * would lock the starter set out of any repository where somebody logged an
-   * oil change before pressing the button.
-   */
-  ownDocuments: number;
-  /** Starter files not in the repository. */
-  missing: string[];
-  /** There is something to write, and nothing of the owner's in the way. */
-  canInitialize: boolean;
-  maintenanceLog: { path: string; exists: boolean };
-  /** The listing hit GitHub's 100k cap, so absence proves nothing. */
-  truncated: boolean;
-}
-
-export interface DocsInitResult {
-  created: string[];
-  /** Starter files that were already there and were left alone. */
-  skipped: string[];
-  commitSha?: string;
-  status: DocsStatus;
-}
-
-export interface MaintenanceResult {
-  path: string;
-  created: boolean;
-  commitSha?: string;
-  entry: MaintenanceEntry;
-}
-
-/**
- * The repository already has documents.
- *
- * Its own class because it is the answer to a question, not a failure: the
- * console turns it into "already initialized" rather than into an error the
- * user is meant to do something about.
- */
-export class DocsExistError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'DocsExistError';
-  }
 }
 
 export class Publisher {
@@ -407,6 +343,9 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now, input)));
 
+    const logbook = await this.logbookFiles(state, input.logbook);
+    files.push(...logbook.files);
+
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
@@ -418,7 +357,7 @@ export class Publisher {
       state.frontendVersion,
       identity,
     );
-    files.push(...frontend.files);    files.push(...(await this.docsIndexFiles()));
+    files.push(...frontend.files);
 
     // One entry per path, the last one written winning: the audit and the
     // track rebuild can both produce today's GPX, and the rebuild is newer.
@@ -435,7 +374,7 @@ export class Publisher {
       audit.deletions.filter((path) => !byPath.has(path)).map((path) => ({ path })),
       this.manifestOptions(polars),
     ).owned.map((file) => file.path);
-    const deletions = [...retiring, ...auditDeletions];
+    const deletions = [...retiring, ...auditDeletions, ...logbook.deletions];
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -462,6 +401,9 @@ export class Publisher {
       // must leave the work to be retried, not recorded as done.
       ...(result && retiring.length ? { retired: [...(state.retired ?? []), ...retiring] } : {}),
       ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
+      ...(logbook.next && (result || (!logbook.files.length && !logbook.deletions.length))
+        ? { logbook: logbook.next }
+        : {}),
       // A cycle with nothing to commit has nothing the audit needed either.
       ...(audit.fingerprint && (result || (!audit.files.length && !auditDeletions.length))
         ? { privacyAudit: audit.fingerprint }
@@ -648,8 +590,13 @@ export class Publisher {
     // Deletions go through the same ownership check as writes: the manifest is
     // what stops a bug here reaching a path that belongs to the user, and a
     // deletion is the one that could not be undone by the next cycle.
+    // A pruned voyage takes its logbook day with it, in the same commit.
+    const before = await store.readState();
+    const logbookDays = plan.remove
+      .map((track) => track.date)
+      .filter((day) => before.logbook?.[day] !== undefined);
     const { owned, rejected } = partitionOwned(
-      plan.paths.map((path) => ({ path })),
+      [...plan.paths, ...logbookDays.map(logbookPath)].map((path) => ({ path })),
       this.manifestOptions(''),
     );
     for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
@@ -676,6 +623,13 @@ export class Publisher {
     await store.writeText('tracks_index.json', index);
     const removed = new Set(plan.remove.map((track) => track.date));
     const state = await store.readState();
+    if (logbookDays.length && state.logbook) {
+      await store.mergeState({
+        logbook: Object.fromEntries(
+          Object.entries(state.logbook).filter(([day]) => !removed.has(day)),
+        ),
+      });
+    }
     if (request.date) {
       // One day, removed by hand: it stays gone. Yesterday's points are still
       // in the position index for most of today, and letting the day "return"
@@ -690,159 +644,6 @@ export class Publisher {
     }
     log(`Pruned ${description}; ${plan.keep.length} left on the site.`);
     return { plan, commitSha: result?.commitSha };
-  }
-
-  /**
-   * What the repository's `docs/` looks like right now.
-   *
-   * Read straight from the branch tree with no ETag: this answers a person
-   * pressing a button, and the one thing it must never do is say "no
-   * documents" from a cached listing and let the next click write over a
-   * repository that has forty.
-   */
-  async docsStatus(): Promise<DocsStatus> {
-    const { client, seedDir } = this.deps;
-    const listing = await client.listTree();
-    const blobs = listing.paths.filter((node) => node.type === 'blob');
-    const present = new Set(blobs.map((node) => node.path));
-    const documents = blobs.filter((node) => isPublishedDoc(node.path)).map((node) => node.path);
-    const seeds = await loadDocsSeed(seedDir, this.seedContext());
-    const seeded = new Set([...seeds.map((file) => file.path), MAINTENANCE_LOG_PATH]);
-    const missing = seeds.map((file) => file.path).filter((path) => !present.has(path));
-    const ownDocuments = documents.filter((path) => !seeded.has(path)).length;
-    return {
-      initialized: documents.length > 0,
-      documents: documents.length,
-      documentPaths: documents.sort(),
-      ownDocuments,
-      missing,
-      canInitialize: missing.length > 0 && ownDocuments === 0 && !listing.truncated,
-      maintenanceLog: {
-        path: MAINTENANCE_LOG_PATH,
-        exists: present.has(MAINTENANCE_LOG_PATH),
-      },
-      truncated: listing.truncated,
-    };
-  }
-
-  /**
-   * Write the starter documents, once, into a repository that has none.
-   *
-   * Two guards, and they answer two different questions. "Does the repository
-   * have a document of its own" decides whether initializing is the right
-   * thing to do — a boat with its own docs does not want this plugin's
-   * opinion about how to write them. "Does this exact path exist" decides
-   * what goes in the commit, so a half-finished starter set can be completed
-   * without the other half being rewritten.
-   *
-   * The starter files and the maintenance log are not documents "of its own":
-   * an entry logged from the console before anyone pressed this button would
-   * otherwise count as the boat's docs and lock the starter set out for
-   * good.
-   *
-   * A truncated tree listing refuses the whole thing. GitHub caps a listing
-   * at 100k entries, and past that cap absence proves nothing — which is the
-   * one condition under which "there are no documents" could be a lie.
-   */
-  async initializeDocs(): Promise<DocsInitResult> {
-    const { client, seedDir, log } = this.deps;
-    const status = await this.docsStatus();
-    if (status.truncated) {
-      throw new Error(
-        'The repository tree is too large to list in full, so the plugin cannot ' +
-          'tell whether documents already exist. Add the starter files by hand.',
-      );
-    }
-    if (status.ownDocuments > 0) {
-      throw new DocsExistError(
-        `${status.ownDocuments} document(s) are already in docs/; nothing was written.`,
-      );
-    }
-
-    const seeds = await loadDocsSeed(seedDir, this.seedContext());
-    const missing = new Set(status.missing);
-    const create = seeds.filter((file) => missing.has(file.path));
-    const skipped = seeds.filter((file) => !missing.has(file.path)).map((file) => file.path);
-    for (const file of create) assertDocsPath(file.path);
-
-    if (!create.length) {
-      log('Ship\'s docs: every starter file is already in the repository.');
-      return { created: [], skipped, status };
-    }
-
-    const result = await publishFiles(
-      client,
-      create,
-      'Add the ship\'s docs starter set',
-    );
-    log(
-      `Ship's docs initialized: ${create.map((file) => file.path).join(', ')}` +
-        (skipped.length ? ` (${skipped.length} already present)` : '') +
-        (result ? ` in ${result.commitSha.slice(0, 7)}.` : '.'),
-    );
-    return {
-      created: create.map((file) => file.path),
-      skipped,
-      commitSha: result?.commitSha,
-      status: await this.docsStatus(),
-    };
-  }
-
-  /**
-   * Add one entry to the top of the maintenance log.
-   *
-   * The published copy is read back first and the entry spliced into it: the
-   * file is edited from a phone between publishes, and the boat's copy of it
-   * is never authoritative. The log is not cached in the data directory at all —
-   * there is no local copy to go stale.
-   *
-   * A lost ref race retries inside `publishFiles` with the same content. That
-   * is correct for a telemetry file and slightly wrong here: an entry someone
-   * committed by hand in the same second would be re-read on the retry and
-   * this entry composed against the older text. The window is one HTTP
-   * round trip on a file two people almost never write at once, and the
-   * failure mode is a duplicate heading rather than lost prose.
-   */
-  async addMaintenanceEntry(entry: MaintenanceEntry): Promise<MaintenanceResult> {
-    const { client, log } = this.deps;
-    assertDocsPath(MAINTENANCE_LOG_PATH);
-    const existing = await client.getFile(MAINTENANCE_LOG_PATH);
-    const contents =
-      existing === null
-        ? renderMaintenanceLog(entry, this.seedContext())
-        : insertMaintenanceEntry(existing, entry);
-
-    const result = await publishFiles(
-      client,
-      [{ path: MAINTENANCE_LOG_PATH, content: contents }],
-      `Maintenance ${entry.date}: ${entry.title}`,
-    );
-    log(
-      `Maintenance log: ${existing === null ? 'created' : 'added to'} ` +
-        `${MAINTENANCE_LOG_PATH} — ${entry.date}: ${entry.title}` +
-        (result ? ` (${result.commitSha.slice(0, 7)}).` : '.'),
-    );
-    return {
-      path: MAINTENANCE_LOG_PATH,
-      created: existing === null,
-      commitSha: result?.commitSha,
-      entry,
-    };
-  }
-
-  /** The adopter's values, substituted into the starter documents. */
-  private seedContext(): SeedContext {
-    const { config, identity } = this.deps;
-    const signalk = identity.signalk ?? {};
-    const host = signalk.host ?? 'your-signalk-server';
-    const port = signalk.port ?? 3000;
-    const protocol = signalk.protocol ?? 'http';
-    return {
-      vesselName: identity.name || '',
-      repo: config.github.repo,
-      branch: config.github.branch,
-      consoleUrl: `${protocol}://${host}:${port}/signalk-github-pages/`,
-    };
   }
 
   private commitMessage(navState: string | null, now: Date): string {
@@ -1010,7 +811,7 @@ export class Publisher {
     );
     for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
     if (owned.length) {
-      log(`Removing ${owned.map((file) => file.path).join(', ')}: replaced by site.json.`);
+      log(`Removing ${owned.map((file) => file.path).join(', ')}: no longer published by this plugin.`);
     }
     return owned.map((file) => file.path);
   }
@@ -1039,6 +840,58 @@ export class Publisher {
         : `Site configuration changed; rewriting ${SITE_CONFIG_PATH}.`,
     );
     return [{ path: SITE_CONFIG_PATH, content: contents }];
+  }
+
+  /**
+   * The logbook days to write and to delete this cycle.
+   *
+   * A day is published only while it is on the voyage list. The site shows
+   * the log on a voyage's card and nowhere else, so a logbook day with no
+   * voyage — a day at the dock, whose fixes the privacy zones dropped — would
+   * be a file nothing reads, carrying notes from inside a zone. The same rule
+   * is what makes a prune take the log down with the track.
+   *
+   * What landed is tracked by hash in state rather than re-read from the
+   * repository. A deletion is checked against the repository first all the
+   * same: a file removed by hand on GitHub would otherwise fail every commit
+   * with a 422 from here on.
+   */
+  private async logbookFiles(
+    state: PersistedState,
+    logbook: Map<string, string> | null | undefined,
+  ): Promise<{ files: PublishFile[]; deletions: string[]; next?: Record<string, string> }> {
+    if (!logbook) return { files: [], deletions: [] };
+    const { store, client, log } = this.deps;
+
+    const voyages = new Set(
+      parseTracksIndex(await store.readText('tracks_index.json')).map((track) => track.date),
+    );
+    const removed = new Set(state.removedDays ?? []);
+    const published = state.logbook ?? {};
+    const next: Record<string, string> = {};
+    const files: PublishFile[] = [];
+    for (const [day, content] of logbook) {
+      if (!voyages.has(day) || removed.has(day)) continue;
+      const hash = createHash('sha256').update(content).digest('hex');
+      next[day] = hash;
+      if (published[day] !== hash) files.push({ path: logbookPath(day), content });
+    }
+
+    const deletions: string[] = [];
+    for (const day of Object.keys(published)) {
+      if (day in next) continue;
+      if ((await client.getFile(logbookPath(day)).catch(() => null)) !== null) {
+        deletions.push(logbookPath(day));
+      }
+    }
+    if (files.length || deletions.length) {
+      log(
+        `Logbook: ${files.length} day(s) to publish` +
+          (deletions.length ? `, ${deletions.length} to remove` : '') +
+          '.',
+      );
+    }
+    return { files, deletions, next };
   }
 
   /**
@@ -1169,53 +1022,5 @@ export class Publisher {
   async forceFrontendRepublish(): Promise<void> {
     await this.deps.store.mergeState({ frontendVersion: undefined });
     this.deps.log('Frontend marked for republishing: the next cycle rewrites every site file.');
-  }
-
-  /**
-   * Rebuild `docs/index.json` when the docs tree changes.
-   *
-   * The listing is a conditional request: with the stored ETag, an unchanged
-   * tree costs nothing against the rate limit, so this can run every cycle.
-   */
-  private async docsIndexFiles(): Promise<PublishFile[]> {
-    const { client, store, log } = this.deps;
-
-    const state = await store.readState();
-    const listing = await client.listTree(state.docsEtag);
-    if (!listing.changed) return [];
-
-    const cache = state.docs ?? {};
-    const nextCache: Record<string, { sha: string; updated: string }> = {};
-    const sources: DocSource[] = [];
-
-    for (const node of listing.paths) {
-      if (node.type !== 'blob' || !isPublishedDoc(node.path)) continue;
-      const cached = cache[node.path];
-      let text: string | null = null;
-      if (cached?.sha === node.sha) {
-        text = await store.readText(`docs-cache/${node.path.replace(/\//g, '__')}`);
-      }
-      if (text === null) {
-        text = await client.getBlobText(node.sha);
-        await store.writeText(`docs-cache/${node.path.replace(/\//g, '__')}`, text);
-      }
-      const updated =
-        cached?.sha === node.sha && cached.updated
-          ? cached.updated
-          : ((await client.getLastCommitDate(node.path).catch(() => null)) ??
-            this.now().toISOString());
-      nextCache[node.path] = { sha: node.sha, updated };
-      sources.push({ path: node.path, text, updated });
-    }
-
-    const index = buildDocsIndex(sources, this.now().toISOString());
-    const previous = await store.readText('docs-index.json');
-    await store.mergeState({ docsEtag: listing.etag, docs: nextCache });
-    if (!docsIndexChanged(previous, index)) return [];
-
-    const rendered = renderDocsIndex(index);
-    await store.writeText('docs-index.json', rendered);
-    log(`Rebuilt ${DOCS_INDEX_PATH} (${index.docs.length} documents).`);
-    return [{ path: DOCS_INDEX_PATH, content: rendered }];
   }
 }

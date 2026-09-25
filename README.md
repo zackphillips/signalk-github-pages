@@ -3,7 +3,7 @@
 <p align="center">
   <em>Your boat publishes its own website.</em><br>
   <code>signalk-github-pages</code>: a Signal K plugin that turns live vessel data into a static GitHub Pages site —
-  position, tracks, instruments and the ship's docs — with no server ashore
+  position, tracks, instruments and conditions — with no server ashore
   and no git checkout on board.
 </p>
 
@@ -28,11 +28,11 @@ does not go down when the hotspot does, and costs nothing.
 │  environment.*     ├─────────────▶│  blobs → tree    ├───────▶│  your-site   │
 │  electrical.*      │    plugin    │  → commit → ref  │        │  .github.io  │
 └─────────┬──────────┘              └──────────────────┘        └──────────────┘
-          │                                   ▲
-          │ navigation.state                  │ docs/*.md edited
-          │ sets the cadence                  │ from a phone, any time
-          ▼                                   │
-   plugin data dir ───────────────────────────┘
+          │
+          │ navigation.state
+          │ sets the cadence
+          ▼
+   plugin data dir
    (rolling state)
 ```
 
@@ -50,10 +50,11 @@ live `HEAD`.
 |---|---|
 | **Where the boat is** | Live position on a map, redacted inside your [privacy zones](#privacy) |
 | **Where it has been** | A track per local calendar day, as GPX, listed on a Voyages tab. Each voyage has its own link to share |
+| **What happened** | Each voyage's logbook from [signalk-logbook](https://www.npmjs.com/package/@meri-imperiumi/signalk-logbook): notes written at sea, who was aboard, and the hourly conditions |
 | **Where it is going** | A passage banner from the waypoint or route active on the plotter, gone on arrival |
 | **How it is doing** | Instruments colored by the zones set on the server, sparklines from your history provider, active notifications and how often each has fired |
 | **Conditions** | Tides from the nearest NOAA station and a 48-hour wind, swell and temperature forecast |
-| **The ship's docs** | Markdown in `docs/`, edited from the GitHub web UI on a phone |
+| **Your own links** | Buttons to anything else the boat has online, from `site.customLinks` |
 
 **How it behaves**
 
@@ -169,6 +170,9 @@ anyone who has the URL.
 - **Notifications are free text** written by whichever plugin raised them,
   and they are published verbatim. `notifications.publish` turns them off,
   and `paths.hide` drops any path or subtree.
+- **Logbook entries are free text too,** published verbatim, with the crew's
+  names unless `logbook.crewNames` is off. Their positions are never
+  published.
 
 Details are in [Privacy](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/privacy.md).
 
@@ -179,8 +183,8 @@ Details are in [Privacy](https://github.com/zackphillips/signalk-github-pages/bl
 | [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md) | Every field, and the five overrides |
 | [Track and instruments](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/instruments.md) | Track thinning, the history provider, sparkline windows, instrument paths and bandwidth |
 | [Privacy](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/privacy.md) | Privacy zones in full |
-| [The site](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/site.md) | Units and alarm zones, notifications, branding, what is read from Signal K, the passage banner, tides, polars |
-| [The repository and the console](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/repository.md) | What the plugin writes, the on-boat console, the ship's docs |
+| [The site](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/site.md) | Units and alarm zones, notifications, the logbook, branding, what is read from Signal K, the passage banner, tides, polars |
+| [The repository and the console](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/repository.md) | What the plugin writes, and the on-boat console |
 | [Troubleshooting](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/troubleshooting.md) | The cycle log, "Data unavailable", a plugin missing from the list |
 | [Upgrading](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/upgrading.md) | Settings that moved or went away |
 

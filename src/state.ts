@@ -16,10 +16,6 @@ import path from 'node:path';
 export interface PersistedState {
   /** Frontend version last written to the repository. */
   frontendVersion?: string;
-  /** ETag of the last docs tree listing, for conditional requests. */
-  docsEtag?: string;
-  /** Blob SHA and last-changed date per document, so `updated` stays stable. */
-  docs?: Record<string, { sha: string; updated: string }>;
   /** Local days whose GPX file is already published. */
   publishedDays?: string[];
   lastCommit?: string;
@@ -45,6 +41,12 @@ export interface PersistedState {
    * person asked for that day to go, not for it to come back truncated.
    */
   removedDays?: string[];
+  /**
+   * The logbook days in the repository, each with a hash of its published
+   * content, so an unchanged day costs nothing and a day that left the
+   * voyage list can be deleted. Recorded only after the commit landed.
+   */
+  logbook?: Record<string, string>;
 }
 
 export class StateStore {

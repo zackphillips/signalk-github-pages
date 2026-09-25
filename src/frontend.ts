@@ -18,7 +18,7 @@
  * updating. Old code against new data is what "Data unavailable" on a phone
  * means, with a perfectly good snapshot sitting in the panel underneath it.
  *
- * `index.html`, `docs.html` and `manifest.json` carry the vessel's identity:
+ * `index.html` and `manifest.json` carry the vessel's identity:
  * the social-preview tags, the home-screen name, the icons and the paths the
  * site is served under. Those cannot be filled in by the page at runtime the
  * way the visible name is — a link pasted into a group chat is unfurled by a
@@ -154,57 +154,6 @@ export function substituteTokens(
 }
 
 /**
- * Rewrite the per-adopter values in `constants.js`.
- *
- * A string replacement rather than a generated config file: the frontend is
- * a classic-script page where load order already matters, and the fewer moving
- * parts between `constants.js` and `app.js`, the better.
- */
-export function renderConstants(source: string, options: FrontendOptions): string {
-  let output = source;
-  if (options.repo) {
-    output = replaceOrThrow(
-      output,
-      /(GITHUB_REPO:\s*)'[^']*'/,
-      `$1'${options.repo.replace(/'/g, "\\'")}'`,
-      'GITHUB_REPO',
-    );
-  }
-  if (options.branch) {
-    output = replaceOrThrow(
-      output,
-      /(GITHUB_DEFAULT_BRANCH:\s*)'[^']*'/,
-      `$1'${options.branch.replace(/'/g, "\\'")}'`,
-      'GITHUB_DEFAULT_BRANCH',
-    );
-  }
-  return output;
-}
-
-/**
- * Substitute, or say which setting did not take.
- *
- * These are regexes over a file a human edits, and the shipped values are
- * placeholders. A pattern that stops matching after a reformat used to fail
- * open: the published site kept the placeholder, and every adopter's "edit on
- * GitHub" link pointed at the repository this plugin was written in.
- */
-function replaceOrThrow(
-  source: string,
-  pattern: RegExp,
-  replacement: string,
-  field: string,
-): string {
-  if (!pattern.test(source)) {
-    throw new Error(
-      `site/assets/constants.js has no ${field} line matching ${pattern}; the ` +
-        'frontend cannot be published without substituting it.',
-    );
-  }
-  return source.replace(pattern, replacement);
-}
-
-/**
  * Name the service worker's shell cache after the release.
  *
  * A new name is a new cache: the worker's activate handler deletes every cache
@@ -231,7 +180,6 @@ async function walk(dir: string, base = dir): Promise<string[]> {
 /** Files whose `{{TOKEN}}`s are filled in, and how their values are escaped. */
 const TOKENIZED: Record<string, (value: string) => string> = {
   'index.html': escapeHtml,
-  'docs.html': escapeHtml,
   'manifest.json': escapeJson,
 };
 
@@ -241,7 +189,6 @@ export function template(
   text: string,
   options: FrontendOptions,
 ): string {
-  if (repoPath === 'assets/constants.js') return renderConstants(text, options);
   if (repoPath === 'sw.js') return renderServiceWorker(text, options);
   const escape = TOKENIZED[repoPath];
   if (escape) return substituteTokens(text, tokenValues(options), escape);

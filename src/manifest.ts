@@ -1,7 +1,7 @@
 /**
  * Ownership manifest — the allowlist of paths this plugin may write.
  *
- * The published repository is shared with its owner: the docs are theirs, the
+ * The published repository is shared with its owner: `docs/` is theirs, the
  * logo is theirs, `assets/custom.css` is theirs, and so are the polars unless
  * the server has an active polar to publish. The plugin writes a manifest
  * listing every path it manages and refuses to put anything outside that list
@@ -33,16 +33,6 @@ export const MANIFEST_PATH = '.tracker-manifest.json';
 const TELEMETRY_PATTERNS = ['data/telemetry/**', 'data/vessel/site.json'];
 
 /**
- * The docs manifest, rebuilt whenever the docs tree changes.
- *
- * Always owned. It used to be a config switch, for an adopter who built the
- * index with a GitHub Action instead — an Action this repository does not
- * ship. The rebuild is a conditional request, so an unchanged docs tree
- * costs nothing against the rate limit and there is nothing to turn off.
- */
-const DOCS_INDEX_PATH = 'docs/index.json';
-
-/**
  * Paths this plugin used to write and now only removes.
  *
  * `data/vessel/info.yaml` was the site's vessel configuration before
@@ -50,8 +40,18 @@ const DOCS_INDEX_PATH = 'docs/index.json';
  * appear in the published manifest claiming to be maintained — nothing
  * writes it any more. It is here so the one-time deletion that retires it
  * passes the same ownership check every other deletion does.
+ *
+ * `docs.html`, `assets/docs.js` and `docs/index.json` were the ship's docs
+ * reader and its index. The documents under `docs/` were always the owner's
+ * and are never touched; only the reader goes, so the site stops linking to
+ * a page nothing maintains.
  */
-const RETIRED_PATTERNS = ['data/vessel/info.yaml'];
+const RETIRED_PATTERNS = [
+  'data/vessel/info.yaml',
+  'docs.html',
+  'assets/docs.js',
+  'docs/index.json',
+];
 
 /** Retired paths, in the order they should be removed. */
 export const RETIRED_PATHS = [...RETIRED_PATTERNS];
@@ -62,7 +62,6 @@ export const POLARS_PATTERN = 'data/vessel/polars.csv';
 /** Paths written on install and after a version upgrade. Always owned. */
 const FRONTEND_PATTERNS = [
   'index.html',
-  'docs.html',
   'sw.js',
   'manifest.json',
   '.nojekyll',
@@ -73,24 +72,8 @@ const FRONTEND_PATTERNS = [
 /** Never written, even though it sits under an owned directory. */
 export const USER_OWNED_EXCEPTIONS = ['assets/custom.css'];
 
-/**
- * Paths the console may write once, on request, and never again.
- *
- * Seeded is not owned. These are documents: the plugin creates them when a
- * person asks it to and the path does not exist yet, and from that moment
- * they belong to the owner like every other file under `docs/`. No cycle
- * writes them, nothing rewrites them on upgrade, and deleting one is not
- * undone by the next publish. They are listed in the manifest so the answer
- * to "what put this here?" is in the repository rather than in a changelog.
- */
-export const SEEDED_PATTERNS = [
-  'docs/AGENTS.md',
-  'docs/ships-docs.md',
-  'docs/maintenance/log.md',
-];
-
 export function ownedPatterns(options: ManifestOptions): string[] {
-  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS, DOCS_INDEX_PATH];
+  const patterns = [MANIFEST_PATH, ...TELEMETRY_PATTERNS, ...FRONTEND_PATTERNS];
   if (options.publishPolars) patterns.push(POLARS_PATTERN);
   if (options.publishLogo) patterns.push(options.publishLogo);
   if (options.publishIcon) patterns.push(options.publishIcon);
@@ -134,7 +117,7 @@ export function isRemovablePath(path: string, options: ManifestOptions): boolean
  * Drop (and report) any path the plugin does not own.
  *
  * Called on the way into every commit. A bug that starts generating a path
- * outside the manifest gets caught here rather than over a user's docs.
+ * outside the manifest gets caught here rather than over a user's file.
  */
 export function partitionOwned<T extends { path: string }>(
   files: T[],
@@ -163,12 +146,6 @@ export function renderManifest(
         'be overwritten. Everything else in this repository belongs to you.',
       owned: ownedPatterns(options),
       user_owned_exceptions: USER_OWNED_EXCEPTIONS,
-      seeded_note:
-        'Paths listed under "seeded" are created once, from the plugin console, ' +
-        'only when they do not already exist. They are yours after that: nothing ' +
-        'here rewrites or deletes them. The maintenance log is appended to, at ' +
-        'the top, when you add an entry from the console.',
-      seeded: SEEDED_PATTERNS,
     },
     null,
     2,

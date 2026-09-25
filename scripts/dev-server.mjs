@@ -34,7 +34,7 @@ const TOKENS = {
   BASE_PATH: '/',
 };
 
-const TOKENIZED = new Set(['index.html', 'docs.html', 'manifest.json']);
+const TOKENIZED = new Set(['index.html', 'manifest.json']);
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',

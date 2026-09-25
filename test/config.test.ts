@@ -309,6 +309,14 @@ describe('resolveConfig', () => {
     expect(resolved.warnings.join(' ')).toContain('not http:// or https://');
   });
 
+  it('publishes the logbook and the crew names unless told not to', () => {
+    expect(makeConfig().logbook).toEqual({ publish: true, crewNames: true });
+    expect(makeConfig({ logbook: { publish: false, crewNames: false } }).logbook).toEqual({
+      publish: false,
+      crewNames: false,
+    });
+  });
+
   it('ignores a polar table saved while there was an override for one', () => {
     // The polar is Polar Management's. A table typed before the override was
     // removed stays in the saved file and is read by nothing.
