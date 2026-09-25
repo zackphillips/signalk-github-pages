@@ -7,10 +7,11 @@
  * in the published repo is an *output* of this file, written for the frontend
  * to read.
  *
- * Six settings are derived rather than typed: the repository name from the
+ * Five settings are derived rather than typed: the repository name from the
  * owner, the branch, the site address from the repository, the track timezone
- * from the server, the polar table from the Polar Management plugin, and the
- * tide station from the boat's position. Each one has an "Override" checkbox
+ * from the server, and the tide station from the boat's position. The polar
+ * table is not a setting at all: it is Polar Management's, and the console says
+ * which one is being published. Each derived setting has an "Override" checkbox
  * in the Overrides section, and the typed field appears directly beneath it
  * only once that box is ticked — see `shownWhenTicked`. Whether the plugin
  * found a value, and what it was, is written into the checkbox's own
@@ -90,14 +91,6 @@ export interface PluginConfig {
     providerId: string;
     resolutionSeconds: number;
     timeoutMs: number;
-  };
-  /**
-   * The polar table. Unticked, the active polar from Polar Management is
-   * published and `table` is ignored; ticked, `table` is published instead.
-   */
-  polars: {
-    override: boolean;
-    table: string;
   };
   /** How much detail the recorded track keeps. See `track.ts`. */
   track: { detailMeters: number };
@@ -307,22 +300,9 @@ export const PAT_GUIDANCE =
   'tokens. Repository access: Only select repositories, this one. Repository ' +
   'permissions: Contents "Read and write".';
 
-/**
- * The polar override box's help text.
- *
- * `buildConfigSchema` puts what the last cycle actually found on the checkbox
- * above it, where it is readable whether or not the override is ticked.
- */
-export const POLARS_FIELD_DESCRIPTION =
-  'Published instead of the active polar from the Polar Management plugin: first ' +
-  'line the true wind speeds in knots, then one line per true wind angle in ' +
-  'degrees followed by the target boat speeds. Semicolons, commas, tabs or spaces ' +
-  'all work, and # starts a comment. A box you have not typed in yet starts off ' +
-  'as the active polar, if there is one; empty falls back to the server.';
-
-/** What the last cycle found, for the note under the polar field. */
+/** What the last cycle found for the polar table, for the console. */
 export interface PolarStatus {
-  source: 'resource' | 'config' | 'none';
+  source: 'resource' | 'none';
   /** Human summary, e.g. `"mermug-orc" from Polar Management, 18 angle(s)...`. */
   summary: string;
   problems: string[];
@@ -346,10 +326,6 @@ export interface SchemaContext {
    * any cycle has run, which the page says rather than guessing.
    */
   branch?: { name: string; ok: boolean; detail?: string } | null;
-  /** What the last cycle resolved for the polar table. */
-  polar?: PolarStatus | null;
-  /** The active polar rendered as CSV, to start an override off from. */
-  polarCsv?: string;
   /** The station the site would pick from the boat's position right now. */
   tideStation?: NearestTideStation | null;
   /**
@@ -385,7 +361,6 @@ function legacyOverrides(saved: Record<string, any>): Record<string, unknown> {
   const github = saved.github ?? {};
   const site = saved.site ?? {};
   const timezone = saved.timezone ?? {};
-  const polars = saved.polars ?? {};
   const branch = str(github.branch);
   const tide = str(site.tideStationOverride);
   return {
@@ -397,8 +372,6 @@ function legacyOverrides(saved: Record<string, any>): Record<string, unknown> {
     siteUrl: str(site.url),
     overrideTimezone: bool(timezone.override),
     timezone: str(timezone.zone),
-    overridePolar: bool(polars.override),
-    polar: typeof polars.table === 'string' ? polars.table : '',
     overrideTideStation: tide !== '',
     tideStation: tide,
   };
@@ -508,25 +481,21 @@ function annotate(schema: typeof configSchema, flag: string, note: string): void
  * override checkboxes.
  *
  * Signal K calls `plugin.schema()` when the page is opened, so this runs then,
- * not at install: open the page after changing the active polar and it says
- * which one is being published.
+ * not at install: open the page after the boat gets a fix and the tide
+ * station note names the station nearest it.
  *
  * The derived values go in the descriptions rather than into the fields
  * because a description is read-only text the form cannot save back, while a
  * `default` is submitted with everything else the first time the page is
  * saved — which is how the old read-only boxes came to show a value from
- * whenever the config was last written instead of what is true now. The one
- * `default` still set here is the polar CSV, and it sits in the branch that
- * exists only while Override polar is ticked: a starting point for editing,
- * saved only once the override is genuinely on.
+ * whenever the config was last written instead of what is true now.
  *
  * Every override opens with a mark saying whether the plugin found the value
  * it would otherwise use: a check when it did, a warning when it did not, an
  * hourglass when no cycle has run to find out.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, branch, polar, polarCsv, tideStation, historyProviders, saved } =
-    context;
+  const { repoName, siteUrl, branch, tideStation, historyProviders, saved } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
 
   if (saved) carryForwardMovedSettings(schema, saved);
@@ -560,20 +529,6 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
     'overrideTimezone',
     `${FOUND} Found: this server is set to ${serverTimezone()}.`,
   );
-
-  if (!polar) {
-    annotate(schema, 'overridePolar', `${NOT_CHECKED} Not checked yet: no cycle has run.`);
-  } else {
-    const problems = polar.problems.length ? ` ${polar.problems.join(' ')}` : '';
-    annotate(
-      schema,
-      'overridePolar',
-      polar.source === 'none'
-        ? `${NOT_FOUND} Not found: publishing no polar, ${polar.summary}.${problems}`
-        : `${FOUND} Found: publishing ${polar.summary}.${problems}`,
-    );
-  }
-  if (polarCsv) overrideField(schema, 'overridePolar', 'polar').default = polarCsv;
 
   annotate(
     schema,
@@ -614,7 +569,6 @@ const OVERRIDES = [
   { flag: 'overrideBranch', field: 'branch' },
   { flag: 'overrideSiteUrl', field: 'siteUrl' },
   { flag: 'overrideTimezone', field: 'timezone' },
-  { flag: 'overridePolar', field: 'polar' },
   { flag: 'overrideTideStation', field: 'tideStation' },
 ] as const;
 
@@ -632,16 +586,14 @@ export const DEFAULT_BRANCH = 'main';
  * a worse problem than looking inert on an old admin UI: the box was filled
  * from a JSON Schema `default`, the form submits its defaults, and so the
  * derived value of the day was written into the saved config and shown back
- * for ever after. Open the page a month later and the read-only polar box
- * still held the table Polar Management served when the config was last
- * saved — and ticking Override started you off editing that stale copy.
+ * for ever after.
  *
  * A field that is not in the schema is still not dropped from the config: the
- * admin UI leaves form data it cannot see alone, so a typed polar table
- * survives unticking the box and comes back when it is ticked again.
+ * admin UI leaves form data it cannot see alone, so a typed value survives
+ * unticking the box and comes back when it is ticked again.
  *
  * The form appends a dependency's field after every property of the object,
- * so without help all six typed boxes would pile up at the bottom of the
+ * so without help all five typed boxes would pile up at the bottom of the
  * Overrides section under the last checkbox. `ui:order` in `configUiSchema` is
  * what puts each one directly beneath its own box.
  */
@@ -923,12 +875,6 @@ export const configSchema = {
           description: 'The calendar day GPX tracks are grouped by.',
           default: serverTimezone(),
         }),
-        ...shownWhenTicked('overridePolar', 'polar', {
-          type: 'string',
-          title: 'Polar table',
-          description: POLARS_FIELD_DESCRIPTION,
-          default: '',
-        }),
         ...shownWhenTicked('overrideTideStation', 'tideStation', {
           type: 'string',
           title: 'Tide station',
@@ -963,12 +909,6 @@ export const configSchema = {
           description: "Group tracks by a zone other than the server's.",
           default: false,
         },
-        overridePolar: {
-          type: 'boolean',
-          title: 'Override polar',
-          description: 'Publish a table typed here instead of the active polar.',
-          default: false,
-        },
         overrideTideStation: {
           type: 'boolean',
           title: 'Override tide station',
@@ -993,7 +933,6 @@ export const configUiSchema = {
     // not currently have — every typed box while its override is unticked —
     // is skipped by the form, and "*" catches anything added later.
     'ui:order': [...OVERRIDES.flatMap(({ flag, field }) => [flag, field]), '*'],
-    polar: { 'ui:widget': 'textarea', 'ui:options': { rows: 12 } },
   },
 };
 
@@ -1353,17 +1292,6 @@ export function resolveTimezone(overrides: Record<string, unknown>): string {
   return serverTimezone();
 }
 
-/** The polar table override: whether it is on, and what is in the box. */
-export function resolvePolars(overrides: Record<string, unknown>): {
-  override: boolean;
-  table: string;
-} {
-  return {
-    override: bool(overrides.overridePolar),
-    table: typeof overrides.polar === 'string' ? overrides.polar : '',
-  };
-}
-
 /** Cadence in seconds, from the minutes the config page asks for. */
 function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
   const fromMinutes = num(minutes);
@@ -1521,7 +1449,6 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         ],
         entries,
       },
-      polars: resolvePolars(overrides),
       positionRetentionHours: DEFAULT_POSITION_RETENTION_HOURS,
       staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
       history: {

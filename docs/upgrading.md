@@ -25,6 +25,16 @@ that moved or went away.
   it would have excluded exactly the paths it named, so it is dropped instead.
   Every path the boat reports is now logged unless excluded.
 
+## The polar override is gone
+
+`overrides.overridePolar` and `overrides.polar`, and the older
+`polars.override` and `polars.table`, are no longer read. The polar comes only
+from [Polar Management](https://www.npmjs.com/package/signalk-polar-management).
+A boat that had the override ticked publishes the active polar from there
+instead. With no active polar, the plugin stops writing `polars.csv` and leaves
+the last published copy in place, so the chart keeps the table you typed until
+you set a polar in Polar Management.
+
 ## Files the plugin used to write
 
 `data/vessel/info.yaml`, which carried the site configuration and the
