@@ -236,22 +236,11 @@ The read is in-process, so there is no HTTP call and no token. Re-import a
 polar or switch which one is active and the change reaches the site on the
 next cycle, with nothing to restart.
 
-### Overriding it
+There is no polar table to type on this plugin's config page: one copy of
+the polar, in the plugin whose job it is, rather than two that drift apart. The
+console names the polar being published.
 
-The config page names the active polar beside the **Override polar**
-checkbox. Tick it and a box appears, holding that polar's CSV as a starting
-point, and what you leave in it is published instead — for a boat whose polar
-is on a sailmaker's PDF and which is not about to install a second plugin to
-type it in. Paste it in any shape it arrives — semicolons, commas, tabs or
-spaces, `#` comments, a European decimal comma — and the plugin re-renders it
-into the form the chart parses. An override that will not parse falls back to the
-server rather than blanking the chart. The checkbox says which of the two is
-in use every time you open the page:
-
-> Publishing `"mermug-orc"` from Polar Management, 18 angle(s) x 7 wind
-> speed(s). Publish a table typed here instead of the active polar.
-
-No polar from either source means the plugin publishes none and does not claim
+No active polar means the plugin publishes none and does not claim
 the path: a `polars.csv` you committed by hand stays yours, and clearing the
 active polar later leaves the last published file in place rather than
 deleting the boat's performance data because a dropdown was emptied.

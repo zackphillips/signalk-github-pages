@@ -31,7 +31,7 @@ import { GitHubClient, tokenHint } from './github';
 import { HistoryReader, listHistoryProviders } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
-import { activePolarId, readActivePolar } from './polars';
+import { readActivePolar } from './polars';
 import { isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { NotificationRecorder } from './notificationRecorder';
@@ -149,7 +149,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   let timer: NodeJS.Timeout | undefined;
   let stopped = true;
   // What the last cycle found for the polar table. Kept out here so it
-  // survives a stop/start and so the config page can report it.
+  // survives a stop/start and so the console can report it.
   let polarStatus: PolarStatus | null = null;
   // The CSV the last cycle resolved, for the preview. Not read from the
   // resource again on a preview request: a page open must not be able to make
@@ -175,31 +175,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   let historyProviders: SchemaContext['historyProviders'] = null;
   // The site's tide station list, read the first time the config page wants it.
   let tideStations: ReturnType<typeof loadTideStations> | undefined;
-
-  /**
-   * What to tell the config page about the polar table.
-   *
-   * After a cycle this is what actually happened. Before one — a fresh
-   * install, or the plugin disabled — the self tree still says whether Polar
-   * Management has something active, which is the half of the answer that
-   * decides what the read-only box on that page shows.
-   */
-  const polarNote = (): PolarStatus | null => {
-    if (polarStatus) return polarStatus;
-    try {
-      const id = activePolarId(readSelfTree(app));
-      if (id) {
-        return {
-          source: 'resource',
-          summary: `"${id}" from Polar Management (not read yet — no cycle has run)`,
-          problems: [],
-        };
-      }
-    } catch {
-      // A server that will not hand over a tree tells us nothing; say nothing.
-    }
-    return null;
-  };
 
   /**
    * The derived values the config page shows beside their override
@@ -245,8 +220,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       repoName: owner ? `${owner}.github.io` : '',
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       branch: branchStatus,
-      polar: polarNote(),
-      polarCsv,
       tideStation: tideStationNote(),
       historyProviders,
       saved,
@@ -427,20 +400,14 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       // The polar table belongs to the Polar Management plugin: it stores polars
       // as Signal K `polars` resources and points at the selected one from
       // `polars.activePolar`. Read it every cycle so a re-import or a switch to
-      // a different polar reaches the site without restarting anything. The
-      // table on our own config page takes over only when Override polar is
-      // ticked.
+      // a different polar reaches the site without restarting anything.
       //
       // Problems are logged only when they change. A polar that will not
       // convert would otherwise say so every two minutes for as long as it is
       // selected, which buries everything else in the log.
       let lastPolarReport = '';
       const polarsCsv = async (tree: ReturnType<typeof readSelfTree>): Promise<string> => {
-        const { csv, source, problems, summary } = await readActivePolar(
-          app,
-          tree,
-          config.polars,
-        );
+        const { csv, source, problems, summary } = await readActivePolar(app, tree);
         polarStatus = { source, summary, problems };
         polarCsv = csv;
         const report = `${source}|${summary}|${problems.join(' ')}`;

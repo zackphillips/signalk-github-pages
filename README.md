@@ -49,7 +49,7 @@ live `HEAD`.
 | | |
 |---|---|
 | **Where the boat is** | Live position on a map, redacted inside your [privacy zones](#privacy) |
-| **Where it has been** | A track per local calendar day, as GPX, listed on a Voyages tab |
+| **Where it has been** | A track per local calendar day, as GPX, listed on a Voyages tab. Each voyage has its own link to share |
 | **Where it is going** | A passage banner from the waypoint or route active on the plotter, gone on arrival |
 | **How it is doing** | Instruments colored by the zones set on the server, sparklines from your history provider, active notifications and how often each has fired |
 | **Conditions** | Tides from the nearest NOAA station and a 48-hour wind, swell and temperature forecast |
@@ -142,8 +142,9 @@ are most likely to change:
 | `instrumentLog.hours` | `1` | How far back the sparklines reach; 0 publishes none |
 | `site.logo`, `site.icon` | *empty* | The boat's logo, and the tab and home-screen icon |
 
-The repository name, branch, site URL, timezone, polar and tide station are
-derived, and each has an override. The full field list is in
+The repository name, branch, site URL, timezone and tide station are
+derived, and each has an override. The polar comes from
+[Polar Management](https://www.npmjs.com/package/signalk-polar-management). The full field list is in
 [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md).
 
 > [!WARNING]
@@ -175,7 +176,7 @@ Details are in [Privacy](https://github.com/zackphillips/signalk-github-pages/bl
 
 | | |
 |---|---|
-| [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md) | Every field, and the six overrides |
+| [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md) | Every field, and the five overrides |
 | [Track and instruments](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/instruments.md) | Track thinning, the history provider, sparkline windows, instrument paths and bandwidth |
 | [Privacy](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/privacy.md) | Privacy zones in full |
 | [The site](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/site.md) | Units and alarm zones, notifications, branding, what is read from Signal K, the passage banner, tides, polars |

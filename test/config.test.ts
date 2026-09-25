@@ -7,7 +7,6 @@ import {
   HISTORY_RESOLUTION_SECONDS,
   HISTORY_TIMEOUT_MS,
   instrumentLogShape,
-  POLARS_FIELD_DESCRIPTION,
   DEFAULT_INSTRUMENT_LOG_HOURS,
   DEFAULT_INSTRUMENT_LOG_EXCLUDE,
   DEFAULT_HIDDEN_PATHS,
@@ -242,7 +241,6 @@ describe('resolveConfig', () => {
         token: 'ghp_x',
       },
       timezone: { override: true, zone: 'Pacific/Auckland' },
-      polars: { override: true, table: 'twa/tws;6\n52;4.1\n' },
       site: { overrideUrl: true, url: 'example.com', tideStationOverride: '9414290' },
     });
     if (!resolved.ok) throw new Error(resolved.problems.join(' '));
@@ -250,7 +248,6 @@ describe('resolveConfig', () => {
     expect(config.github.repo).toBe('zack/tracker');
     expect(config.github.branch).toBe('gh-pages');
     expect(config.timezone).toBe('Pacific/Auckland');
-    expect(config.polars).toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
     expect(config.site.url).toBe('https://example.com/');
     expect(config.site.tideStationOverride).toBe('9414290');
   });
@@ -312,28 +309,26 @@ describe('resolveConfig', () => {
     expect(resolved.warnings.join(' ')).toContain('not http:// or https://');
   });
 
-  it('keeps the pasted polar table unparsed, with its override flag', () => {
-    // Unparsed here: polars.ts decides which table wins, because only it knows
-    // what the server had.
-    expect(makeConfig().polars).toEqual({ override: false, table: '' });
-    expect(
-      makeConfig({ overrides: { overridePolar: true, polar: 'twa/tws;6\n52;4.1\n' } }).polars,
-    ).toEqual({ override: true, table: 'twa/tws;6\n52;4.1\n' });
-    expect(makeConfig({ overrides: { polar: 'twa/tws;6\n52;4.1\n' } }).polars.override).toBe(
-      false,
-    );
+  it('ignores a polar table saved while there was an override for one', () => {
+    // The polar is Polar Management's. A table typed before the override was
+    // removed stays in the saved file and is read by nothing.
+    const table = 'twa/tws;6\n52;4.1\n';
+    for (const saved of [
+      { overrides: { overridePolar: true, polar: table } },
+      { polars: { override: true, table } },
+    ]) {
+      expect(makeConfig(saved)).not.toHaveProperty('polars');
+    }
   });
 
   it('ignores the field shapes an unreleased version once used', () => {
-    // A bare string for the polar or the timezone, and a cadence in seconds,
+    // A bare string for the timezone, and a cadence in seconds,
     // are shapes only 0.1.x wrote. It was never published, so these fall back
     // to the defaults rather than being carried forward forever.
     const config = makeConfig({
-      polars: 'twa/tws;6\n52;4.1\n',
       timezone: 'Europe/Lisbon',
       interval: { underway: 300, stationary: 1800 },
     });
-    expect(config.polars).toEqual({ override: false, table: '' });
     expect(config.interval).toEqual({
       underway: DEFAULT_INTERVAL_UNDERWAY,
       stationary: DEFAULT_INTERVAL_STATIONARY,
@@ -391,49 +386,11 @@ describe('buildConfigSchema', () => {
   const box = (schema: any, flag: string, field: string) =>
     schema.properties.overrides.dependencies[flag].oneOf[1].properties[field];
 
-  it('says a polar has not been checked before any cycle has run', () => {
-    expect(note(buildConfigSchema({ polar: null }), 'overridePolar')).toContain('Not checked yet');
-    expect(box(buildConfigSchema(), 'overridePolar', 'polar').description).toBe(
-      POLARS_FIELD_DESCRIPTION,
-    );
-  });
-
-  it('names the polar it found', () => {
-    const text = note(
-      buildConfigSchema({
-        polar: {
-          source: 'resource',
-          summary: '"mermug-orc" from Polar Management, 18 angle(s) x 7 wind speed(s)',
-          problems: [],
-        },
-      }),
-      'overridePolar',
-    );
-    expect(text).toContain('✅ Found');
-    expect(text).toContain('mermug-orc');
-  });
-
-  it('carries the last cycle complaint onto the page, marked not found', () => {
-    const text = note(
-      buildConfigSchema({
-        polar: {
-          source: 'none',
-          summary: '"x" is active but could not be read',
-          problems: ['Polar not found: x'],
-        },
-      }),
-      'overridePolar',
-    );
-    expect(text).toContain('Not found');
-    expect(text).toContain('Polar not found: x');
-  });
-
   it('marks every override found, not found, or not checked', () => {
     const found = buildConfigSchema({
       repoName: 'owner.github.io',
       siteUrl: 'https://owner.github.io/',
       branch: { name: 'main', ok: true },
-      polar: { source: 'resource', summary: '"p"', problems: [] },
       tideStation: { id: '9414290', name: 'San Francisco', distanceNm: 2.34 },
     });
     for (const flag of [
@@ -441,7 +398,6 @@ describe('buildConfigSchema', () => {
       'overrideBranch',
       'overrideSiteUrl',
       'overrideTimezone',
-      'overridePolar',
       'overrideTideStation',
     ]) {
       expect(note(found, flag), flag).toMatch(/^✅ /);
@@ -469,14 +425,12 @@ describe('buildConfigSchema', () => {
     expect(box(built, 'overrideSiteUrl', 'siteUrl').default).toBe('');
   });
 
-  it('starts a polar override off from the active polar', () => {
-    const built = buildConfigSchema({ polarCsv: 'twa/tws;6\n52;4.1\n' }) as any;
-    expect(box(built, 'overridePolar', 'polar').default).toBe('twa/tws;6\n52;4.1\n');
-  });
-
   it('never mutates the schema it was built from', () => {
-    buildConfigSchema({ polarCsv: 'x', repoName: 'owner.github.io' });
-    expect(box(configSchema, 'overridePolar', 'polar').default).toBe('');
+    buildConfigSchema({
+      repoName: 'owner.github.io',
+      saved: { github: { overrideName: true, name: 'tracker' } },
+    });
+    expect(box(configSchema, 'overrideRepository', 'repository').default).toBe('');
     expect(note(configSchema, 'overrideRepository')).not.toContain('owner.github.io');
     expect((configSchema.properties.instrumentLog.properties.providerId as any).enum)
       .toBeUndefined();
@@ -544,7 +498,7 @@ describe('buildConfigSchema', () => {
     expect(flags.overrideTimezone.default).toBe(true);
     expect(flags.overrideTideStation.default).toBe(true);
     expect(flags.overrideSiteUrl.default).toBe(false);
-    expect(flags.overridePolar.default).toBe(false);
+    expect(flags.overridePolar).toBeUndefined();
     expect(box(built, 'overrideRepository', 'repository').default).toBe('tracker');
     expect(box(built, 'overrideBranch', 'branch').default).toBe('gh-pages');
     expect(box(built, 'overrideTimezone', 'timezone').default).toBe('Pacific/Auckland');
@@ -574,7 +528,7 @@ describe('buildConfigSchema', () => {
   });
 
   it('leaves every other field exactly as it was', () => {
-    const built = buildConfigSchema({ polarCsv: 'x' }) as any;
+    const built = buildConfigSchema({ repoName: 'owner.github.io' }) as any;
     expect(built.properties.github).toEqual((configSchema.properties as any).github);
     expect(built.properties.privacyZones).toEqual((configSchema.properties as any).privacyZones);
   });
@@ -587,7 +541,6 @@ describe('the Overrides section', () => {
     ['overrideBranch', 'branch'],
     ['overrideSiteUrl', 'siteUrl'],
     ['overrideTimezone', 'timezone'],
-    ['overridePolar', 'polar'],
     ['overrideTideStation', 'tideStation'],
   ] as const;
 

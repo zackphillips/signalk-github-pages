@@ -458,6 +458,14 @@ Run `npm test` and `npm run typecheck` before committing.
   drops a point inside a zone rather than snapping it, and withholds speed
   and course — because a night at the dock would otherwise be a pile of
   identical points saying exactly where you sleep.
+- **A voyage's link is a fragment, `#voyages/<date>`.** `tabs.js` reads the
+  first segment as the tab and leaves the rest alone; `app.js` opens the card
+  whose `data-date` matches, after every render of the list, because the
+  second render is the one with the GPX loaded for the mini map. Opening or
+  closing a card rewrites the fragment with `replaceState`, so the address bar
+  is always the link to what is on screen and no `hashchange` loops back. A
+  date the index does not have says so above the list. A crawler never runs
+  the script, so a pasted link unfurls as the site, not the voyage.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.
@@ -584,15 +592,15 @@ Run `npm test` and `npm run typecheck` before committing.
   the whole of `polars.ts`. Round to two decimals on the way out: the file is
   rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
   comes back as 5.999999999999999.
-- **The config polar table is an override, not a fallback.** Untick "Override
-  polar" and the field is not on the page and is ignored, whatever is stored
-  in it; tick it and it beats the server's active polar, starting off from the
-  active polar's CSV. An override that will not parse falls back to the server
-  rather than blanking the chart. `plugin.schema` is a function so the
-  checkbox's description can say which of the two is live — that note is the
-  only way a user can tell which plugin the chart is coming from.
+- **There is no polar override.** A table typed on the config page used to
+  beat the server's active polar, with a parser for every shape a pasted
+  table arrives in. It was a second copy of the boat's polar, in the wrong
+  plugin, for boats not willing to install the right one. The console's
+  polar note is how a user sees which polar the chart is coming from. A
+  saved `overrides.polar` or `polars.table` is left in the config file and
+  read by nothing.
 - **The polar table is only ours while we have one.** `publishPolars` gates
-  `data/vessel/polars.csv` in the manifest. Losing both sources stops
+  `data/vessel/polars.csv` in the manifest. Losing the active polar stops
   publishing it and stops claiming it; it never deletes the file, because a
   polar table someone committed by hand is years of measurement.
 - **The logo is the user's until they set one.** `publishLogo` gates
@@ -621,21 +629,20 @@ Run `npm test` and `npm run typecheck` before committing.
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
-- **Six settings are derived, each behind an override checkbox in one
+- **Five settings are derived, each behind an override checkbox in one
   Overrides section.** The repository name from the owner
   (`<owner>.github.io`), the branch (`main`), the site address from the
   repository (`pagesUrl`, which a custom domain overrides), the timezone from
-  the server, the polar from Polar Management, and the tide station from the
-  boat's position. `resolveConfig` derives them itself and ignores the typed
+  the server, and the tide station from the boat's position. `resolveConfig` derives them itself and ignores the typed
   field whenever its override is unticked. They used to sit in the section of
   the setting each one overrode; `readOverrides` falls back to those old keys
   until the Overrides section has been saved once, and
   `carryForwardMovedSettings` opens the page with the same boxes ticked. Each
   checkbox's description opens with a mark — found, not found, not checked
-  yet — so a derived value that is missing (no owner, no active polar, a
+  yet — so a derived value that is missing (no owner, a
   branch the last cycle got a 404 on, no GPS for the tide station) is visible
   without ticking anything. The form appends a dependency's field after every
-  property of the object, so all six typed boxes would pile up under the last
+  property of the object, so all five typed boxes would pile up under the last
   checkbox; `ui:order` in `configUiSchema` puts each directly beneath its own,
   and the trailing `"*"` is what keeps an unticked box's absent field from
   being an error. The typed field is not on the page until the box is ticked:
@@ -644,14 +651,12 @@ Run `npm test` and `npm run typecheck` before committing.
   UI has shipped renders the same way. It used to sit in `properties` with
   `readOnly` set in the unticked branch, prefilled from a `default` with
   whatever the plugin had derived — but the admin UI submits defaults, so the
-  first save wrote that value into the config and showed it back for ever:
-  the read-only polar box held the table Polar Management served the day the
-  config was last saved, and ticking Override polar started you off editing
-  that stale copy. What is derived now goes into the checkbox's own
+  first save wrote that value into the config and showed it back for ever.
+  What is derived now goes into the checkbox's own
   description, which is text the form cannot save back, rebuilt by
   `buildConfigSchema` every time the page is opened. A field left out of the
   schema is not dropped from the config: the admin UI leaves form data it
-  cannot see alone, so a typed polar table survives unticking.
+  cannot see alone, so a typed value survives unticking.
 - **`readPluginOptions()` is not the mirror of `savePluginOptions()`.** You
   save a configuration and you read back the whole stored file, `{ enabled,
   configuration }`. `schemaContext` in `index.ts` reads the saved owner out of

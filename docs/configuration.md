@@ -27,7 +27,7 @@ is read from the server.
 
 ## Overrides
 
-Six settings are worked out by the plugin rather than typed, and all six live
+Five settings are worked out by the plugin rather than typed, and all five live
 in their own **Overrides** section at the bottom of the page. Each has a
 checkbox, and the checkbox opens with a mark saying whether the plugin found
 a value — ✅ found, ⚠️ not found, ⏳ not checked yet because no cycle has run —
@@ -41,7 +41,6 @@ away and is ignored.
 | `overrides.overrideBranch` | `main`; the mark says whether the last cycle published to it | `overrides.branch` |
 | `overrides.overrideSiteUrl` | the Pages URL for the repository | `overrides.siteUrl` — a custom domain |
 | `overrides.overrideTimezone` | the server's timezone | `overrides.timezone` — an IANA zone, from a list |
-| `overrides.overridePolar` | the active polar in Polar Management | `overrides.polar` — see [Polars](site.md#polars) |
 | `overrides.overrideTideStation` | the NOAA station nearest the boat | `overrides.tideStation` — see [Tide station override](site.md#tide-station-override) |
 
 The defaults are the numbers this tracker has run on for years on a
