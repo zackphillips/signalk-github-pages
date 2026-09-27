@@ -23,12 +23,6 @@ export interface PersistedState {
   /** True once the store has been seeded from the repository. */
   seeded?: boolean;
   /**
-   * Paths this plugin used to publish and has now removed from the
-   * repository. Recorded only after the commit carrying the deletion landed,
-   * so a failed publish retries the removal rather than skipping it.
-   */
-  retired?: string[];
-  /**
    * The privacy zones every published track was last checked against, as
    * `privacyZoneFingerprint` renders them. A cycle whose zones differ checks
    * every GPX file in the repository again. Recorded only after the commit

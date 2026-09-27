@@ -34,15 +34,6 @@ const EXTENSIONS: Record<string, string> = {
   'image/svg+xml': 'svg',
 };
 
-/**
- * The path the pages fall back to when no logo is configured.
- *
- * It is where this plugin's first users committed theirs by hand, so the
- * frontend keeps asking for it and hides the image when it 404s. A logo set
- * on the config page overrides it.
- */
-export const LEGACY_LOGO_PATH = 'data/vessel/logo.png';
-
 export interface VesselImage {
   /** Repository path this is published at. */
   path: string;

@@ -24,7 +24,6 @@ import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from 
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
   MANIFEST_PATH,
-  RETIRED_PATHS,
   partitionOwned,
   renderManifest,
   type ManifestOptions,
@@ -357,12 +356,11 @@ export class Publisher {
       log(`Refusing to publish unowned path: ${file.path}`);
     }
 
-    const retiring = await this.retirementDeletions(state.retired ?? []);
     const auditDeletions = partitionOwned(
       audit.deletions.filter((path) => !byPath.has(path)).map((path) => ({ path })),
       this.manifestOptions(polars),
     ).owned.map((file) => file.path);
-    const deletions = [...retiring, ...auditDeletions];
+    const deletions = auditDeletions;
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -387,7 +385,6 @@ export class Publisher {
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
       // Only once the commit carrying them actually landed: a failed publish
       // must leave the work to be retried, not recorded as done.
-      ...(result && retiring.length ? { retired: [...(state.retired ?? []), ...retiring] } : {}),
       ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
       // A cycle with nothing to commit has nothing the audit needed either.
       ...(audit.fingerprint && (result || (!audit.files.length && !auditDeletions.length))
@@ -752,41 +749,6 @@ export class Publisher {
     const days = new Set([...publishedDays, ...update.index.map((track) => track.date)]);
     await store.mergeState({ publishedDays: [...days].sort() });
     return files;
-  }
-
-  /**
-   * Paths this plugin used to write, removed once and then left alone.
-   *
-   * `data/vessel/info.yaml` is the only one so far: `site.json` replaced it,
-   * and an install upgrading across that change would otherwise keep a file
-   * in the repository that looks like live configuration, is not read by
-   * anything, and will never be updated again.
-   *
-   * Checked against what is actually in the repository, because the Git Data
-   * API rejects the whole tree with a 422 if an entry names a path the base
-   * tree does not have — the same reason the voyage prune checks. A path that
-   * is already gone is recorded as retired without a commit, so a fresh
-   * install pays one `getFile` on its first cycle and nothing afterwards.
-   */
-  private async retirementDeletions(alreadyRetired: string[]): Promise<string[]> {
-    const { client, log } = this.deps;
-    const pending = RETIRED_PATHS.filter((path) => !alreadyRetired.includes(path));
-    if (!pending.length) return [];
-    const present: string[] = [];
-    for (const path of pending) {
-      const existing = await client.getFile(path).catch(() => null);
-      if (existing !== null) present.push(path);
-    }
-    const { owned, rejected } = partitionOwned(
-      present.map((path) => ({ path })),
-      this.manifestOptions(''),
-      { allowRetired: true },
-    );
-    for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
-    if (owned.length) {
-      log(`Removing ${owned.map((file) => file.path).join(', ')}: no longer published by this plugin.`);
-    }
-    return owned.map((file) => file.path);
   }
 
   /**

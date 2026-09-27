@@ -398,7 +398,7 @@ describe('Publisher', () => {
       expect(second.files).not.toContain('data/vessel/logo.png');
     });
 
-    it('leaves a logo committed by hand alone when none is configured', async () => {
+    it('publishes and claims no logo when none is configured', async () => {
       const publisher = makePublisher();
       await publisher.seed();
       const result = await publisher.runCycle(tree());
@@ -558,26 +558,7 @@ describe('Publisher', () => {
   });
 
 
-  describe("the ship's docs reader", () => {
-    it('removes the reader and its index once, and never a document', async () => {
-      fake.commitFile('docs.html', '<!doctype html>');
-      fake.commitFile('assets/docs.js', '// reader');
-      fake.commitFile('docs/index.json', '{"docs":[]}');
-      const publisher = makePublisher();
-      await publisher.runCycle(tree());
-
-      for (const retired of ['docs.html', 'assets/docs.js', 'docs/index.json']) {
-        expect(fake.files.has(retired), retired).toBe(false);
-      }
-      expect(fake.files.get('docs/mob-procedure.md')).toContain('Man Overboard');
-      expect(fake.files.has('docs/_template.md')).toBe(true);
-
-      // Retired is retired: a file of the same name committed later stays.
-      fake.commitFile('docs.html', '<!doctype html><title>Mine</title>');
-      await publisher.runCycle(tree());
-      expect(fake.files.get('docs.html')).toContain('Mine');
-    });
-
+  describe("the owner's docs", () => {
     it('never writes under docs/ on a normal cycle', async () => {
       const publisher = makePublisher();
       const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });

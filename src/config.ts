@@ -126,7 +126,7 @@ export interface PluginConfig {
      * crawler that never runs the page's JavaScript.
      */
     url: string;
-    /** The logo to publish, or null to leave `data/vessel/logo.png` alone. */
+    /** The logo to publish, or null to show the icon in its place. */
     logo: VesselLogo | null;
     /**
      * The icon to publish, or null to fall back to the bundled generic one.
@@ -805,8 +805,8 @@ export const configSchema = {
           title: 'Vessel logo',
           description:
             'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG. Empty falls back to data/vessel/logo.png if you have ' +
-            'committed one. The tab and home-screen icon is set separately, below.',
+            'JPEG, WebP or SVG. Empty shows the icon instead. The tab and home-screen ' +
+            'icon is set separately, below.',
           default: '',
         },
         icon: {

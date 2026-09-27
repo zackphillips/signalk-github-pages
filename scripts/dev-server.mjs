@@ -27,8 +27,8 @@ const port = Number(process.env.PORT ?? 8000);
 const TOKENS = {
   VESSEL_NAME: 'Sample Vessel',
   SITE_URL: `http://localhost:${port}/`,
-  LOGO_PATH: 'data/vessel/logo.png',
-  LOGO_URL: `http://localhost:${port}/data/vessel/logo.png`,
+  LOGO_PATH: 'assets/icon.svg',
+  LOGO_URL: `http://localhost:${port}/assets/icon.svg`,
   ICON_PATH: 'assets/icon.svg',
   ICON_TYPE: 'image/svg+xml',
   BASE_PATH: '/',
