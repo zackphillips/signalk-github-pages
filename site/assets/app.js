@@ -349,7 +349,6 @@ function renderNotificationsPanel(payload) {
   const summary = countNotificationFirings(payload);
   const active = Array.isArray(payload.active) ? payload.active : [];
   const activeByPath = new Map(active.map((item) => [item.path, item]));
-  const asOfAge = relativeAge(summary.reference, Date.now());
   const anyPartial = summary.partial.some(Boolean);
 
   // Every path with either a firing in the window or an active state now.
@@ -367,36 +366,14 @@ function renderNotificationsPanel(payload) {
     }
   }
 
-  // What the counts mean depends on how they were collected. Subscribed to
-  // the deltas, every firing is seen and the number is real; sampling the
-  // tree once a publish misses anything that fires and clears in between,
-  // which at the stationary cadence is an hour of them.
-  const completeness = summary.continuous
-    ? `A notification that comes on and stays on counts once. Firings are recorded
-       as they happen, so one that fires and clears between two publishes is
-       still counted — but only while the plugin has been running.`
-    : `A notification that comes on and stays on counts once; one that fires and
-       clears between two publishes is not seen at all, so these are a floor
-       rather than a total.`;
-
-  const head = `
-    <div class="notif-meta">
-      Firings counted as of ${asOfAge} ago${
-        summary.sampledSince
-          ? `, from a log reaching back ${relativeAge(summary.sampledSince, summary.reference)}`
-          : ''
-      }. ${completeness}
-    </div>`;
-
   if (!paths.length) {
-    el.innerHTML = `${head}<div class="notif-empty">Nothing has fired in the last ${
+    el.innerHTML = `<div class="notif-empty">Nothing has fired in the last ${
       payload.window_hours ?? 24
     } hours.</div>`;
     return;
   }
 
   el.innerHTML = `
-    ${head}
     <table class="notif-table">
       <thead>
         <tr>

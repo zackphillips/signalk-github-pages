@@ -309,8 +309,8 @@ Run `npm test` and `npm run typecheck` before committing.
   straddled a publish. Without a recorder — an older server, or one whose bus
   this plugin could not subscribe to — nothing changes and the comparison
   counts as it always did. The published `continuous` flag says which
-  happened, and the panel's own copy changes with it rather than always
-  claiming the worse one.
+  happened. The panel used to explain it in a paragraph above the table; that
+  was taken out as noise, and the flag is kept for anything that wants it.
   The pending list is capped (`MAX_PENDING_EDGES`) because the drain
   interval is the publish interval and a wedged float switch can fire on
   every delta; the published log's cap cannot help there, because nothing
@@ -324,8 +324,9 @@ Run `npm test` and `npm run typecheck` before committing.
   — and it does not count a path that drops out of the tree and returns, which
   is what a restarting producer looks like. The cost of that rule is that
   anything firing and clearing between two publishes is invisible, so the
-  counts are a floor; the panel says so, and `sampled_since` bounds them to
-  what the log has actually watched.
+  counts are a floor, and `sampled_since` bounds them to what the log has
+  actually watched (the panel marks a window longer than that with an
+  asterisk).
 - **One blacklist for telemetry and notifications.** `paths.hide` is full
   Signal K paths; `hidePaths` removes them from the snapshot before identity,
   redaction or anything else reads it, `resolveConfig` adds them to the
