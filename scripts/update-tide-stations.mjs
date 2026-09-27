@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Regenerate site/data/tide_stations.json from NOAA's station metadata.
+ * Regenerate data/tide_stations.json from NOAA's station metadata.
  *
  *   node scripts/update-tide-stations.mjs
  *
@@ -20,7 +20,6 @@ const SOURCE =
 const OUT = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
-  'site',
   'data',
   'tide_stations.json',
 );

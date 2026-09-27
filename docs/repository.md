@@ -12,7 +12,7 @@ into a commit.
 |---|---|
 | `data/telemetry/**` | Plugin, every cycle |
 | `data/vessel/site.json` | Plugin, when the configuration or the passage changes |
-| `index.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**`, `data/tide_stations.json` | Plugin, on install and after an upgrade |
+| `index.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**` | Plugin, on install and whenever the shipped files change |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
 | `data/vessel/logo.*` | Plugin, but only while a logo is set on the config page |
 | `data/vessel/icon.*` | Plugin, but only while an icon is set on the config page |

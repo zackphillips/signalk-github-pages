@@ -32,6 +32,12 @@ import { filterStaleData, hidePaths, redactPositions, type Tree } from './snapsh
 import type { StateStore } from './state';
 import { localDay } from './time';
 import { mergeVesselIdentity, readVesselDetails, renderSiteConfig, type VesselIdentity } from './siteConfig';
+import {
+  bundledTideStations,
+  chooseTideStations,
+  treePosition,
+  type TideStation,
+} from './tideStations';
 
 const TELEMETRY_DIR = 'data/telemetry';
 
@@ -40,6 +46,8 @@ export interface PreviewDeps {
   store: StateStore;
   /** Identity from the server process, the same one the publisher is given. */
   identity: VesselIdentity;
+  /** NOAA's station table; the one shipped in `data/` unless a test says otherwise. */
+  tideStations?: TideStation[];
   now?: () => Date;
 }
 
@@ -136,7 +144,15 @@ export async function renderPreviewData(
 
   // The preview has no passage: reading the Course API is an async server
   // call, and the console must not be able to make the boat do work.
-  files.set('data/vessel/site.json', renderSiteConfig(config, merged, input.passage ?? null));
+  const tideStations = chooseTideStations(
+    deps.tideStations ?? bundledTideStations(),
+    config.site.tideStationOverride,
+    treePosition(tree),
+  );
+  files.set(
+    'data/vessel/site.json',
+    renderSiteConfig(config, merged, input.passage ?? null, tideStations),
+  );
   if (input.polars) files.set('data/vessel/polars.csv', input.polars);
 
   return files;

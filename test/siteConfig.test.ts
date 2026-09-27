@@ -121,18 +121,19 @@ describe('the vessel logo', () => {
   });
 });
 
-describe('the tide station override', () => {
-  it('writes tide_station_override, which the site queries instead of the nearest', () => {
-    const config = makeConfig({
-      overrides: { overrideTideStation: true, tideStation: '9414290' },
-    });
-    const parsed = render(config, IDENTITY, null);
-    expect(parsed.tide_station_override).toBe('9414290');
+describe('the tide stations', () => {
+  it('writes the stations it is given, in order, for the page to try', () => {
+    const stations = [
+      { id: '9414750', name: 'Alameda', lat: 37.77, lon: -122.3, overridden: false },
+      { id: '9414764', name: 'Oakland Inner Harbor', lat: 37.8, lon: -122.28, overridden: false },
+    ];
+    const parsed = render(makeConfig(), IDENTITY, null, stations);
+    expect(parsed.tide_stations).toEqual(stations);
+    expect(parsed.tide_station_override).toBeUndefined();
   });
 
-  it('leaves it out when it is not set, so the frontend picks the nearest', () => {
-    const parsed = render(makeConfig(), IDENTITY, null);
-    expect(parsed.tide_station_override).toBeUndefined();
+  it('leaves them out when there are none, so the panels say so', () => {
+    expect(render(makeConfig(), IDENTITY, null).tide_stations).toBeUndefined();
   });
 });
 

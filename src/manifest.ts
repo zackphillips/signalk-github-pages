@@ -42,7 +42,6 @@ const FRONTEND_PATTERNS = [
   'manifest.json',
   '.nojekyll',
   'assets/**',
-  'data/tide_stations.json',
 ];
 
 /** Never written, even though it sits under an owned directory. */

@@ -52,7 +52,6 @@ function getCached(key, ttlMs) {
 function setCached(key, data) {
   try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch { /* quota */ }
 }
-let tideStations = null; // Global tide stations data
 
 const PANEL_SKELETONS = {
   'navigation-grid': 6,
@@ -1699,14 +1698,6 @@ function focusTrackDay(date) {
 }
 window.focusTrackDay = focusTrackDay;
 
-// Get all tide stations from loaded JSON data
-function getAllStations() {
-  if (!tideStations) return [];
-
-  // New format: tideStations.stations is a flat array
-  return tideStations.stations || [];
-}
-
 let tideChartInstance = null;
 let polarChartInstance = null;
 let polarData = null;
@@ -1911,17 +1902,52 @@ const hasValidCoordinates = (latitude, longitude) =>
 // page, and a station picked by hand is the one the boat wants whether or not
 // there is a fix — the nearest by straight-line distance is sometimes across
 // a headland from the water the boat is actually in.
-function resolveTideTarget(currentLat, currentLon) {
-  const stationId = vesselData?.tide_station_override;
-  if (typeof stationId === 'string' && stationId.trim()) {
-    return { mode: 'override', stationId: stationId.trim() };
-  }
+//
+// The plugin chooses: `tide_stations` in site.json is the override alone, or
+// the nearest few NOAA stations within range of the published position,
+// nearest first. The page used to ship NOAA's whole table and search it here,
+// with no limit on distance, so a boat outside US waters was given whichever
+// US station was least far away and shown its tides.
+function tideCandidates() {
+  const list = vesselData?.tide_stations;
+  return Array.isArray(list)
+    ? list.filter((s) => s && typeof s.id === 'string' && s.id)
+    : [];
+}
 
-  if (hasValidCoordinates(currentLat, currentLon)) {
-    return { mode: 'gps', lat: currentLat, lon: currentLon };
-  }
+// Stations NOAA refused this page load, with why, so the second panel does
+// not ask again for the one the first just watched fail.
+const refusedTideStations = new Map();
 
-  return null;
+// The first candidate NOAA answers with predictions for. A station can be
+// retired or suspended after the table was built — the nearest one answering
+// "not a valid station" is what left a site's tide panel reading HTTP 400 for
+// weeks — so a refusal moves on to the next nearest rather than ending there.
+// `fetchFor` returns the station's predictions, or throws.
+async function firstAnsweringTideStation(candidates, fetchFor) {
+  const refused = [];
+  for (const station of candidates) {
+    if (refusedTideStations.has(station.id)) {
+      refused.push(station);
+      continue;
+    }
+    try {
+      const predictions = await fetchFor(station);
+      if (Array.isArray(predictions) && predictions.length) return { station, predictions, refused };
+      throw new Error('no predictions');
+    } catch (err) {
+      console.warn('Tide station refused, trying the next nearest', station.id, err.message);
+      refusedTideStations.set(station.id, err.message);
+      refused.push(station);
+    }
+  }
+  return { station: null, predictions: [], refused };
+}
+
+function refusedTideSummary(refused) {
+  return refused
+    .map((s) => `${s.name}: ${refusedTideStations.get(s.id) ?? 'no answer'}`)
+    .join('; ');
 }
 
 // NOAA's `time_zone=gmt` timestamps are "YYYY-MM-DD HH:mm" in UTC, with a
@@ -2010,25 +2036,6 @@ async function loadVesselData() {
     console.error('Error loading site configuration:', error);
     vesselData = {};
     updateVesselLinks();
-  }
-}
-
-// Load tide stations information from JSON file
-async function loadTideStations() {
-  try {
-    const response = await fetch('data/tide_stations.json');
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    tideStations = await response.json();
-    console.log('Tide stations data loaded:', tideStations);
-  } catch (error) {
-    // No stand-in list. A single hardcoded San Francisco station used to sit
-    // here, which meant a boat anywhere else picked it as its "nearest" one
-    // and showed Golden Gate tides under its own heading. An empty list makes
-    // resolveTideTarget find nothing and the panel say so.
-    console.error('Error loading tide stations data:', error);
-    tideStations = { stations: [] };
   }
 }
 
@@ -2158,69 +2165,7 @@ function renderCustomLinks(links) {
 let themeChangeTimeout = null; // Timeout for theme change debouncing
 let isThemeChanging = false; // Flag to prevent multiple theme changes
 
-// NOAA tide stations from the local lookup table, nearest first.
-//
-// There used to be a special case above this: a box around San Francisco Bay
-// that forced station 9414290 whatever the boat's position said, which was one
-// boat's home waters written into everybody's station picker. Distance decides
-// now, everywhere.
-function stationsByDistance(lat, lon) {
-  return getAllStations()
-    .filter(s => Number.isFinite(s?.lat) && Number.isFinite(s?.lon))
-    .map(s => ({ station: s, km: haversine(lat, lon, s.lat, s.lon) }))
-    .sort((a, b) => a.km - b.km)
-    .map(entry => entry.station);
-}
-
-// Find nearest NOAA tide station from lat/lon.
-// Uses the local lookup table (fast and reliable).
-async function findNearestNOAAStation(lat, lon) {
-  const nearest = stationsByDistance(lat, lon)[0];
-  if (!nearest) {
-    throw new Error('No tide stations available in lookup table');
-  }
-  return nearest;
-}
-
-// A station by its NOAA ID, from the local lookup table.
-function findStationById(stationId) {
-  return getAllStations().find(s => String(s.id) === String(stationId)) ?? null;
-}
-
-// Which NOAA station to query, and why: nearest-by-distance from a live GPS
-// fix, or the exact one the config page overrides to when there is none. The
-// override is never distance-ranked — it is a choice, not a guess — so an ID
-// outside the local lookup table (which ships only NOAA's harmonic stations;
-// see scripts/update-tide-stations.mjs) still works, just without a name to
-// show.
-async function resolveTideStation(target) {
-  if (target.mode === 'gps') {
-    const station = await findNearestNOAAStation(target.lat, target.lon);
-    const distKm = haversine(target.lat, target.lon, station.lat, station.lon);
-    return { station, distNm: (distKm / 1.852).toFixed(1), overridden: false };
-  }
-  const known = findStationById(target.stationId);
-  const station = known ?? { id: target.stationId, name: `Station #${target.stationId}` };
-  return { station, distNm: null, overridden: true };
-}
-
-async function drawTideGraph(target) {
-  // Find the station to query
-  let nearest, distNm, overridden;
-  try {
-    ({ station: nearest, distNm, overridden } = await resolveTideStation(target));
-  } catch (error) {
-    console.error('Error finding nearest station:', error);
-    const tideHeader = document.getElementById("tideHeader");
-    if (tideHeader) tideHeader.textContent = "Tides unavailable (error finding station)";
-    return;
-  }
-
-  // Update title element above the chart
-  document.getElementById("tideHeader").textContent = overridden
-    ? `Tides at ${nearest.name} (Station #${nearest.id} — tide station override)`
-    : `Tides near ${nearest.name} (Station #${nearest.id} - ${distNm} NM from current position)`;
-
+async function drawTideGraph(candidates, boatLat, boatLon) {
 
   const now = new Date();
   // NOAA predictions are future-only, so start from current time
@@ -2321,45 +2266,53 @@ async function drawTideGraph(target) {
     return { predictions: hourly };
   };
 
-  // There is no fallback station. A failed fetch for the nearest station used
-  // to be retried against San Francisco "because it is known to work", which
-  // answered a question nobody asked: the panel then showed real tides for
-  // water 3000 miles away, labeled with this boat's heading.
-  const targetStation = nearest;
-  const url = buildUrl(targetStation.id);  const tideCacheKey = `tide_${targetStation.id}_${begin}`;
-
-  try {
-    // Serve from cache if fresh — tide predictions don't change within a day
-    let json = (() => { const c = getCached(tideCacheKey, C.TIDE_CACHE_TTL_MS); return c ? { predictions: c } : null; })();
-
-    // Try primary station (skipped when cache hit)
-    if (!json) console.debug('Tide fetch: attempting station', {
-      id: targetStation.id, name: targetStation.name,
-      lat: targetStation.lat, lon: targetStation.lon,
-      url, begin_date: begin, end_date: end
-    });
-    if (!json) {
-      try {
-        json = await fetchPredictions(url);
-      } catch (err) {
-        if (!/No Predictions data/i.test(err.message)) throw err;
-        console.debug('Tide fetch: no hourly predictions, trying highs and lows', targetStation.id);
-        json = await fetchInterpolatedFromHiLo(targetStation.id);
-      }
+  // One station's hourly predictions: from the cache when fresh (tide
+  // predictions do not change within a day), else hourly, else interpolated
+  // from its highs and lows.
+  const predictionsFor = async (station) => {
+    const cacheKey = `tide_${station.id}_${begin}`;
+    const cached = getCached(cacheKey, C.TIDE_CACHE_TTL_MS);
+    if (cached) return cached;
+    let json;
+    try {
+      json = await fetchPredictions(buildUrl(station.id));
+    } catch (err) {
+      if (!/No Predictions data/i.test(err.message)) throw err;
+      console.debug('Tide fetch: no hourly predictions, trying highs and lows', station.id);
+      json = await fetchInterpolatedFromHiLo(station.id);
     }
-    const rawData = Array.isArray(json?.predictions) ? json.predictions : [];
-    if (rawData.length > 0) setCached(tideCacheKey, rawData);
-    if (rawData.length === 0) {
-      console.warn('No tide predictions returned from NOAA for station', {
-        id: targetStation.id,
-        name: targetStation.name,
-        lat: targetStation.lat,
-        lon: targetStation.lon,
-        url
-      });
-      const tideHeader = document.getElementById("tideHeader");
-      if (tideHeader) tideHeader.textContent = `Tides in ${targetStation.name} (no predictions available)`;
+    const predictions = Array.isArray(json?.predictions) ? json.predictions : [];
+    if (predictions.length > 0) setCached(cacheKey, predictions);
+    return predictions;
+  };
+
+  // Nearest first, and on to the next when NOAA refuses one. Never past the
+  // candidates the plugin published: a failed fetch used to be retried
+  // against San Francisco "because it is known to work", which drew real
+  // tides for water 3000 miles away under this boat's heading.
+  const tideHeader = document.getElementById("tideHeader");
+  let targetStation = null;
+  try {
+    const found = await firstAnsweringTideStation(candidates, predictionsFor);
+    if (!found.station) {
+      if (tideHeader) tideHeader.textContent = `Tides unavailable (${refusedTideSummary(found.refused)})`;
       return;
+    }
+    targetStation = found.station;
+    const rawData = found.predictions;
+
+    if (tideHeader) {
+      const skipped = found.refused.length
+        ? ` — ${found.refused.map((r) => r.name).join(', ')} unavailable`
+        : '';
+      const distKm =
+        hasValidCoordinates(boatLat, boatLon) && Number.isFinite(targetStation.lat)
+          ? haversine(boatLat, boatLon, targetStation.lat, targetStation.lon)
+          : null;
+      tideHeader.textContent = targetStation.overridden
+        ? `Tides at ${targetStation.name} (Station #${targetStation.id} — tide station override)`
+        : `Tides near ${targetStation.name} (Station #${targetStation.id}` +
+          `${distKm === null ? '' : ` - ${(distKm / 1.852).toFixed(1)} NM from current position`})${skipped}`;
     }
 
     // From the top of the current hour, so the "now" marker sits on the curve
@@ -2508,9 +2461,8 @@ async function drawTideGraph(target) {
     // Said on the panel, not only in the console: a header naming a station
     // over an empty chart reads as "no tides today", not as a failure.
     console.error("Tide data fetch error:", err);
-    const tideHeader = document.getElementById("tideHeader");
     if (tideHeader) {
-      tideHeader.textContent = `Tides unavailable for ${targetStation.name} (${err.message})`;
+      tideHeader.textContent = `Tides unavailable for ${targetStation?.name ?? 'this station'} (${err.message})`;
     }
   }
 }
@@ -3232,14 +3184,15 @@ async function loadData() {
     // not cascade into the panels rendered after this point, and must not
     // leave the header blank the way an uncaught exception used to.
     try {
-      const tideTarget = resolveTideTarget(lat, lon);
-      if (tideTarget) {
-        drawTideGraph(tideTarget);
+      const candidates = tideCandidates();
+      if (candidates.length) {
+        drawTideGraph(candidates, lat, lon);
       } else {
         const tideHeader = document.getElementById('tideHeader');
         if (tideHeader) {
-          tideHeader.textContent =
-            'Tides unavailable — waiting for a GPS fix, or set a tide station override on the plugin config page';
+          tideHeader.textContent = hasValidCoordinates(lat, lon)
+            ? 'Tides unavailable — no NOAA tide station near the boat'
+            : 'Tides unavailable — waiting for a GPS fix, or set a tide station override on the plugin config page';
         }
       }
     } catch (err) {
@@ -3687,8 +3640,8 @@ async function loadConditionsForecast() {
   const stack   = document.getElementById('conditions-chart-stack');
   const loading = document.getElementById('conditions-loading');
 
-  const tideTarget = resolveTideTarget(lat, lon);
-  if (!tideTarget) {
+  const candidates = tideCandidates();
+  if (!candidates.length && !hasValidCoordinates(lat, lon)) {
     if (loading) {
       loading.textContent =
         'Waiting for a GPS fix — or set a tide station override on the plugin config page.';
@@ -3699,13 +3652,13 @@ async function loadConditionsForecast() {
   // Wind, swell and temperature need an actual position. The boat's own comes
   // first even when the tide station is overridden: the override picks which
   // tide curve to draw, not where the weather is. Without a fix, the station
-  // supplies one, but only when the overridden ID happens to be in the local
-  // lookup table — it is a station choice, not a place typed in, so an ID
-  // this table has never heard of gets its tide predictions and nothing else.
+  // supplies one, but only when the plugin knew where the overridden ID is —
+  // it is a station choice, not a place typed in, so an ID NOAA's table does
+  // not have gets its tide predictions and nothing else.
   const weatherPosition = hasValidCoordinates(lat, lon)
     ? { lat, lon }
     : (() => {
-        const known = findStationById(tideTarget.stationId);
+        const known = candidates.find((s) => Number.isFinite(s.lat) && Number.isFinite(s.lon));
         return known ? { lat: known.lat, lon: known.lon } : null;
       })();
 
@@ -3777,25 +3730,32 @@ async function loadConditionsForecast() {
 
     // ── Tide (NOAA) ───────────────────────────────────────────────────────
     (async () => {
-      const { station } = await resolveTideStation(tideTarget);
       const begin   = utcDateStr(windowStart);
       const end     = utcDateStr(windowEnd);
-      const key     = `cond_tide_${station.id}_${begin}_${end}`;
-      const hit     = getCached(key, C.TIDE_CACHE_TTL_MS);
-      if (hit) return { station, predictions: hit };
-      const params = new URLSearchParams({
-        product: 'predictions', application: 'vessel-tracker',
-        begin_date: begin, end_date: end,
-        datum: 'MLLW', station: station.id,
-        time_zone: 'gmt', units: 'english', interval: 'h', format: 'json'
+      const found = await firstAnsweringTideStation(candidates, async (station) => {
+        const key = `cond_tide_${station.id}_${begin}_${end}`;
+        const hit = getCached(key, C.TIDE_CACHE_TTL_MS);
+        if (hit) return hit;
+        const params = new URLSearchParams({
+          product: 'predictions', application: 'vessel-tracker',
+          begin_date: begin, end_date: end,
+          datum: 'MLLW', station: station.id,
+          time_zone: 'gmt', units: 'english', interval: 'h', format: 'json'
+        });
+        const res = await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?${params}`);
+        if (!res.ok) throw new Error(`tide HTTP ${res.status}`);
+        const json = await res.json();
+        if (json.error) throw new Error(json.error.message);
+        const predictions = json.predictions || [];
+        if (predictions.length > 0) setCached(key, predictions);
+        return predictions;
       });
-      const res = await fetch(`https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?${params}`);
-      if (!res.ok) throw new Error(`tide HTTP ${res.status}`);
-      const json = await res.json();
-      if (json.error) throw new Error(json.error.message);
-      const predictions = json.predictions || [];
-      if (predictions.length > 0) setCached(key, predictions);
-      return { station, predictions };
+      if (!found.station) {
+        throw new Error(
+          candidates.length ? `no station answered (${refusedTideSummary(found.refused)})` : 'no NOAA station near the boat',
+        );
+      }
+      return { station: found.station, predictions: found.predictions };
     })()
   ]);
 
@@ -4593,9 +4553,6 @@ function updateChartsForTheme(theme) {
   primeSkeletons();
   // Load vessel data first
   await loadVesselData();
-
-  // Load tide stations data
-  await loadTideStations();
 
   initDarkMode();
   loadPolarData();

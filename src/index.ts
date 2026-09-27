@@ -24,7 +24,7 @@ import {
   type PolarStatus,
   type SchemaContext,
 } from './config';
-import { loadTideStations, nearestTideStation } from './tideStations';
+import { bundledTideStations, nearestTideStation, treePosition } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
@@ -171,8 +171,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Whether the last cycle reached its branch, for the config page. Null until
   // a cycle has run.
   let branchStatus: SchemaContext['branch'] = null;
-  // The site's tide station list, read the first time the config page wants it.
-  let tideStations: ReturnType<typeof loadTideStations> | undefined;
 
   /**
    * The derived values the config page shows beside their override
@@ -224,12 +222,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
    */
   const tideStationNote = (): NearestTideStation | null => {
     try {
-      const position = readSelfTree(app)?.navigation?.position?.value;
-      const lat = Number(position?.latitude);
-      const lon = Number(position?.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-      tideStations ??= loadTideStations(path.join(__dirname, '..', 'site'));
-      return nearestTideStation(tideStations, lat, lon);
+      const position = treePosition(readSelfTree(app));
+      if (!position) return null;
+      return nearestTideStation(bundledTideStations(), position.lat, position.lon);
     } catch {
       return null;
     }

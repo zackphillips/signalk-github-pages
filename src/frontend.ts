@@ -27,6 +27,7 @@
  * escaper chosen by the file's type: a vessel named `Nancy "Nan" Blackett` is
  * a broken attribute in one and a broken document in the other.
  */
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { siteBasePath, type PluginConfig } from './config';
@@ -211,4 +212,34 @@ export async function loadFrontend(
     }
   }
   return files;
+}
+
+const digests = new Map<string, Promise<string>>();
+
+/**
+ * A hash of every file under `site/`, read once per process.
+ *
+ * Part of the frontend fingerprint, because the version alone does not see a
+ * change to the shipped files: a fix to `site/` installed without a version
+ * bump — from a git checkout, say — never reached the site, which is how one
+ * boat went on querying a tide station NOAA had stopped answering long after
+ * the table was corrected. The files cannot change under a running server;
+ * an upgrade restarts it.
+ */
+export function frontendDigest(siteDir: string): Promise<string> {
+  let digest = digests.get(siteDir);
+  if (!digest) {
+    digest = (async () => {
+      const hash = createHash('sha256');
+      for (const relative of (await walk(siteDir)).sort()) {
+        hash.update(relative.split(path.sep).join('/'));
+        hash.update('\0');
+        hash.update(await fs.readFile(path.join(siteDir, relative)));
+        hash.update('\0');
+      }
+      return hash.digest('hex');
+    })();
+    digests.set(siteDir, digest);
+  }
+  return digest;
 }

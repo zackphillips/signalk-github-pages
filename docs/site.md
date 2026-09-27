@@ -153,7 +153,7 @@ the name, MMSI, callsign, registrations and dimensions are already there and
 the site reads them from there.
 
 `data/vessel/site.json` carries only what the snapshot cannot supply — the
-privacy zones, the custom links, the tide station override, the timezone, the
+privacy zones, the custom links, the tide stations, the timezone, the
 address the site links back to — plus two numbers the plugin derives from the
 tree so the frontend does not have to:
 
@@ -190,7 +190,12 @@ only rewritten when its content changes.
 ### Tide station override
 
 The tide and 48-hour conditions panels use the NOAA station nearest the
-boat's position. Tick **Override tide station** and type a station ID, e.g.
+boat's position, out to 50 NM. The plugin picks the nearest three from NOAA's
+harmonic stations (US waters only) and publishes them in `site.json`; the
+panels query them in order and use the first NOAA answers, so a station NOAA
+has retired falls through to the next and the header says which was skipped.
+Beyond 50 NM there is no station and the panels say so, rather than drawing a
+coast the boat is nowhere near. Tick **Override tide station** and type a station ID, e.g.
 `9414290`, and the tide curves use that station instead, fix or no fix — the
 nearest station by straight-line distance is sometimes across a headland from
 the water the boat is in. Wind, swell and temperature still come from the

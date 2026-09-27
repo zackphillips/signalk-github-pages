@@ -29,7 +29,7 @@ src/
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
-  tideStations.ts   The NOAA station nearest the boat, for the tide override's note
+  tideStations.ts   The NOAA stations the site queries, chosen from data/tide_stations.json
   logo.ts           The config page's logo and icon fields, decoded into bytes and a path
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
@@ -83,7 +83,7 @@ Run `npm test` and `npm run typecheck` before committing.
   self tree. It used to be in both, and the frontend preferred the snapshot
   and treated the other as a fallback, so the duplicate only ever had one
   possible effect: disagreeing. What stays in `site.json` is what has no
-  other source (privacy zones, custom links, the tide station override, the
+  other source (privacy zones, custom links, the tide stations, the
   timezone, the address the site links back to), plus the USCG and hull
   numbers, which are here because picking them out of a `registrations` tree
   is a judgment the plugin already makes and the frontend should not make
@@ -126,11 +126,11 @@ Run `npm test` and `npm run typecheck` before committing.
   Bay, 10 knots of true wind, a house bank at 12.5 V and 80%) shown whenever
   `signalk_latest.json` would not load, so a boat whose publishing had failed
   showed someone ashore a plausible afternoon's sailing. All of them are gone.
-  `resolveTideTarget` returns null and the panels say what is missing;
+  `tideCandidates` returns an empty list and the panels say what is missing;
   `getPrivacyZones` returns an empty list, which is safe because the plugin
-  already redacts before it publishes; `stationsByDistance` sorts by distance
-  and nothing else; a failed station list is empty; a failed NOAA fetch
-  throws; a failed snapshot is `{}` and the banner reads "Telemetry
+  already redacts before it publishes; the station search ranks by distance
+  and nothing else, and stops at 50 NM; a failed NOAA fetch
+  moves to the next published candidate and never past the last; a failed snapshot is `{}` and the banner reads "Telemetry
   unavailable". They were found in four separate passes, so assume there is
   another. If a value is not known, the page says so. A fifth pass found an
   eighth: `site.defaultLocation`, a "default position" lat/lon captured from
@@ -168,6 +168,18 @@ Run `npm test` and `npm run typecheck` before committing.
   straight-line distance for a reason. The conditions panel still takes wind,
   swell and temperature from the boat's position when there is one: the
   override chooses a tide curve, not where the weather is.
+- **The plugin picks the tide stations; the page only tries them.**
+  `chooseTideStations` ranks NOAA's table from the redacted position and
+  publishes the nearest three within `MAX_TIDE_STATION_NM` as `tide_stations`
+  in `site.json`, and the panels query them in order until one answers. The
+  page used to ship the table (100 kB) and search it itself, with no distance
+  limit, while `tideStations.ts` repeated the search for the config page: two
+  copies of one rule, and a boat in the Mediterranean shown a US station's
+  tides. Three, because a station NOAA has retired answers "not a valid
+  station", and a site stuck on the nearest one showed an HTTP 400 for weeks.
+  Distance is not published: it moves every cycle underway and `site.json` is
+  committed whenever its content changes, so the page computes it. The table
+  ships in `data/`, outside `site/`, and is never published.
 - **A published URL is an `href` on someone else's browser.** `customLinks`
   entries are checked for an http/https scheme in `resolveConfig` *and* again
   in `renderCustomLinks`, because `info.yaml` is a file in a public repository
@@ -690,10 +702,13 @@ Run `npm test` and `npm run typecheck` before committing.
   a commit. Anything else that records "this has been published" belongs
   there too.
 - **An upgrade republishes the frontend by itself.** The fingerprint gating
-  `frontendFiles` is `version:repo:branch:entries`, so a new plugin version
-  rewrites every site file on the first cycle after the restart. The
-  console's "rewrite the whole site" button exists for what a version number
-  cannot see — a file deleted by hand on GitHub, a commit that landed
+  `frontendFiles` covers the version, the substituted values and
+  `frontendDigest`, a hash of every file under `site/`, so any change to the
+  shipped files rewrites the site on the first cycle after the restart. The
+  version alone was once the whole fingerprint, and a fix installed without
+  a bump never shipped: one boat queried a station NOAA had rejected for weeks
+  after the table was corrected. The console's "rewrite the whole site"
+  button exists for what no fingerprint can see — a file deleted by hand on GitHub, a commit that landed
   half-way, a repository rolled back — and does it by clearing the
   fingerprint, not by a second code path.
 - **Never add a per-cycle file.** An earlier design wrote one snapshot per
