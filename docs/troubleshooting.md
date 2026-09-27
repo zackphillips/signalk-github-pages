@@ -17,7 +17,7 @@ SHAs and rate limits are log output and the plugin status line, not paths in
 the model.
 
 One thing is not. If publishing fails continuously for
-`notifications.warnAfterMinutes` — half an hour by default, which at the underway
+half an hour, which at the underway
 cadence is fifteen consecutive attempts — the plugin raises
 `notifications.tracker.publishFailed` and clears it on the next success. An
 expired token otherwise reaches nobody: the admin UI is a browser tab nobody

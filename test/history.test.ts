@@ -181,7 +181,6 @@ describe('selectInstrumentPaths', () => {
 describe('HistoryReader', () => {
   const config = {
     enabled: true,
-    providerId: '',
     resolutionSeconds: 60,
     timeoutMs: 50,
   };
@@ -302,7 +301,6 @@ describe('HistoryReader', () => {
     const result = await reader.read(NOW);
     expect(result).toMatchObject({
       status: 'ok',
-      providerId: 'default',
       requestedPaths: ['navigation.speedOverGround'],
     });
     expect(result.status === 'ok' && result.entries).toHaveLength(1);

@@ -137,10 +137,9 @@ The ceiling that does exist is the Signal K server's: it accepts a config save
 up to `FILEUPLOADSIZELIMIT`, 10 MB by default, and base64 adds about a third
 on the way in.
 
-With no logo set, the pages ask for a hand-committed `data/vessel/logo.png`
-and hide the image if it is not there. With no icon set, the tab, home-screen
-and link-preview icon fall back to a generic `assets/icon.svg` that ships
-with the plugin. Do not edit files under `assets/` by hand: the plugin owns
+With no logo set, the pages show the icon in its place. With no icon set,
+the tab, home-screen and link-preview icon fall back to a generic
+`assets/icon.svg` that ships with the plugin. Do not edit files under `assets/` by hand: the plugin owns
 them and overwrites them on upgrade.
 
 `assets/custom.css` is yours, loaded last by both pages and never written by

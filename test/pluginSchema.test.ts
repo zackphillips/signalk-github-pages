@@ -28,19 +28,12 @@ describe('the schema the config page is rendered from', () => {
   });
 
   it('follows the saved repository name into the address it derives', () => {
-    for (const configuration of [
-      {
-        github: { owner: 'zackphillips' },
-        overrides: { overrideRepository: true, repository: 'tracker' },
-      },
-      // Saved before the Overrides section existed.
-      { github: { owner: 'zackphillips', overrideName: true, name: 'tracker' } },
-    ]) {
-      const schema = pluginFor({ configuration }).schema() as any;
-      expect(note(schema, 'overrideSiteUrl')).toContain(
-        'https://zackphillips.github.io/tracker/',
-      );
-    }
+    const configuration = {
+      github: { owner: 'zackphillips' },
+      overrides: { overrideRepository: true, repository: 'tracker' },
+    };
+    const schema = pluginFor({ configuration }).schema() as any;
+    expect(note(schema, 'overrideSiteUrl')).toContain('https://zackphillips.github.io/tracker/');
   });
 
   it('says nothing derived on a fresh install, rather than guessing', () => {

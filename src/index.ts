@@ -28,7 +28,7 @@ import { loadTideStations, nearestTideStation } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
-import { HistoryReader, listHistoryProviders } from './history';
+import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { readActivePolar } from './polars';
@@ -139,7 +139,7 @@ function historySetting(app: SignalKApp, config: PluginConfig): string {
   }
   const hours = (config.history.resolutionSeconds * config.instrumentLog.entries) / 3600;
   return (
-    `instrument log from ${config.history.providerId || 'the default'} history provider: ` +
+    'instrument log from the default history provider: ' +
     `${hours}h at ${config.history.resolutionSeconds}s buckets ` +
     `(${config.instrumentLog.entries} entries)`
   );
@@ -171,8 +171,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Whether the last cycle reached its branch, for the config page. Null until
   // a cycle has run.
   let branchStatus: SchemaContext['branch'] = null;
-  // The history providers the server had registered when last asked.
-  let historyProviders: SchemaContext['historyProviders'] = null;
   // The site's tide station list, read the first time the config page wants it.
   let tideStations: ReturnType<typeof loadTideStations> | undefined;
 
@@ -192,18 +190,16 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
    */
   const schemaContext = () => {
     let owner = '';
-    let savedGithub: Record<string, any> = {};
-    let saved: Record<string, any> | undefined;
+    let saved: Record<string, any> = {};
     try {
       const stored = app.readPluginOptions?.() as Record<string, any> | undefined;
-      saved = (stored?.configuration ?? undefined) as Record<string, any> | undefined;
-      savedGithub = saved?.github ?? {};
-      const value = savedGithub.owner;
+      saved = (stored?.configuration ?? {}) as Record<string, any>;
+      const value = saved.github?.owner;
       if (typeof value === 'string') owner = value.trim();
     } catch {
       // Nothing saved yet: the notes stay quiet until the owner is set.
     }
-    const savedOverrides = readOverrides(saved ?? {});
+    const savedOverrides = readOverrides(saved);
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually
     // resolve against before anyone ticks the override.
@@ -212,17 +208,11 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       savedOverrides.repository,
       savedOverrides.overrideRepository === true,
     );
-    // Asked again every time the page opens, for the next time it opens: the
-    // form is built synchronously, and a provider plugin that was enabled a
-    // minute ago should not need a server restart to appear.
-    void refreshHistoryProviders();
     return {
       repoName: owner ? `${owner}.github.io` : '',
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       branch: branchStatus,
       tideStation: tideStationNote(),
-      historyProviders,
-      saved,
     };
   };
 
@@ -242,14 +232,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       return nearestTideStation(tideStations, lat, lon);
     } catch {
       return null;
-    }
-  };
-
-  const refreshHistoryProviders = async (): Promise<void> => {
-    try {
-      historyProviders = await listHistoryProviders(app);
-    } catch {
-      // Not knowing the list costs the dropdown its entries, nothing else.
     }
   };
 
@@ -574,7 +556,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             };
           }
         }
-        void refreshHistoryProviders();
         schedule(seconds);
       };
 
@@ -632,7 +613,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         log: (message) => app.debug(message),
       };
 
-      void refreshHistoryProviders();
       void (async () => {
         try {
           await publisher.seed();

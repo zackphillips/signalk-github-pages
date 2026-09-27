@@ -458,8 +458,8 @@ export class Publisher {
 
     await store.writeText('instrument_log.json', contents);
     log(
-      `Instrument log: ${entries.length} entries from history provider ` +
-        `${history.providerId}, ${history.requestedPaths.length} path(s) asked for, ` +
+      `Instrument log: ${entries.length} entries from the history provider, ` +
+        `${history.requestedPaths.length} path(s) asked for, ` +
         `${kb(bytes)}.`,
     );
     if (bytes > INSTRUMENT_LOG_WARN_BYTES) {
@@ -467,7 +467,7 @@ export class Publisher {
         `Instrument log is ${kb(bytes)} and is uploaded in full on ` +
           `every publish. At the underway cadence of ${config.interval.underway}s ` +
           `that is about ${kb((bytes * 4) / 3 * (3600 / config.interval.underway))} ` +
-          'per hour. Add paths to Never logged, or shorten the history window.',
+          'per hour. Hide the paths not worth graphing, or shorten the history window.',
       );
     }
     return [{ path: INSTRUMENT_LOG_PATH, content: contents }];

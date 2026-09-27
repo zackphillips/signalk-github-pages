@@ -37,7 +37,6 @@ const fromHistory = (entries: Array<{ timestamp: string; values: Record<string, 
     status: 'ok' as const,
     entries,
     requestedPaths: Object.keys(entries[0]?.values ?? {}),
-    providerId: 'signalk-to-influxdb2',
   });
 
 const LOG_ENTRIES = [
@@ -550,7 +549,7 @@ describe('Publisher', () => {
     });
 
     it('publishes nothing and claims nothing when the setting is off', async () => {
-      const publisher = makePublisher({ publishNotifications: false });
+      const publisher = makePublisher({ notifications: { publish: false } });
       const result = await publisher.runCycle(alarmed('alarm'));
       expect(result.files).not.toContain('data/telemetry/notifications.json');
       expect(fake.files.has('data/telemetry/notifications.json')).toBe(false);
@@ -957,7 +956,7 @@ describe('cycle accounting', () => {
     expect(logFile.bytes).toBeGreaterThan(INSTRUMENT_LOG_WARN_BYTES);
     const warning = logs.find((line) => line.includes('uploaded in full'))!;
     expect(warning).toContain('per hour');
-    expect(warning).toContain('Add paths to Never logged');
+    expect(warning).toContain('Hide the paths not worth graphing');
   });
 
   it('stays quiet about size when the log is small', async () => {

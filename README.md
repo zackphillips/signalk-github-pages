@@ -138,7 +138,6 @@ are most likely to change:
 | `interval.stationaryMinutes` | `60` | Cadence moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}`; see [Privacy](#privacy) |
 | `paths.hide` | one server notice | Paths never published, notifications included |
-| `paths.notGraphed` | design, course, GNSS… | Paths shown as current values but never graphed |
 | `instrumentLog.hours` | `1` | How far back the sparklines reach; 0 publishes none |
 | `site.logo`, `site.icon` | *empty* | The boat's logo, and the tab and home-screen icon |
 
@@ -182,7 +181,6 @@ Details are in [Privacy](https://github.com/zackphillips/signalk-github-pages/bl
 | [The site](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/site.md) | Units and alarm zones, notifications, branding, what is read from Signal K, the passage banner, tides, polars |
 | [The repository and the console](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/repository.md) | What the plugin writes, and the on-boat console |
 | [Troubleshooting](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/troubleshooting.md) | The cycle log, "Data unavailable", a plugin missing from the list |
-| [Upgrading](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/upgrading.md) | Settings that moved or went away |
 
 ## Trade-offs worth knowing
 

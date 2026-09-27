@@ -19,11 +19,6 @@ into a commit.
 | `assets/custom.css` | **You** — loaded last by the page, never written here |
 | Everything else | **You** |
 
-Paths the plugin used to write and no longer does (`data/vessel/info.yaml`,
-and the ship's docs reader: `docs.html`, `assets/docs.js`, `docs/index.json`)
-are deleted once, in an ordinary commit, and never claimed again. Nothing else
-under `docs/` is touched.
-
 Each publish builds a tree against the live `HEAD` with only those paths
 layered on top, so an edit from your phone and a telemetry commit from the
 boat interleave cleanly in either order. The only race is the ref update

@@ -60,7 +60,7 @@ describe('renderPreviewData', () => {
   });
 
   it('omits the notification file when publishing notifications is off', async () => {
-    const files = await render({ publishNotifications: false });
+    const files = await render({ notifications: { publish: false } });
     expect(files.has('data/telemetry/notifications.json')).toBe(false);
   });
 
