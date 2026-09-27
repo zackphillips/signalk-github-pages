@@ -229,7 +229,10 @@ import the boat's polar there — it will pull an ORC certificate by boat name
 or sail number — and mark one active. Every cycle this plugin reads
 `polars.activePolar` off the self tree, fetches that `polars` resource through
 the server's Resources API, and writes `data/vessel/polars.csv`, which is what
-the target-speed chart draws:
+the target-speed chart draws. Between cycles it rereads the active polar every
+five minutes and publishes at once if it changed, so an edit or a switch in
+Polar Management reaches the site within minutes rather than at the next
+stationary cycle an hour later:
 
 ```
 twa/tws;6;8;10;12;14;16;20
