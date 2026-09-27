@@ -439,6 +439,35 @@ describe('Publisher', () => {
     });
   });
 
+  describe('a publish that fails', () => {
+    it('uploads the same files again on the next cycle', async () => {
+      // Recorded as published before the commit landed, the logo and site.json
+      // would not go up again until their content next changed.
+      const logo =
+        'data:image/png;base64,' +
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const publisher = makePublisher({ site: { logo } });
+      await publisher.seed();
+      fake.failNextRefUpdates(2);
+      await expect(publisher.runCycle(tree())).rejects.toThrow();
+      expect(fake.files.has('data/vessel/logo.png')).toBe(false);
+
+      const retry = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }));
+      for (const path of [
+        'data/vessel/logo.png',
+        'data/vessel/site.json',
+        '.tracker-manifest.json',
+      ]) {
+        expect(retry.files, path).toContain(path);
+        expect(fake.files.has(path), path).toBe(true);
+      }
+
+      const third = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:04:00Z' }));
+      expect(third.files).not.toContain('data/vessel/logo.png');
+      expect(third.files).not.toContain('data/vessel/site.json');
+    });
+  });
+
   describe('the vessel icon', () => {
     // A different 1x1 PNG from the logo fixture, so a test that checks both
     // published cannot pass by publishing the same bytes to both paths.

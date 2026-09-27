@@ -681,8 +681,12 @@ Run `npm test` and `npm run typecheck` before committing.
   used to be written the moment the frontend files were assembled, so a
   publish that failed — a 502, a wedged hotspot — left the plugin believing
   it had shipped this release's HTML and JavaScript, and the site kept
-  serving the previous one until the next version bump. It and
-  `state.retired` are both merged in `runCycle` after `publishFiles` returns
+  serving the previous one until the next version bump. The local copies that
+  gate a re-upload (`site.json`, `polars.csv`, the manifest, logo and icon
+  fingerprints) had the same bug until 1.0: a failed commit left the passage
+  banner stale and a new logo unpublished until the content next changed.
+  `frontendVersion` is merged into state, and every other such copy is queued
+  in `onLanding`, both written in `runCycle` only after `publishFiles` returns
   a commit. Anything else that records "this has been published" belongs
   there too.
 - **An upgrade republishes the frontend by itself.** The fingerprint gating

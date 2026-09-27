@@ -186,6 +186,16 @@ export interface PublisherDeps {
 
 export class Publisher {
   private readonly now: () => Date;
+  /**
+   * Local copies to write once this cycle's commit lands, by store name.
+   *
+   * Each is what the next cycle compares against to decide whether a file
+   * needs uploading again. Written before the commit, a publish that failed
+   * would leave the plugin believing the file was on the site, and it would
+   * not go up again until its content next changed: a passage stuck on the
+   * banner, a new logo never shown.
+   */
+  private readonly onLanding = new Map<string, string>();
 
   constructor(private readonly deps: PublisherDeps) {
     this.now = deps.now ?? (() => new Date());
@@ -237,6 +247,7 @@ export class Publisher {
 
   async runCycle(rawTree: Tree, input: CycleInput = {}): Promise<CycleResult> {
     const { config, store, log, client, version, siteDir } = this.deps;
+    this.onLanding.clear();
     const polars = input.polars ?? '';
     const history: HistoryResult = input.history ?? { status: 'unavailable', reason: 'not read' };
     const startedAt = Date.now();
@@ -377,6 +388,9 @@ export class Publisher {
 
     const message = this.commitMessage(navState, now);
     const result = await publishFiles(client, owned, message, { deletions });
+    if (result) {
+      for (const [name, contents] of this.onLanding) await store.writeText(name, contents);
+    }
     const requests = client.takeStats();
     const durationMs = Date.now() - startedAt;
 
@@ -448,7 +462,7 @@ export class Publisher {
 
     if (history.status === 'none') {
       if ((await store.readText('instrument_log.json')) === contents) return [];
-      await store.writeText('instrument_log.json', contents);
+      this.onLanding.set('instrument_log.json', contents);
       log(
         'No history provider: publishing an empty instrument log, so the site ' +
           'omits the sparklines rather than drawing a frozen one.',
@@ -768,7 +782,7 @@ export class Publisher {
     const previous = await store.readText('site.json');
     if (previous === contents) return [];
 
-    await store.writeText('site.json', contents);
+    this.onLanding.set('site.json', contents);
     log(
       previous === null
         ? `Writing ${SITE_CONFIG_PATH} for the first time.`
@@ -790,7 +804,7 @@ export class Publisher {
     if (!polars) return [];
     const previous = await store.readText('polars.csv');
     if (previous === polars) return [];
-    await store.writeText('polars.csv', polars);
+    this.onLanding.set('polars.csv', polars);
     log(
       `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
         `(${polars.trim().split('\n').length - 1} wind angles).`,
@@ -813,7 +827,7 @@ export class Publisher {
     const options = this.manifestOptions(polars);
     const fingerprint = JSON.stringify({ ...options, version });
     if ((await store.readText('manifest-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('manifest-fingerprint.txt', fingerprint);
+    this.onLanding.set('manifest-fingerprint.txt', fingerprint);
     return [
       {
         path: MANIFEST_PATH,
@@ -844,7 +858,7 @@ export class Publisher {
     // hotspot at the end of the month.
     const fingerprint = `${logo.path}:${createHash('sha256').update(logo.content).digest('hex')}`;
     if ((await store.readText('logo-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('logo-fingerprint.txt', fingerprint);
+    this.onLanding.set('logo-fingerprint.txt', fingerprint);
     log(`Publishing ${logo.path} (${kb(logo.content.length)}).`);
     return [{ path: logo.path, content: logo.content }];
   }
@@ -864,7 +878,7 @@ export class Publisher {
 
     const fingerprint = `${icon.path}:${createHash('sha256').update(icon.content).digest('hex')}`;
     if ((await store.readText('icon-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('icon-fingerprint.txt', fingerprint);
+    this.onLanding.set('icon-fingerprint.txt', fingerprint);
     log(`Publishing ${icon.path} (${kb(icon.content.length)}).`);
     return [{ path: icon.path, content: icon.content }];
   }
@@ -890,7 +904,8 @@ export class Publisher {
     // before the commit lands means a publish that fails — a 502, a wedged
     // hotspot — leaves the plugin believing it has already shipped this
     // frontend, and the site keeps serving the previous release's JavaScript
-    // until the next version bump. `runCycle` stores it once the commit is in.    log(`Publishing frontend (${files.length} files, version ${version}).`);
+    // until the next version bump. `runCycle` stores it once the commit is in.
+    log(`Publishing frontend (${files.length} files, version ${version}).`);
     return { files, fingerprint };
   }
 
