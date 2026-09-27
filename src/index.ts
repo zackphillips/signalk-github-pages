@@ -397,6 +397,27 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         return csv;
       };
 
+      // The passage banner, less a course the boat is plainly done with. Why
+      // it was dropped is logged once, not every cycle it stays dropped.
+      let staleReported = '';
+      const readCourse = async (tree: ReturnType<typeof readSelfTree>) => {
+        let stale = '';
+        const read = await readPassage(app, (problem) => app.error(problem), {
+          tree,
+          onStale: (reason) => {
+            stale = reason;
+          },
+        });
+        if (stale && stale !== staleReported) {
+          app.debug(
+            `Passage banner hidden: ${stale}. Clearing the destination on the plotter ` +
+              'makes this permanent.',
+          );
+        }
+        staleReported = stale;
+        return read;
+      };
+
       const schedule = (seconds: number) => {
         if (stopped) return;
         timer = setTimeout(() => {
@@ -422,7 +443,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
         }
         app.debug(`Publishing on request (${reason}).`);
-        passage = await readPassage(app, (problem) => app.error(problem));
+        passage = await readCourse(tree);
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
           history: await history.read(new Date(), tree),
@@ -505,7 +526,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
-          passage = await readPassage(app, (problem) => app.error(problem));
+          passage = await readCourse(tree);
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
             history: await history.read(new Date(), tree),

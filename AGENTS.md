@@ -100,6 +100,13 @@ Run `npm test` and `npm run typecheck` before committing.
   the boat just left on a public page. The ETA is left out for a different
   reason: `targetArrivalTime` is recomputed on every update, and `site.json`
   is only rewritten when its content changes.
+- **A course nobody cleared is not a passage.** `staleCourseReason` drops the
+  banner when the boat is inside the destination's arrival circle, or when
+  the course is over `STALE_COURSE_HOURS` old *and* the boat is not underway.
+  Age alone would end a three-day delivery on its first evening; stopped
+  alone would end one at lunch. It reads the raw tree for the arrival check,
+  and the position goes nowhere else. It never clears the course on the
+  server: that is the plotter's, and this only decides what the page says.
 - **1.0 carries no migration code, and should add it deliberately.** The
   releases before it were never published, so their config shapes (settings
   that moved sections, the overrides in their old homes, a window stored as

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { passageFromCourse, readPassage } from '../src/course';
+import { passageFromCourse, readPassage, staleCourseReason, STALE_COURSE_HOURS } from '../src/course';
 import type { CourseInfo } from '../src/signalk';
 
 /** A course as the API reports it, with the fields under test overridden. */
@@ -114,5 +114,55 @@ describe('readPassage', () => {
       getCourse: () => Promise.resolve(course({ nextPoint: point('Monterey') })),
     });
     expect(passage?.to).toBe('Monterey');
+  });
+});
+
+describe('a course nobody cleared', () => {
+  const START = Date.parse('2026-03-01T16:00:00Z');
+  const hoursIn = (hours: number) => new Date(START + hours * 3_600_000);
+  const boat = (state: string | null, latitude = 37.8, longitude = -122.4) => ({
+    navigation: {
+      position: { value: { latitude, longitude } },
+      ...(state ? { state: { value: state } } : {}),
+    },
+  });
+  const santaCruz = course({ nextPoint: point('Santa Cruz') });
+
+  it('is live while underway, however long the passage', () => {
+    expect(staleCourseReason(santaCruz, boat('sailing'), hoursIn(60))).toBeNull();
+  });
+
+  it('is live when stopped for lunch early in the passage', () => {
+    expect(staleCourseReason(santaCruz, boat('anchored'), hoursIn(3))).toBeNull();
+  });
+
+  it(`is stale once active ${STALE_COURSE_HOURS} hours with the boat not underway`, () => {
+    expect(staleCourseReason(santaCruz, boat('moored'), hoursIn(STALE_COURSE_HOURS + 1)))
+      .toMatch(/moored/);
+    // No navigation.state: age alone.
+    expect(staleCourseReason(santaCruz, boat(null), hoursIn(STALE_COURSE_HOURS + 1)))
+      .toMatch(/not reporting navigation.state/);
+  });
+
+  it('is stale once the boat is inside the arrival circle, however recent', () => {
+    // point() is at 36.96, -122.02; 100 m arrival circle.
+    expect(staleCourseReason(santaCruz, boat('sailing', 36.9605, -122.02), hoursIn(1)))
+      .toMatch(/arrival circle/);
+    expect(staleCourseReason(santaCruz, boat('sailing', 36.97, -122.02), hoursIn(1))).toBeNull();
+  });
+
+  it('says nothing without a tree to judge by', () => {
+    expect(staleCourseReason(santaCruz, undefined, hoursIn(100))).toBeNull();
+  });
+
+  it('publishes no banner for a stale course, and says why', async () => {
+    const reasons: string[] = [];
+    const passage = await readPassage(
+      { getCourse: () => Promise.resolve(santaCruz) },
+      () => {},
+      { tree: boat('moored'), now: hoursIn(48), onStale: (reason) => reasons.push(reason) },
+    );
+    expect(passage).toBeNull();
+    expect(reasons).toHaveLength(1);
   });
 });

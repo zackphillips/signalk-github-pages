@@ -180,6 +180,15 @@ comes from the **Course API** — `startTime` is the departure, with no state
 for the plugin to keep — so clearing the destination on arrival takes the
 banner down by itself.
 
+A destination nobody cleared is dropped anyway, in two cases. Once the boat
+is inside the waypoint's arrival circle, the banner goes. It also goes once
+the course has been active for more than 12 hours and the boat is not
+underway according to `navigation.state`, so a boat home from Santa Cruz does
+not go on saying it is bound there. A three-day delivery keeps its banner
+while it is moving, and a night at anchor on the way hides it only until the
+boat gets going again. Without `navigation.state` on the server, the 12 hours
+apply whether or not the boat is moving. The course itself is left alone.
+
 No coordinates are published, only names: `previousPoint` is usually the
 vessel's own position at the moment you activated the waypoint, and falling
 back to its latitude and longitude would put the slip you just left on a
