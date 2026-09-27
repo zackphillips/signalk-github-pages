@@ -27,6 +27,7 @@
 import type { PluginConfig } from './config';
 import type { Passage } from './course';
 import type { Tree } from './snapshot';
+import type { PublishedTideStation } from './tideStations';
 
 /** Hull dimensions, in the SI units Signal K publishes them in. */
 export interface VesselDesign {
@@ -231,8 +232,12 @@ export interface SiteConfigDocument {
   /** Where the configured vessel logo was published, when one is set. */
   logo?: string;
   custom_links?: Array<{ label: string; url: string }>;
-  /** The NOAA station queried before the boat has reported a GPS position. */
-  tide_station_override?: string;
+  /**
+   * The NOAA stations the tide and conditions panels query, in the order they
+   * try them: the override alone, or the nearest few within range of the
+   * published position. Absent when there are none, and the panels say so.
+   */
+  tide_stations?: PublishedTideStation[];
   timezone?: string;
   /** From the Course API; absent whenever nothing is being navigated to. */
   passage?: Passage;
@@ -255,6 +260,7 @@ export function renderSiteConfig(
   config: PluginConfig,
   identity: VesselIdentity,
   passage: Passage | null,
+  tideStations: PublishedTideStation[] = [],
 ): string {
   const document: SiteConfigDocument = {
     schema_version: SITE_CONFIG_SCHEMA_VERSION,
@@ -295,9 +301,7 @@ export function renderSiteConfig(
       url: link.url,
     }));
   }
-  if (config.site.tideStationOverride) {
-    document.tide_station_override = config.site.tideStationOverride;
-  }
+  if (tideStations.length) document.tide_stations = tideStations;
   if (config.timezone) document.timezone = config.timezone;
   if (passage) document.passage = passage;
 

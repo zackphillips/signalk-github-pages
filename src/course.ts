@@ -27,8 +27,33 @@
  * every update, so publishing it would rewrite `site.json` on every cycle for
  * a number that moves by a minute. The file is rewritten only when its
  * content changes, and this is what keeps that true.
+ *
+ * ## A course nobody cleared
+ *
+ * Clearing the destination on arrival is what everyone does, until they do
+ * not, and then the banner says the boat is bound for Santa Cruz from its own
+ * slip for as long as the plotter stays on — the hand-edited `info.yaml`
+ * failure again, with the server as the one that forgot. `staleCourseReason`
+ * drops a course the boat is plainly done with:
+ *
+ * - **Arrived.** The boat is inside the destination's arrival circle. The
+ *   server advances a route past a waypoint it reaches; a single waypoint just
+ *   sits there, reached.
+ * - **Stopped.** The course has been active for more than
+ *   `STALE_COURSE_HOURS` and the boat is not underway now. Age alone would
+ *   take the banner down in the middle of a three-day delivery; not moving
+ *   alone would take it down at a lunch stop. Both together is a boat home
+ *   with the plotter still pointing somewhere. A passage with a night at
+ *   anchor comes back the next morning, because the course is still active
+ *   and the boat is moving again. On a server with no `navigation.state`
+ *   the boat never reads as underway, so this is age alone: twelve hours.
+ *
+ * The course itself is left as it is: clearing it is the plotter's business,
+ * and this only decides what the public page says.
  */
+import { haversineMeters } from './privacy';
 import type { CourseInfo, SignalKApp } from './signalk';
+import { isUnderway, navigationState, type Tree } from './snapshot';
 
 /** What the banner shows. Every field is optional; all-empty means no banner. */
 export interface Passage {
@@ -40,6 +65,58 @@ export interface Passage {
   departed?: string;
   /** Route being followed, when it is a route rather than a single point. */
   route?: string;
+}
+
+/** Hours a course can be active, with the boat not underway, before it is dropped. */
+export const STALE_COURSE_HOURS = 12;
+
+/**
+ * Arrival radius when the course has none: 0.1 NM, the default most plotters
+ * ship for their own arrival alarm.
+ */
+const DEFAULT_ARRIVAL_METERS = 185;
+
+/**
+ * Why a course is one the boat is done with, or null when it is live.
+ *
+ * `tree` is the raw self tree: the position is compared with the destination
+ * here and goes nowhere else.
+ */
+export function staleCourseReason(
+  course: CourseInfo | null | undefined,
+  tree: Tree | undefined,
+  now: Date,
+): string | null {
+  if (!course) return null;
+
+  const here = tree?.navigation?.position?.value;
+  const there = course.nextPoint?.position;
+  if (
+    Number.isFinite(here?.latitude) &&
+    Number.isFinite(here?.longitude) &&
+    Number.isFinite(there?.latitude) &&
+    Number.isFinite(there?.longitude)
+  ) {
+    const radius = course.arrivalCircle > 0 ? course.arrivalCircle : DEFAULT_ARRIVAL_METERS;
+    const meters = haversineMeters(here.latitude, here.longitude, there!.latitude, there!.longitude);
+    if (meters <= radius) return 'the boat is inside the destination\'s arrival circle';
+  }
+
+  // Without a tree there is nothing to say the boat is stopped.
+  if (!tree) return null;
+  const started = Date.parse(course.startTime ?? '');
+  const state = navigationState(tree);
+  if (
+    Number.isFinite(started) &&
+    now.getTime() - started > STALE_COURSE_HOURS * 3_600_000 &&
+    !isUnderway(state)
+  ) {
+    return (
+      `the course has been active for more than ${STALE_COURSE_HOURS} hours and the boat ` +
+      `is ${state ?? 'not reporting navigation.state'}`
+    );
+  }
+  return null;
 }
 
 /** The server, as far as the course is concerned. */
@@ -85,10 +162,17 @@ export function passageFromCourse(course: CourseInfo | null | undefined): Passag
 export async function readPassage(
   app: CourseHost,
   onProblem: (message: string) => void = () => {},
+  context: { tree?: Tree; now?: Date; onStale?: (reason: string) => void } = {},
 ): Promise<Passage | null> {
   if (typeof app.getCourse !== 'function') return null;
   try {
-    return passageFromCourse(await app.getCourse());
+    const course = await app.getCourse();
+    const stale = staleCourseReason(course, context.tree, context.now ?? new Date());
+    if (stale) {
+      context.onStale?.(stale);
+      return null;
+    }
+    return passageFromCourse(course);
   } catch (error: any) {
     onProblem(`Could not read the course: ${error?.message ?? error}`);
     return null;

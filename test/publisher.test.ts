@@ -6,6 +6,7 @@ import yaml from 'js-yaml';
 import { GitHubClient } from '../src/github';
 import { INSTRUMENT_LOG_WARN_BYTES, Publisher } from '../src/publisher';
 import { renderGpxDocument } from '../src/gpx';
+import { bundledTideStations, chooseTideStations } from '../src/tideStations';
 import { StateStore } from '../src/state';
 import { makeConfig } from './helpers/config';
 import { FakeGitHub } from './helpers/fakeGitHub';
@@ -50,7 +51,11 @@ describe('Publisher', () => {
   let store: StateStore;
   let logs: string[];
 
-  const makePublisher = (overrides: Record<string, any> = {}, now = '2026-03-01T20:00:00Z') => {
+  const makePublisher = (
+    overrides: Record<string, any> = {},
+    now = '2026-03-01T20:00:00Z',
+    deps: { siteDir?: string } = {},
+  ) => {
     const config = makeConfig({
       privacyZones: [HOME],
       instrumentLog: {
@@ -73,6 +78,7 @@ describe('Publisher', () => {
       version: '0.1.0',
       log: (message) => logs.push(message),
       now: () => new Date(now),
+      ...deps,
     });
   };
 
@@ -254,6 +260,37 @@ describe('Publisher', () => {
     await changed.runCycle(tree());
     const second = JSON.parse(fake.files.get('data/vessel/site.json')!);
     expect(second.custom_links).toEqual([{ label: 'Starlink', url: 'https://example.com/' }]);
+  });
+
+  it('publishes the nearest tide stations, chosen from the redacted position', async () => {
+    const publisher = makePublisher();
+    // Inside HOME: the published position is the zone center, and so is the
+    // point the stations are ranked from.
+    await publisher.runCycle(tree({ lat: 37.7805, lon: -122.3861 }));
+    const published = JSON.parse(fake.files.get('data/vessel/site.json')!);
+    expect(published.tide_stations).toEqual(
+      chooseTideStations(bundledTideStations(), '', { lat: HOME.lat, lon: HOME.lon }),
+    );
+    expect(published.tide_stations.length).toBeGreaterThan(1);
+  });
+
+  it('republishes the frontend when a shipped file changes, without a version bump', async () => {
+    const copy = async (edit?: string) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'skgp-site-'));
+      await fs.cp(SITE_DIR, dir, { recursive: true });
+      if (edit) await fs.appendFile(path.join(dir, 'assets', 'app.js'), edit);
+      return dir;
+    };
+    await makePublisher({}, undefined, { siteDir: await copy() }).runCycle(tree());
+    const same = await makePublisher({}, undefined, { siteDir: await copy() }).runCycle(
+      tree({ timestamp: '2026-03-01T20:02:00Z' }),
+    );
+    expect(same.files).not.toContain('assets/app.js');
+
+    const fixed = await makePublisher({}, undefined, { siteDir: await copy('\n// fixed\n') })
+      .runCycle(tree({ timestamp: '2026-03-01T20:04:00Z' }));
+    expect(fixed.files).toContain('assets/app.js');
+    expect(fake.files.get('assets/app.js')).toContain('// fixed');
   });
 
   it('publishes the passage it is handed, and drops it when the course clears', async () => {

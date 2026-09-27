@@ -53,7 +53,7 @@ var VESSEL_CONSTANTS = Object.freeze({
   // in. Both used to: a fallback privacy zone at one particular dock and a
   // fallback tide location in San Francisco Bay, which any site that had not
   // published its site config yet showed as its own. Unknown renders as
-  // unknown — privacy_zones and tide_station_override come from site.json or
+  // unknown — privacy_zones and tide_stations come from site.json or
   // they do not come at all.
 
   // ── Theming ──────────────────────────────────────────────────────────────

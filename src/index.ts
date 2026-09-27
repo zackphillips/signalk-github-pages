@@ -24,7 +24,7 @@ import {
   type PolarStatus,
   type SchemaContext,
 } from './config';
-import { loadTideStations, nearestTideStation } from './tideStations';
+import { bundledTideStations, nearestTideStation, treePosition } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
@@ -171,8 +171,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Whether the last cycle reached its branch, for the config page. Null until
   // a cycle has run.
   let branchStatus: SchemaContext['branch'] = null;
-  // The site's tide station list, read the first time the config page wants it.
-  let tideStations: ReturnType<typeof loadTideStations> | undefined;
 
   /**
    * The derived values the config page shows beside their override
@@ -224,12 +222,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
    */
   const tideStationNote = (): NearestTideStation | null => {
     try {
-      const position = readSelfTree(app)?.navigation?.position?.value;
-      const lat = Number(position?.latitude);
-      const lon = Number(position?.longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-      tideStations ??= loadTideStations(path.join(__dirname, '..', 'site'));
-      return nearestTideStation(tideStations, lat, lon);
+      const position = treePosition(readSelfTree(app));
+      if (!position) return null;
+      return nearestTideStation(bundledTideStations(), position.lat, position.lon);
     } catch {
       return null;
     }
@@ -402,6 +397,27 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         return csv;
       };
 
+      // The passage banner, less a course the boat is plainly done with. Why
+      // it was dropped is logged once, not every cycle it stays dropped.
+      let staleReported = '';
+      const readCourse = async (tree: ReturnType<typeof readSelfTree>) => {
+        let stale = '';
+        const read = await readPassage(app, (problem) => app.error(problem), {
+          tree,
+          onStale: (reason) => {
+            stale = reason;
+          },
+        });
+        if (stale && stale !== staleReported) {
+          app.debug(
+            `Passage banner hidden: ${stale}. Clearing the destination on the plotter ` +
+              'makes this permanent.',
+          );
+        }
+        staleReported = stale;
+        return read;
+      };
+
       const schedule = (seconds: number) => {
         if (stopped) return;
         timer = setTimeout(() => {
@@ -427,7 +443,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           return { published: false, files: [], bytes: 0, skipped: 'no Signal K data yet' };
         }
         app.debug(`Publishing on request (${reason}).`);
-        passage = await readPassage(app, (problem) => app.error(problem));
+        passage = await readCourse(tree);
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
           history: await history.read(new Date(), tree),
@@ -510,7 +526,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // Both fetched here rather than inside the publisher, so a cycle
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
-          passage = await readPassage(app, (problem) => app.error(problem));
+          passage = await readCourse(tree);
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
             history: await history.read(new Date(), tree),

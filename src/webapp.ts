@@ -300,9 +300,8 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
           response.type(TYPES[path.extname(requested)] ?? 'text/plain').send(contents);
           return;
         }
-        // Not everything under data/ is telemetry: the tide-station table ships
-        // with the frontend and is published from site/, so fall through to the
-        // file rather than reporting it missing.
+        // Anything else under data/ falls through to site/, and is reported
+        // missing from there if it is not a file either.
       }
 
       const file = resolveSitePath(siteDir, requested);

@@ -12,7 +12,29 @@
       "url": "https://example.com/logs"
     }
   ],
-  "tide_station_override": "9414290",
+  "tide_stations": [
+    {
+      "id": "9414874",
+      "name": "Corte Madera Creek",
+      "lat": 37.9433,
+      "lon": -122.513,
+      "overridden": false
+    },
+    {
+      "id": "9415052",
+      "name": "Gallinas, Gallinas Creek",
+      "lat": 38.015,
+      "lon": -122.503,
+      "overridden": false
+    },
+    {
+      "id": "9414863",
+      "name": "Chevron Oil Company Pier, Richmond",
+      "lat": 37.9283,
+      "lon": -122.4,
+      "overridden": false
+    }
+  ],
   "timezone": "America/Los_Angeles",
   "passage": {
     "to": "Santa Cruz, CA",

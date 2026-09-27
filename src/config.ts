@@ -27,6 +27,7 @@
 import { parseIcon, parseLogo, type VesselIcon, type VesselLogo } from './logo';
 import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
+import { MAX_TIDE_STATION_NM } from './tideStations';
 
 /** One extra button in the site's link row. */
 export interface CustomLink {
@@ -424,7 +425,8 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
     tideStation
       ? `${FOUND} Found: ${tideStation.name} (station ${tideStation.id}), ` +
           `${tideStation.distanceNm.toFixed(1)} NM from the boat.`
-      : `${NOT_FOUND} Not found: the boat has no GPS position, or no listed station is near it.`,
+      : `${NOT_FOUND} Not found: the boat has no GPS position, or no NOAA station is within ` +
+        `${MAX_TIDE_STATION_NM} NM of it.`,
   );
 
   return schema;

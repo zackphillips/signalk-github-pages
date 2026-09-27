@@ -19,7 +19,7 @@ import {
   type NotificationEvent,
 } from './notifications';
 import type { HistoryResult } from './history';
-import { frontendOptions, loadFrontend } from './frontend';
+import { frontendDigest, frontendOptions, loadFrontend } from './frontend';
 import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from './github';
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
@@ -63,6 +63,13 @@ import {
   renderSiteConfig,
   type VesselIdentity,
 } from './siteConfig';
+import {
+  bundledTideStations,
+  chooseTideStations,
+  treePosition,
+  type PublishedTideStation,
+  type TideStation,
+} from './tideStations';
 
 const TELEMETRY_DIR = 'data/telemetry';
 const LATEST_PATH = `${TELEMETRY_DIR}/signalk_latest.json`;
@@ -180,6 +187,8 @@ export interface PublisherDeps {
   siteDir: string;
   /** Plugin version, used to decide when the frontend needs republishing. */
   version: string;
+  /** NOAA's station table; the one shipped in `data/` unless a test says otherwise. */
+  tideStations?: TideStation[];
   log: (message: string) => void;
   now?: () => Date;
 }
@@ -344,7 +353,14 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now, input)));
 
-    files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
+    // From the redacted tree: inside a zone the station is chosen from the
+    // zone center, which is what the page shows as the position anyway.
+    const tideStations = chooseTideStations(
+      this.deps.tideStations ?? bundledTideStations(),
+      config.site.tideStationOverride,
+      treePosition(tree),
+    );
+    files.push(...(await this.siteConfigFile(identity, input.passage ?? null, tideStations)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
     files.push(...(await this.logoFile()));
@@ -769,16 +785,17 @@ export class Publisher {
    * Rewrite `site.json` only when the rendered content actually changes.
    *
    * The fingerprint covers everything that goes into the file, the passage
-   * included: a leg activated on the plotter should reach the site on the
+   * and the tide stations included: a leg activated on the plotter should reach the site on the
    * next cycle, and nothing else should rewrite it. This is also why the
    * passage carries no ETA — see `course.ts`.
    */
   private async siteConfigFile(
     identity: VesselIdentity,
     passage: Passage | null,
+    tideStations: PublishedTideStation[],
   ): Promise<PublishFile[]> {
     const { store, config, log } = this.deps;
-    const contents = renderSiteConfig(config, identity, passage);
+    const contents = renderSiteConfig(config, identity, passage, tideStations);
     const previous = await store.readText('site.json');
     if (previous === contents) return [];
 
@@ -896,7 +913,8 @@ export class Publisher {
     // or a new logo republishes the ones that carry it. The name comes off the
     // tree, which is why it is part of the fingerprint rather than read once
     // at start.
-    const fingerprint = JSON.stringify({ ...options, version });
+    const content = await frontendDigest(siteDir);
+    const fingerprint = JSON.stringify({ ...options, version, content });
     if (publishedVersion === fingerprint) return { files: [], fingerprint: null };
 
     const files = await loadFrontend(siteDir, options);

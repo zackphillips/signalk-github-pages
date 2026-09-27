@@ -1582,7 +1582,6 @@ body.map-fills .footer {
 
 #notifications-panel { border-left-color: #b66b00; }
 
-.notif-meta,
 .notif-footnote,
 .notif-empty {
   font-size: 0.74em;
@@ -1590,7 +1589,6 @@ body.map-fills .footer {
   color: var(--text-muted);
 }
 
-.notif-meta     { margin-bottom: 12px; }
 .notif-footnote { margin-top: 10px; }
 .notif-empty    { padding: 4px 0 2px; }
 
