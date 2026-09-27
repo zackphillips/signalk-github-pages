@@ -6,7 +6,7 @@ How the track is recorded, where the sparklines come from, which paths get publi
 
 The track is recorded from `navigation.position` deltas, which arrive several
 a second, and thinned by *shape*: a fix is kept when dropping it would move
-the drawn line by more than `track.detailMeters`, and at least once per
+the drawn line by more than 15 m, and at least once per
 publish cycle whatever the shape says.
 
 That is not the same as sampling more often. The Git Data API uploads whole
@@ -20,8 +20,8 @@ spends points where the track bends and nothing where it does not:
 | A mark rounding | 9 points, 9 m | 5 points, 174 m |
 | Straight motoring | same as before | same |
 
-Lower `detailMeters` follows a tack more closely and uploads more; higher is
-cheaper on a hotspot. On a server that does not offer position deltas the
+15 m is finer than a GPS fix is repeatable, so it is fixed rather than a
+setting. On a server that does not offer position deltas the
 plugin falls back to one fix per cycle, as before, and says so in the log.
 
 ## History provider
@@ -67,10 +67,8 @@ paths the provider reports, re-listed every 15 minutes. A literal path the
 provider has never stored is still requested — a sensor that came online five
 minutes ago is not in the listing yet.
 
-The **History provider** dropdown lists the providers registered on the
-server, found by asking each enabled plugin; change it only if more than one
-is registered and you want a specific one. *Server default* follows the
-server's own setting. Setting `instrumentLog.hours` to zero turns the whole
+The plugin reads from the server's default provider, the one chosen in the
+server's own settings. Setting `instrumentLog.hours` to zero turns the whole
 thing off.
 
 **Why the site says "(not logged)" past an hour.** The sparkline menu offers
@@ -131,8 +129,8 @@ and from its path when it does not (`electrical.batteries.1.voltage` reads
 something writes `internet.*` or `environment.rpi.*`. A panel the boat has
 nothing for is not shown.
 
-The config page's **Paths** section is how to take things off it. Both
-boxes take one path per line; `*` matches one segment, a parent covers its
+The config page's **Paths** section is how to take things off it. The box
+takes one path per line; `*` matches one segment, a parent covers its
 whole subtree, lines starting with `#` are comments, and empty is a real
 answer.
 
@@ -142,15 +140,15 @@ sparkline. Notifications go in the same box as full paths:
 `notifications.server` drops every server notification, and `notifications`
 alone drops them all. Hiding `navigation.position` stops the track too.
 
-Every path gets a sparkline unless you exclude it. A path is logged when the
+Every path gets a sparkline unless it is hidden or on the fixed exclusion
+list below. A path is logged when the
 history provider has stored it **and** the boat is reporting a number for it
 right now. The first condition is what makes a sparkline possible. The second
 keeps out everything the database remembers but the boat no longer has: the
 sensor you unplugged in March, the bank you renamed.
 
-**Published, never graphed** (`paths.notGraphed`) is the list to leave out of
-the log while still showing the current value. Empty logs everything the
-boat reports. The default leaves out what is not worth a graph:
+These are shown as current values but never logged, because none of them is
+worth a graph:
 
 ```
 design
@@ -164,7 +162,7 @@ sensors
 notifications
 ```
 
-**Positions are never logged, whatever this list says.** Any path with a
+**Positions are never logged, whatever either list says.** Any path with a
 `position` segment is dropped from the query and from the answer, and so is
 any value carrying a latitude or longitude. That covers
 `navigation.anchor.position` (the drop point, often inside your privacy
@@ -179,8 +177,8 @@ publishes for it.
 The log is the entire bandwidth cost of a cycle, and its size now follows the
 boat rather than the config page. The plugin logs the file's size every
 cycle and warns past 512 kB. If it is more than you want on a cellular plan,
-add paths to *Published, never graphed* — `environment.rpi`, per-cell battery voltages,
-whatever you never look at — or shorten the window.
+hide the paths you never look at (`environment.rpi`, per-cell battery
+voltages) or shorten the window.
 
 ### Why this matters more than it looks like it should
 

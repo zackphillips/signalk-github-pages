@@ -24,7 +24,6 @@ import { GitHubClient, publishFiles, type PublishFile, type RequestStats } from 
 import { describePrune, planPrune, type PrunePlan, type PruneRequest } from './prune';
 import {
   MANIFEST_PATH,
-  RETIRED_PATHS,
   partitionOwned,
   renderManifest,
   type ManifestOptions,
@@ -58,7 +57,6 @@ import {
   type TrackMeta,
 } from './gpx';
 import { POLARS_PATH } from './polars';
-import { logbookPath } from './logbook';
 import {
   mergeVesselIdentity,
   readVesselDetails,
@@ -131,14 +129,6 @@ export interface CycleInput {
   notificationEdges?: NotificationEvent[];
   /** True while a recorder is running, which is what makes the counts real. */
   recordingNotifications?: boolean;
-  /**
-   * Every logbook day, rendered, keyed by local day — read from
-   * signalk-logbook's files in `index.ts`, so this module does no file
-   * reading of another plugin's. Null or absent when there is no logbook on
-   * this server, which leaves whatever is published alone. An empty map
-   * means publish none, and takes down what was published.
-   */
-  logbook?: Map<string, string> | null;
 }
 
 export interface CycleResult {
@@ -196,6 +186,16 @@ export interface PublisherDeps {
 
 export class Publisher {
   private readonly now: () => Date;
+  /**
+   * Local copies to write once this cycle's commit lands, by store name.
+   *
+   * Each is what the next cycle compares against to decide whether a file
+   * needs uploading again. Written before the commit, a publish that failed
+   * would leave the plugin believing the file was on the site, and it would
+   * not go up again until its content next changed: a passage stuck on the
+   * banner, a new logo never shown.
+   */
+  private readonly onLanding = new Map<string, string>();
 
   constructor(private readonly deps: PublisherDeps) {
     this.now = deps.now ?? (() => new Date());
@@ -247,6 +247,7 @@ export class Publisher {
 
   async runCycle(rawTree: Tree, input: CycleInput = {}): Promise<CycleResult> {
     const { config, store, log, client, version, siteDir } = this.deps;
+    this.onLanding.clear();
     const polars = input.polars ?? '';
     const history: HistoryResult = input.history ?? { status: 'unavailable', reason: 'not read' };
     const startedAt = Date.now();
@@ -343,9 +344,6 @@ export class Publisher {
     files.push(...(await this.instrumentLogFile(history)));
     files.push(...(await this.notificationsFile(tree, now, input)));
 
-    const logbook = await this.logbookFiles(state, input.logbook);
-    files.push(...logbook.files);
-
     files.push(...(await this.siteConfigFile(identity, input.passage ?? null)));
     files.push(...(await this.polarsFile(polars)));
     files.push(...(await this.manifestFile(polars)));
@@ -369,12 +367,11 @@ export class Publisher {
       log(`Refusing to publish unowned path: ${file.path}`);
     }
 
-    const retiring = await this.retirementDeletions(state.retired ?? []);
     const auditDeletions = partitionOwned(
       audit.deletions.filter((path) => !byPath.has(path)).map((path) => ({ path })),
       this.manifestOptions(polars),
     ).owned.map((file) => file.path);
-    const deletions = [...retiring, ...auditDeletions, ...logbook.deletions];
+    const deletions = auditDeletions;
 
     const fileSizes = owned
       .map((file) => ({ path: file.path, bytes: contentBytes(file.content) }))
@@ -391,6 +388,9 @@ export class Publisher {
 
     const message = this.commitMessage(navState, now);
     const result = await publishFiles(client, owned, message, { deletions });
+    if (result) {
+      for (const [name, contents] of this.onLanding) await store.writeText(name, contents);
+    }
     const requests = client.takeStats();
     const durationMs = Date.now() - startedAt;
 
@@ -399,11 +399,7 @@ export class Publisher {
       lastPublishedAt: result ? now.toISOString() : state.lastPublishedAt,
       // Only once the commit carrying them actually landed: a failed publish
       // must leave the work to be retried, not recorded as done.
-      ...(result && retiring.length ? { retired: [...(state.retired ?? []), ...retiring] } : {}),
       ...(result && frontend.fingerprint ? { frontendVersion: frontend.fingerprint } : {}),
-      ...(logbook.next && (result || (!logbook.files.length && !logbook.deletions.length))
-        ? { logbook: logbook.next }
-        : {}),
       // A cycle with nothing to commit has nothing the audit needed either.
       ...(audit.fingerprint && (result || (!audit.files.length && !auditDeletions.length))
         ? { privacyAudit: audit.fingerprint }
@@ -466,7 +462,7 @@ export class Publisher {
 
     if (history.status === 'none') {
       if ((await store.readText('instrument_log.json')) === contents) return [];
-      await store.writeText('instrument_log.json', contents);
+      this.onLanding.set('instrument_log.json', contents);
       log(
         'No history provider: publishing an empty instrument log, so the site ' +
           'omits the sparklines rather than drawing a frozen one.',
@@ -476,8 +472,8 @@ export class Publisher {
 
     await store.writeText('instrument_log.json', contents);
     log(
-      `Instrument log: ${entries.length} entries from history provider ` +
-        `${history.providerId}, ${history.requestedPaths.length} path(s) asked for, ` +
+      `Instrument log: ${entries.length} entries from the history provider, ` +
+        `${history.requestedPaths.length} path(s) asked for, ` +
         `${kb(bytes)}.`,
     );
     if (bytes > INSTRUMENT_LOG_WARN_BYTES) {
@@ -485,7 +481,7 @@ export class Publisher {
         `Instrument log is ${kb(bytes)} and is uploaded in full on ` +
           `every publish. At the underway cadence of ${config.interval.underway}s ` +
           `that is about ${kb((bytes * 4) / 3 * (3600 / config.interval.underway))} ` +
-          'per hour. Add paths to Never logged, or shorten the history window.',
+          'per hour. Hide the paths not worth graphing, or shorten the history window.',
       );
     }
     return [{ path: INSTRUMENT_LOG_PATH, content: contents }];
@@ -590,13 +586,8 @@ export class Publisher {
     // Deletions go through the same ownership check as writes: the manifest is
     // what stops a bug here reaching a path that belongs to the user, and a
     // deletion is the one that could not be undone by the next cycle.
-    // A pruned voyage takes its logbook day with it, in the same commit.
-    const before = await store.readState();
-    const logbookDays = plan.remove
-      .map((track) => track.date)
-      .filter((day) => before.logbook?.[day] !== undefined);
     const { owned, rejected } = partitionOwned(
-      [...plan.paths, ...logbookDays.map(logbookPath)].map((path) => ({ path })),
+      plan.paths.map((path) => ({ path })),
       this.manifestOptions(''),
     );
     for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
@@ -623,13 +614,6 @@ export class Publisher {
     await store.writeText('tracks_index.json', index);
     const removed = new Set(plan.remove.map((track) => track.date));
     const state = await store.readState();
-    if (logbookDays.length && state.logbook) {
-      await store.mergeState({
-        logbook: Object.fromEntries(
-          Object.entries(state.logbook).filter(([day]) => !removed.has(day)),
-        ),
-      });
-    }
     if (request.date) {
       // One day, removed by hand: it stays gone. Yesterday's points are still
       // in the position index for most of today, and letting the day "return"
@@ -782,41 +766,6 @@ export class Publisher {
   }
 
   /**
-   * Paths this plugin used to write, removed once and then left alone.
-   *
-   * `data/vessel/info.yaml` is the only one so far: `site.json` replaced it,
-   * and an install upgrading across that change would otherwise keep a file
-   * in the repository that looks like live configuration, is not read by
-   * anything, and will never be updated again.
-   *
-   * Checked against what is actually in the repository, because the Git Data
-   * API rejects the whole tree with a 422 if an entry names a path the base
-   * tree does not have — the same reason the voyage prune checks. A path that
-   * is already gone is recorded as retired without a commit, so a fresh
-   * install pays one `getFile` on its first cycle and nothing afterwards.
-   */
-  private async retirementDeletions(alreadyRetired: string[]): Promise<string[]> {
-    const { client, log } = this.deps;
-    const pending = RETIRED_PATHS.filter((path) => !alreadyRetired.includes(path));
-    if (!pending.length) return [];
-    const present: string[] = [];
-    for (const path of pending) {
-      const existing = await client.getFile(path).catch(() => null);
-      if (existing !== null) present.push(path);
-    }
-    const { owned, rejected } = partitionOwned(
-      present.map((path) => ({ path })),
-      this.manifestOptions(''),
-      { allowRetired: true },
-    );
-    for (const file of rejected) log(`Refusing to delete unowned path: ${file.path}`);
-    if (owned.length) {
-      log(`Removing ${owned.map((file) => file.path).join(', ')}: no longer published by this plugin.`);
-    }
-    return owned.map((file) => file.path);
-  }
-
-  /**
    * Rewrite `site.json` only when the rendered content actually changes.
    *
    * The fingerprint covers everything that goes into the file, the passage
@@ -833,65 +782,13 @@ export class Publisher {
     const previous = await store.readText('site.json');
     if (previous === contents) return [];
 
-    await store.writeText('site.json', contents);
+    this.onLanding.set('site.json', contents);
     log(
       previous === null
         ? `Writing ${SITE_CONFIG_PATH} for the first time.`
         : `Site configuration changed; rewriting ${SITE_CONFIG_PATH}.`,
     );
     return [{ path: SITE_CONFIG_PATH, content: contents }];
-  }
-
-  /**
-   * The logbook days to write and to delete this cycle.
-   *
-   * A day is published only while it is on the voyage list. The site shows
-   * the log on a voyage's card and nowhere else, so a logbook day with no
-   * voyage — a day at the dock, whose fixes the privacy zones dropped — would
-   * be a file nothing reads, carrying notes from inside a zone. The same rule
-   * is what makes a prune take the log down with the track.
-   *
-   * What landed is tracked by hash in state rather than re-read from the
-   * repository. A deletion is checked against the repository first all the
-   * same: a file removed by hand on GitHub would otherwise fail every commit
-   * with a 422 from here on.
-   */
-  private async logbookFiles(
-    state: PersistedState,
-    logbook: Map<string, string> | null | undefined,
-  ): Promise<{ files: PublishFile[]; deletions: string[]; next?: Record<string, string> }> {
-    if (!logbook) return { files: [], deletions: [] };
-    const { store, client, log } = this.deps;
-
-    const voyages = new Set(
-      parseTracksIndex(await store.readText('tracks_index.json')).map((track) => track.date),
-    );
-    const removed = new Set(state.removedDays ?? []);
-    const published = state.logbook ?? {};
-    const next: Record<string, string> = {};
-    const files: PublishFile[] = [];
-    for (const [day, content] of logbook) {
-      if (!voyages.has(day) || removed.has(day)) continue;
-      const hash = createHash('sha256').update(content).digest('hex');
-      next[day] = hash;
-      if (published[day] !== hash) files.push({ path: logbookPath(day), content });
-    }
-
-    const deletions: string[] = [];
-    for (const day of Object.keys(published)) {
-      if (day in next) continue;
-      if ((await client.getFile(logbookPath(day)).catch(() => null)) !== null) {
-        deletions.push(logbookPath(day));
-      }
-    }
-    if (files.length || deletions.length) {
-      log(
-        `Logbook: ${files.length} day(s) to publish` +
-          (deletions.length ? `, ${deletions.length} to remove` : '') +
-          '.',
-      );
-    }
-    return { files, deletions, next };
   }
 
   /**
@@ -907,7 +804,7 @@ export class Publisher {
     if (!polars) return [];
     const previous = await store.readText('polars.csv');
     if (previous === polars) return [];
-    await store.writeText('polars.csv', polars);
+    this.onLanding.set('polars.csv', polars);
     log(
       `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
         `(${polars.trim().split('\n').length - 1} wind angles).`,
@@ -930,7 +827,7 @@ export class Publisher {
     const options = this.manifestOptions(polars);
     const fingerprint = JSON.stringify({ ...options, version });
     if ((await store.readText('manifest-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('manifest-fingerprint.txt', fingerprint);
+    this.onLanding.set('manifest-fingerprint.txt', fingerprint);
     return [
       {
         path: MANIFEST_PATH,
@@ -961,7 +858,7 @@ export class Publisher {
     // hotspot at the end of the month.
     const fingerprint = `${logo.path}:${createHash('sha256').update(logo.content).digest('hex')}`;
     if ((await store.readText('logo-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('logo-fingerprint.txt', fingerprint);
+    this.onLanding.set('logo-fingerprint.txt', fingerprint);
     log(`Publishing ${logo.path} (${kb(logo.content.length)}).`);
     return [{ path: logo.path, content: logo.content }];
   }
@@ -981,7 +878,7 @@ export class Publisher {
 
     const fingerprint = `${icon.path}:${createHash('sha256').update(icon.content).digest('hex')}`;
     if ((await store.readText('icon-fingerprint.txt')) === fingerprint) return [];
-    await store.writeText('icon-fingerprint.txt', fingerprint);
+    this.onLanding.set('icon-fingerprint.txt', fingerprint);
     log(`Publishing ${icon.path} (${kb(icon.content.length)}).`);
     return [{ path: icon.path, content: icon.content }];
   }
@@ -1007,7 +904,8 @@ export class Publisher {
     // before the commit lands means a publish that fails — a 502, a wedged
     // hotspot — leaves the plugin believing it has already shipped this
     // frontend, and the site keeps serving the previous release's JavaScript
-    // until the next version bump. `runCycle` stores it once the commit is in.    log(`Publishing frontend (${files.length} files, version ${version}).`);
+    // until the next version bump. `runCycle` stores it once the commit is in.
+    log(`Publishing frontend (${files.length} files, version ${version}).`);
     return { files, fingerprint };
   }
 

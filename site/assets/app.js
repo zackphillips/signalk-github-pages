@@ -958,36 +958,19 @@ function setRawDataPre(id, obj) {
   }
 }
 
-async function updateMapLocation(lat, lon) {
-  try {
-    // If inside a privacy zone, snap the geocoding lookup to the zone center
-    // so we get a proper landmark name rather than an open-water coordinate.
-    const zone = getPrivacyZoneCenter(lat, lon);
-    const lookupLat = zone ? zone.lat : lat;
-    const lookupLon = zone ? zone.lon : lon;
-    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lookupLat}&lon=${lookupLon}&format=json&zoom=10&addressdetails=1`);
-    const data = await response.json();
-
-    let locationName = "Unknown Location";
-
-    if (data.display_name) {
-      // Parse the display name to get a more concise location
-      const parts = data.display_name.split(', ');
-      if (parts.length >= 2) {
-        // Try to get city and state/country
-        const city = parts[0];
-        const state = parts[1];
-        locationName = `${city}, ${state}`;
-      } else {
-        locationName = data.display_name;
-      }
-    }
-
-    setStatusSentence(locationName);
-  } catch (error) {
-    console.error('Error fetching location:', error);
-    setStatusSentence('unknown location');
-  }
+// Where the boat is, in words, without asking anyone. This used to send the
+// position to Nominatim from every visitor's browser on every load: a
+// third-party lookup of the boat's position per page view, and a usage
+// pattern OpenStreetMap's policy forbids (no identifying User-Agent, no
+// caching, unbounded request rate), so a link shared in a forum was one busy
+// afternoon away from getting blocked. The published position is already
+// the zone center inside a zone, so the zone's name is the place.
+function describeLocation(lat, lon) {
+  const zone = getPrivacyZoneCenter(lat, lon);
+  if (zone?.name) return zone.name;
+  const ns = lat >= 0 ? 'N' : 'S';
+  const ew = lon >= 0 ? 'E' : 'W';
+  return `${Math.abs(lat).toFixed(2)}\u00b0${ns}, ${Math.abs(lon).toFixed(2)}\u00b0${ew}`;
 }
 
 function setStatusSentence(locationName) {
@@ -1612,7 +1595,6 @@ function toggleVoyageDetail(item) {
   item.querySelector('.voyage-row')?.setAttribute('aria-expanded', 'true');
 
   renderVoyageMiniMap(item, entry);
-  loadVoyageLog(item, entry.date);
 }
 
 function voyageDetailHtml(entry) {
@@ -1651,80 +1633,7 @@ function voyageDetailHtml(entry) {
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       <button type="button" class="voyage-detail-btn voyage-detail-btn--ghost voyage-share">Share</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-    </div>
-    <div class="voyage-log" hidden></div>`;
-}
-
-// ── Voyage logbook ───────────────────────────────────────────────────────
-// data/telemetry/logbook/<day>.json, published from signalk-logbook for the
-// days on the voyage list. A 404 is the normal answer for a boat without the
-// logbook, or a voyage nobody wrote anything for, and leaves the card as it
-// was. Units are the logbook's own: knots, degrees, hPa.
-async function loadVoyageLog(item, date) {
-  const target = item.querySelector('.voyage-log');
-  if (!target) return;
-  let day;
-  try {
-    const response = await fetch(`data/telemetry/logbook/${date}.json?ts=${Date.now()}`);
-    if (!response.ok) return;
-    day = await response.json();
-  } catch (e) {
-    return;
-  }
-  const entries = Array.isArray(day?.entries) ? day.entries : [];
-  // The card may have been closed, or another opened, while this was loading.
-  if (!entries.length || !item.classList.contains('is-open')) return;
-  target.innerHTML = voyageLogHtml(entries);
-  target.hidden = false;
-}
-
-function voyageLogHtml(entries) {
-  // The last crew list and skipper of the day: the logbook stamps them on
-  // every entry, so the latest is who was aboard at the end.
-  const last = (key) => entries.reduce((found, e) => (e[key] ? e[key] : found), null);
-  const skipper = last('skipperName');
-  const crew = last('crewNames');
-  const aboard = [
-    skipper ? `<span><span class="voyage-log-label">Skipper</span> ${escapeHtml(skipper)}</span>` : '',
-    Array.isArray(crew) && crew.length
-      ? `<span><span class="voyage-log-label">Crew</span> ${crew.map(escapeHtml).join(', ')}</span>`
-      : '',
-  ].filter(Boolean).join('');
-
-  const time = (iso) => {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-  const n = (v, digits) => (Number.isFinite(v) ? v.toFixed(digits) : null);
-  const conditions = (e) => [
-    n(e.wind?.speed, 0) ? `Wind ${n(e.wind.speed, 0)} kn${n(e.wind?.direction, 0) ? ` from ${n(e.wind.direction, 0)}°` : ''}` : '',
-    n(e.speed?.sog, 1) ? `SOG ${n(e.speed.sog, 1)} kn` : '',
-    n(e.barometer, 0) ? `${n(e.barometer, 0)} hPa` : '',
-    Number.isFinite(e.observations?.seaState) ? `Sea state ${e.observations.seaState}` : '',
-    n(e.engine?.hours, 1) ? `Engine ${n(e.engine.hours, 1)} h` : '',
-    e.vhf ? `VHF ${escapeHtml(e.vhf)}` : '',
-  ].filter(Boolean).join(' · ');
-
-  const rows = entries.map((e) => {
-    const auto = e.origin === 'auto';
-    const meta = conditions(e);
-    return `
-      <li class="voyage-log-entry${auto ? ' voyage-log-entry--auto' : ''}">
-        <span class="voyage-log-time">${time(e.datetime)}</span>
-        <div class="voyage-log-body">
-          ${e.text ? `<p class="voyage-log-text">${escapeHtml(e.text)}</p>` : ''}
-          ${meta ? `<p class="voyage-log-meta">${meta}</p>` : ''}
-          ${e.author ? `<p class="voyage-log-meta">— ${escapeHtml(e.author)}</p>` : ''}
-        </div>
-      </li>`;
-  }).join('');
-
-  return `
-    <div class="voyage-log-header">
-      <span class="voyage-detail-stat-label">Logbook</span>
-      ${aboard ? `<div class="voyage-log-aboard">${aboard}</div>` : ''}
-    </div>
-    <ol class="voyage-log-list">${rows}</ol>`;
+    </div>`;
 }
 
 function renderVoyageMiniMap(item, entry) {
@@ -3305,8 +3214,8 @@ async function loadData() {
 
         // Load unified 48-hr conditions forecast
         loadConditionsForecast().catch(err => console.error('Conditions forecast error:', err));
-        // Update map location title
-        updateMapLocation(lat, lon).catch(err => console.error('Location fetch error:', err));
+        // The status line: where the boat is, in words
+        setStatusSentence(describeLocation(lat, lon));
         // Load track for last 24 hours
         loadTrack().catch(err => console.error('Track load error:', err));
         // Update polar performance

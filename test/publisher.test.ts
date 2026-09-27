@@ -37,7 +37,6 @@ const fromHistory = (entries: Array<{ timestamp: string; values: Record<string, 
     status: 'ok' as const,
     entries,
     requestedPaths: Object.keys(entries[0]?.values ?? {}),
-    providerId: 'signalk-to-influxdb2',
   });
 
 const LOG_ENTRIES = [
@@ -398,7 +397,7 @@ describe('Publisher', () => {
       expect(second.files).not.toContain('data/vessel/logo.png');
     });
 
-    it('leaves a logo committed by hand alone when none is configured', async () => {
+    it('publishes and claims no logo when none is configured', async () => {
       const publisher = makePublisher();
       await publisher.seed();
       const result = await publisher.runCycle(tree());
@@ -437,6 +436,35 @@ describe('Publisher', () => {
 
       expect(second.files).toContain('index.html');
       expect(String(fake.files.get('index.html'))).toContain('content="Swallow');
+    });
+  });
+
+  describe('a publish that fails', () => {
+    it('uploads the same files again on the next cycle', async () => {
+      // Recorded as published before the commit landed, the logo and site.json
+      // would not go up again until their content next changed.
+      const logo =
+        'data:image/png;base64,' +
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const publisher = makePublisher({ site: { logo } });
+      await publisher.seed();
+      fake.failNextRefUpdates(2);
+      await expect(publisher.runCycle(tree())).rejects.toThrow();
+      expect(fake.files.has('data/vessel/logo.png')).toBe(false);
+
+      const retry = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:02:00Z' }));
+      for (const path of [
+        'data/vessel/logo.png',
+        'data/vessel/site.json',
+        '.tracker-manifest.json',
+      ]) {
+        expect(retry.files, path).toContain(path);
+        expect(fake.files.has(path), path).toBe(true);
+      }
+
+      const third = await publisher.runCycle(tree({ timestamp: '2026-03-01T20:04:00Z' }));
+      expect(third.files).not.toContain('data/vessel/logo.png');
+      expect(third.files).not.toContain('data/vessel/site.json');
     });
   });
 
@@ -550,7 +578,7 @@ describe('Publisher', () => {
     });
 
     it('publishes nothing and claims nothing when the setting is off', async () => {
-      const publisher = makePublisher({ publishNotifications: false });
+      const publisher = makePublisher({ notifications: { publish: false } });
       const result = await publisher.runCycle(alarmed('alarm'));
       expect(result.files).not.toContain('data/telemetry/notifications.json');
       expect(fake.files.has('data/telemetry/notifications.json')).toBe(false);
@@ -558,102 +586,11 @@ describe('Publisher', () => {
   });
 
 
-  describe("the ship's docs reader", () => {
-    it('removes the reader and its index once, and never a document', async () => {
-      fake.commitFile('docs.html', '<!doctype html>');
-      fake.commitFile('assets/docs.js', '// reader');
-      fake.commitFile('docs/index.json', '{"docs":[]}');
-      const publisher = makePublisher();
-      await publisher.runCycle(tree());
-
-      for (const retired of ['docs.html', 'assets/docs.js', 'docs/index.json']) {
-        expect(fake.files.has(retired), retired).toBe(false);
-      }
-      expect(fake.files.get('docs/mob-procedure.md')).toContain('Man Overboard');
-      expect(fake.files.has('docs/_template.md')).toBe(true);
-
-      // Retired is retired: a file of the same name committed later stays.
-      fake.commitFile('docs.html', '<!doctype html><title>Mine</title>');
-      await publisher.runCycle(tree());
-      expect(fake.files.get('docs.html')).toContain('Mine');
-    });
-
+  describe("the owner's docs", () => {
     it('never writes under docs/ on a normal cycle', async () => {
       const publisher = makePublisher();
       const result = await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
       expect(result.files.filter((file) => file.startsWith('docs'))).toEqual([]);
-    });
-  });
-
-  describe('the logbook', () => {
-    const day = (text: string) =>
-      `${JSON.stringify({ schema_version: 1, date: '2026-03-01', entries: [{ text }] })}\n`;
-    const PATH = 'data/telemetry/logbook/2026-03-01.json';
-
-    it('publishes the log for a voyage day, and not for a day with no voyage', async () => {
-      const publisher = makePublisher();
-      await publisher.runCycle(tree(), {
-        logbook: new Map([
-          ['2026-03-01', day('Departed')],
-          ['2026-02-20', day('At the dock')],
-        ]),
-      });
-      expect(fake.files.get(PATH)).toContain('Departed');
-      expect(fake.files.has('data/telemetry/logbook/2026-02-20.json')).toBe(false);
-    });
-
-    it('costs nothing while a day is unchanged, and republishes an edit', async () => {
-      const publisher = makePublisher();
-      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
-      const second = await publisher.runCycle(tree(), {
-        logbook: new Map([['2026-03-01', day('Departed')]]),
-      });
-      expect(second.files).not.toContain(PATH);
-
-      const third = await publisher.runCycle(tree(), {
-        logbook: new Map([['2026-03-01', day('Departed, then reefed')]]),
-      });
-      expect(third.files).toContain(PATH);
-      expect(fake.files.get(PATH)).toContain('reefed');
-    });
-
-    it('takes the log down when publishing is off, and leaves it when there is no logbook', async () => {
-      const publisher = makePublisher();
-      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
-
-      // No logbook on the server this cycle: nothing to say, so nothing changes.
-      await publisher.runCycle(tree(), { logbook: null });
-      expect(fake.files.has(PATH)).toBe(true);
-
-      // Switched off: an empty map, and the published day goes.
-      await publisher.runCycle(tree(), { logbook: new Map() });
-      expect(fake.files.has(PATH)).toBe(false);
-      expect((await store.readState()).logbook).toEqual({});
-    });
-
-    it('survives a published day deleted by hand on GitHub', async () => {
-      const publisher = makePublisher();
-      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
-      fake.deleteFile(PATH);
-      // Deleting a path the tree does not have is a 422 for the whole commit.
-      await expect(publisher.runCycle(tree(), { logbook: new Map() })).resolves.toBeDefined();
-      expect((await store.readState()).logbook).toEqual({});
-    });
-
-    it('goes with its voyage when the voyage is pruned', async () => {
-      const publisher = makePublisher();
-      await publisher.runCycle(tree(), { logbook: new Map([['2026-03-01', day('Departed')]]) });
-      // Today is never pruned, so prune it from tomorrow.
-      const tomorrow = makePublisher({}, '2026-03-02T20:00:00Z');
-      await tomorrow.pruneTracks({ date: '2026-03-01' });
-      expect(fake.files.has(PATH)).toBe(false);
-      expect((await store.readState()).logbook).toEqual({});
-
-      // A day removed by hand stays removed, logbook and all.
-      await tomorrow.runCycle(tree({ timestamp: '2026-03-02T20:00:00Z' }), {
-        logbook: new Map([['2026-03-01', day('Departed')]]),
-      });
-      expect(fake.files.has(PATH)).toBe(false);
     });
   });
 
@@ -1048,7 +985,7 @@ describe('cycle accounting', () => {
     expect(logFile.bytes).toBeGreaterThan(INSTRUMENT_LOG_WARN_BYTES);
     const warning = logs.find((line) => line.includes('uploaded in full'))!;
     expect(warning).toContain('per hour');
-    expect(warning).toContain('Add paths to Never logged');
+    expect(warning).toContain('Hide the paths not worth graphing');
   });
 
   it('stays quiet about size when the log is small', async () => {

@@ -53,6 +53,11 @@ export class FakeGitHub {
     this.bumpEtag();
   }
 
+  /** Fail the next N ref updates with 422; two in a row fail a publish. */
+  failNextRefUpdates(count: number): void {
+    this.refFailuresLeft = count;
+  }
+
   private bumpEtag(): void {
     this.etagCounter += 1;
     this.treeEtag = `W/"tree-${this.etagCounter}"`;

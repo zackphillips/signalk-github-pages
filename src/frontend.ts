@@ -30,7 +30,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { siteBasePath, type PluginConfig } from './config';
-import { LEGACY_LOGO_PATH } from './logo';
 
 /**
  * The tab, home-screen and link-preview icon for a site with no icon set.
@@ -94,18 +93,17 @@ export function frontendOptions(
 ): FrontendOptions {
   const logo = config.site.logo;
   const icon = config.site.icon;
+  const iconPath = icon?.path ?? GENERIC_ICON_PATH;
   return {
     repo: config.github.repo,
     branch: config.github.branch,
     version,
     vesselName,
     siteUrl: config.site.url,
-    // With no logo configured the pages still ask for the path the first
-    // adopters committed theirs to, and hide the image when it 404s. The icon
-    // is a separate upload with no such history, so it falls back to the
-    // bundled generic one instead.
-    logoPath: logo?.path ?? LEGACY_LOGO_PATH,
-    iconPath: icon?.path ?? GENERIC_ICON_PATH,
+    // With no logo the icon stands in, configured or generic, so the status
+    // hero has an image and a shared link unfurls to something.
+    logoPath: logo?.path ?? iconPath,
+    iconPath,
     iconType: icon?.mediaType ?? 'image/svg+xml',
     basePath: siteBasePath(config.site.url),
   };

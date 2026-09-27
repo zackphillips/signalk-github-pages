@@ -28,11 +28,10 @@ import { loadTideStations, nearestTideStation } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
 import { GitHubClient, tokenHint } from './github';
-import { HistoryReader, listHistoryProviders } from './history';
+import { HistoryReader } from './history';
 import { Publisher } from './publisher';
 import { StateStore } from './state';
 import { readActivePolar } from './polars';
-import { LogbookReader, logbookDir, renderLogbookDays } from './logbook';
 import { isUnderway, readSelfTree } from './snapshot';
 import type { Plugin as ServerPlugin, SignalKApp } from './signalk';
 import { NotificationRecorder } from './notificationRecorder';
@@ -140,7 +139,7 @@ function historySetting(app: SignalKApp, config: PluginConfig): string {
   }
   const hours = (config.history.resolutionSeconds * config.instrumentLog.entries) / 3600;
   return (
-    `instrument log from ${config.history.providerId || 'the default'} history provider: ` +
+    'instrument log from the default history provider: ' +
     `${hours}h at ${config.history.resolutionSeconds}s buckets ` +
     `(${config.instrumentLog.entries} entries)`
   );
@@ -159,9 +158,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // The passage the last cycle read, for the console's preview. Same rule as
   // the polar CSV: a page open must not make the boat call the Course API.
   let passage: Passage | null = null;
-  // The logbook days the last cycle rendered, for the preview. Same rule:
-  // opening the console must not make the boat read another plugin's files.
-  let logbookDays: Map<string, string> | null = null;
   // Set on start, cleared on stop: the console's routes are registered once,
   // when the server loads the plugin, and answer 503 while it is not running.
   let webapp: WebappDeps | null = null;
@@ -175,8 +171,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Whether the last cycle reached its branch, for the config page. Null until
   // a cycle has run.
   let branchStatus: SchemaContext['branch'] = null;
-  // The history providers the server had registered when last asked.
-  let historyProviders: SchemaContext['historyProviders'] = null;
   // The site's tide station list, read the first time the config page wants it.
   let tideStations: ReturnType<typeof loadTideStations> | undefined;
 
@@ -196,18 +190,16 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
    */
   const schemaContext = () => {
     let owner = '';
-    let savedGithub: Record<string, any> = {};
-    let saved: Record<string, any> | undefined;
+    let saved: Record<string, any> = {};
     try {
       const stored = app.readPluginOptions?.() as Record<string, any> | undefined;
-      saved = (stored?.configuration ?? undefined) as Record<string, any> | undefined;
-      savedGithub = saved?.github ?? {};
-      const value = savedGithub.owner;
+      saved = (stored?.configuration ?? {}) as Record<string, any>;
+      const value = saved.github?.owner;
       if (typeof value === 'string') owner = value.trim();
     } catch {
       // Nothing saved yet: the notes stay quiet until the owner is set.
     }
-    const savedOverrides = readOverrides(saved ?? {});
+    const savedOverrides = readOverrides(saved);
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually
     // resolve against before anyone ticks the override.
@@ -216,17 +208,11 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       savedOverrides.repository,
       savedOverrides.overrideRepository === true,
     );
-    // Asked again every time the page opens, for the next time it opens: the
-    // form is built synchronously, and a provider plugin that was enabled a
-    // minute ago should not need a server restart to appear.
-    void refreshHistoryProviders();
     return {
       repoName: owner ? `${owner}.github.io` : '',
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       branch: branchStatus,
       tideStation: tideStationNote(),
-      historyProviders,
-      saved,
     };
   };
 
@@ -246,14 +232,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       return nearestTideStation(tideStations, lat, lon);
     } catch {
       return null;
-    }
-  };
-
-  const refreshHistoryProviders = async (): Promise<void> => {
-    try {
-      historyProviders = await listHistoryProviders(app);
-    } catch {
-      // Not knowing the list costs the dropdown its entries, nothing else.
     }
   };
 
@@ -408,36 +386,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       // Problems are logged only when they change. A polar that will not
       // convert would otherwise say so every two minutes for as long as it is
       // selected, which buries everything else in the log.
-      // signalk-logbook's day files, read every cycle and re-parsed only when
-      // one changes. Null means the logbook plugin has never written here,
-      // which leaves whatever was published alone; publishing switched off
-      // is an empty map, which takes it down.
-      const logbookReader = new LogbookReader();
-      const logbookSource = logbookDir(app.getDataDirPath());
-      let lastLogbookReport = '';
-      const readLogbook = async (): Promise<Map<string, string> | null> => {
-        if (!config.logbook.publish) return (logbookDays = new Map());
-        try {
-          const read = await logbookReader.read(logbookSource);
-          const report = read ? read.problems.join(' ') : 'none';
-          if (report !== lastLogbookReport) {
-            lastLogbookReport = report;
-            if (!read) app.debug(`Logbook: nothing at ${logbookSource}; publishing none.`);
-            for (const problem of read?.problems ?? []) app.error(`Logbook: ${problem}`);
-          }
-          logbookDays = read
-            ? renderLogbookDays(read.entries, {
-                timezone: config.timezone,
-                crewNames: config.logbook.crewNames,
-              })
-            : null;
-          return logbookDays;
-        } catch (error: any) {
-          app.error(`Logbook: could not read ${logbookSource}: ${error?.message ?? error}`);
-          return null;
-        }
-      };
-
       let lastPolarReport = '';
       const polarsCsv = async (tree: ReturnType<typeof readSelfTree>): Promise<string> => {
         const { csv, source, problems, summary } = await readActivePolar(app, tree);
@@ -482,7 +430,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         passage = await readPassage(app, (problem) => app.error(problem));
         const result = await publisher.runCycle(tree, {
           polars: await polarsCsv(tree),
-          logbook: await readLogbook(),
           history: await history.read(new Date(), tree),
           passage,
           fixes: recorder?.drain(),
@@ -566,7 +513,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           passage = await readPassage(app, (problem) => app.error(problem));
           const result = await publisher.runCycle(tree, {
             polars: await polarsCsv(tree),
-          logbook: await readLogbook(),
             history: await history.read(new Date(), tree),
             passage,
             fixes: recorder?.drain(),
@@ -610,7 +556,6 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
             };
           }
         }
-        void refreshHistoryProviders();
         schedule(seconds);
       };
 
@@ -663,13 +608,11 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         version: PLUGIN_VERSION,
         readTree: () => readSelfTree(app),
         polars: () => ({ csv: polarCsv, status: polarStatus }),
-        logbook: () => logbookDays,
         passage: () => passage,
         publishNow,
         log: (message) => app.debug(message),
       };
 
-      void refreshHistoryProviders();
       void (async () => {
         try {
           await publisher.seed();

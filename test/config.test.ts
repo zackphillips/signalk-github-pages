@@ -16,6 +16,7 @@ import {
   DEFAULT_POSITION_RETENTION_HOURS,
   DEFAULT_TRACK_DETAIL_METERS,
   DEFAULT_STALE_MAX_AGE_MINUTES,
+  DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
   pagesUrl,
   parsePathList,
   resolveConfig,
@@ -62,48 +63,40 @@ describe('resolveConfig', () => {
   });
 
   it('falls back rather than accepting zero or a negative number', () => {
-    const config = makeConfig({
-      track: { detailMeters: 0 },
-      interval: { underwayMinutes: -5 },
-    });
-    expect(config.track.detailMeters).toBe(DEFAULT_TRACK_DETAIL_METERS);
+    const config = makeConfig({ interval: { underwayMinutes: -5 } });
     expect(config.interval.underway).toBe(DEFAULT_INTERVAL_UNDERWAY);
   });
 
-  it('keeps positions for a day whatever an old config said', () => {
-    // The retention setting left the page; a value saved before that would
-    // otherwise go on applying with no box left to change it.
-    for (const form of [
-      { track: { positionRetentionHours: 72 } },
-      { positionRetentionHours: 6 },
-    ]) {
-      expect(makeConfig(form).positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
-    }
-    expect((configSchema.properties as any).track.properties.positionRetentionHours)
-      .toBeUndefined();
-  });
-
-  it('reads the track detail saved under its old spelling', () => {
-    expect(makeConfig({ track: { detailMetres: 40 } }).track.detailMeters).toBe(40);
-    expect(makeConfig({ track: { detailMeters: 25, detailMetres: 40 } }).track.detailMeters)
-      .toBe(25);
+  it('runs the operational constants whatever a saved config says', () => {
+    // Off the config page: tuning with one right answer for every boat.
+    const config = makeConfig({
+      positionRetentionHours: 6,
+      staleMaxAgeMinutes: 5,
+      track: { detailMeters: 100 },
+      notifications: { warnAfterMinutes: 0 },
+      instrumentLog: { providerId: 'signalk-to-influxdb2' },
+    });
+    expect(config.positionRetentionHours).toBe(DEFAULT_POSITION_RETENTION_HOURS);
+    expect(config.staleMaxAgeMinutes).toBe(DEFAULT_STALE_MAX_AGE_MINUTES);
+    expect(config.track.detailMeters).toBe(DEFAULT_TRACK_DETAIL_METERS);
+    expect(config.notifyAfterFailureMinutes).toBe(DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES);
+    expect(config.history).not.toHaveProperty('providerId');
+    const properties = configSchema.properties as any;
+    expect(properties.track).toBeUndefined();
+    expect(properties.staleMaxAgeMinutes).toBeUndefined();
+    expect(properties.notifications.properties.warnAfterMinutes).toBeUndefined();
+    expect(properties.instrumentLog.properties.providerId).toBeUndefined();
+    expect(properties.paths.properties.notGraphed).toBeUndefined();
   });
 
   it('keeps a zero where zero is an answer rather than an empty box', () => {
-    // "Zero turns it off" used to fall through to the default, because the
-    // number parser rejected zero along with the negatives and the blanks.
-    expect(makeConfig({ notifications: { warnAfterMinutes: 0 } }).notifyAfterFailureMinutes)
-      .toBe(0);
     expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
   });
 
   it('accepts the strings the admin UI hands back for number fields', () => {
-    const config = makeConfig({
-      staleMaxAgeMinutes: '45',
-      track: { detailMeters: '12' },
-    });
-    expect(config.staleMaxAgeMinutes).toBe(45);
-    expect(config.track.detailMeters).toBe(12);
+    const config = makeConfig({ interval: { underwayMinutes: '5' }, instrumentLog: { hours: '3' } });
+    expect(config.interval.underway).toBe(300);
+    expect(config.instrumentLog.entries).toBe(180);
   });
 
   it('derives the user site from the owner, so the name is one less box', () => {
@@ -230,35 +223,19 @@ describe('resolveConfig', () => {
     expect(tide({ overrideTideStation: true, tideStation: '  9414290  ' })).toBe('9414290');
   });
 
-  it('reads a config saved before the Overrides section as it was', () => {
-    // Every override used to sit in the section of the setting it overrode.
+  it('reads the overrides from the Overrides section and nowhere else', () => {
     const resolved = resolveConfig({
-      github: {
-        owner: 'zack',
-        overrideName: true,
-        name: 'tracker',
-        branch: 'gh-pages',
-        token: 'ghp_x',
-      },
+      github: { owner: 'zack', overrideName: true, name: 'tracker', branch: 'x', token: 't' },
       timezone: { override: true, zone: 'Pacific/Auckland' },
       site: { overrideUrl: true, url: 'example.com', tideStationOverride: '9414290' },
     });
     if (!resolved.ok) throw new Error(resolved.problems.join(' '));
     const { config } = resolved;
-    expect(config.github.repo).toBe('zack/tracker');
-    expect(config.github.branch).toBe('gh-pages');
-    expect(config.timezone).toBe('Pacific/Auckland');
-    expect(config.site.url).toBe('https://example.com/');
-    expect(config.site.tideStationOverride).toBe('9414290');
-  });
-
-  it('ignores the old fields once the Overrides section has been saved', () => {
-    const config = makeConfig({
-      github: { owner: 'zack', overrideName: true, name: 'tracker', branch: 'x', token: 't' },
-      overrides: {},
-    });
     expect(config.github.repo).toBe('zack/zack.github.io');
     expect(config.github.branch).toBe('main');
+    expect(config.timezone).toBe(serverTimezone());
+    expect(config.site.url).toBe('https://zack.github.io/');
+    expect(config.site.tideStationOverride).toBe('');
   });
 
   it('keeps custom buttons that have both a label and a URL', () => {
@@ -307,14 +284,6 @@ describe('resolveConfig', () => {
       { label: 'Fine', url: 'https://example.com' },
     ]);
     expect(resolved.warnings.join(' ')).toContain('not http:// or https://');
-  });
-
-  it('publishes the logbook and the crew names unless told not to', () => {
-    expect(makeConfig().logbook).toEqual({ publish: true, crewNames: true });
-    expect(makeConfig({ logbook: { publish: false, crewNames: false } }).logbook).toEqual({
-      publish: false,
-      crewNames: false,
-    });
   });
 
   it('ignores a polar table saved while there was an override for one', () => {
@@ -434,105 +403,9 @@ describe('buildConfigSchema', () => {
   });
 
   it('never mutates the schema it was built from', () => {
-    buildConfigSchema({
-      repoName: 'owner.github.io',
-      saved: { github: { overrideName: true, name: 'tracker' } },
-    });
+    buildConfigSchema({ repoName: 'owner.github.io' });
     expect(box(configSchema, 'overrideRepository', 'repository').default).toBe('');
     expect(note(configSchema, 'overrideRepository')).not.toContain('owner.github.io');
-    expect((configSchema.properties.instrumentLog.properties.providerId as any).enum)
-      .toBeUndefined();
-  });
-
-  it('offers the registered history providers as a list', () => {
-    const provider = (schema: any) => schema.properties.instrumentLog.properties.providerId;
-    const built = buildConfigSchema({
-      historyProviders: { ids: ['signalk-parquet', 'signalk-to-influxdb2'], defaultId: 'signalk-to-influxdb2' },
-    });
-    expect(provider(built).enum).toEqual(['', 'signalk-parquet', 'signalk-to-influxdb2']);
-    expect(provider(built).enumNames[0]).toBe('Server default (signalk-to-influxdb2)');
-
-    // A saved choice whose plugin is off right now stays selectable, so the
-    // form still validates and can be saved.
-    const saved = buildConfigSchema({
-      historyProviders: { ids: [] },
-      saved: { instrumentLog: { providerId: 'signalk-to-influxdb2' } },
-    });
-    expect(provider(saved).enum).toEqual(['', 'signalk-to-influxdb2']);
-    expect(provider(saved).enumNames).toEqual([
-      'Server default (none registered)',
-      'signalk-to-influxdb2 (not registered)',
-    ]);
-    expect(provider(buildConfigSchema()).enum).toEqual(['']);
-  });
-
-  it('opens a config written before a setting moved showing that config', () => {
-    // The admin UI fills a field the stored config has no value for from the
-    // schema default and submits it, so a default standing where a moved
-    // setting used to be would replace it on the next save.
-    const built = buildConfigSchema({
-      saved: {
-        instrumentLog: { paths: 'navigation.speedOverGround', entries: 720 },
-        history: { enabled: true, providerId: 'signalk-to-influxdb2', resolutionSeconds: 60 },
-        track: { detailMetres: 30 },
-        publishNotifications: false,
-        notificationExclude: 'server\nsignalk-github-pages',
-        notifyAfterFailureMinutes: 0,
-      },
-    }) as any;
-    const properties = built.properties;
-    expect(properties.instrumentLog.properties.hours.default).toBe(12);
-    expect(properties.instrumentLog.properties.providerId.default).toBe('signalk-to-influxdb2');
-    expect(properties.track.properties.detailMeters.default).toBe(30);
-    expect(properties.notifications.properties.publish.default).toBe(false);
-    // Into the Paths section, as full paths.
-    expect(properties.paths.properties.hide.default).toBe(
-      'notifications.server\nnotifications.signalk-github-pages',
-    );
-    expect(properties.notifications.properties.warnAfterMinutes.default).toBe(0);
-  });
-
-  it('opens an override ticked where the old config had it ticked', () => {
-    const built = buildConfigSchema({
-      saved: {
-        github: { owner: 'zack', overrideName: true, name: 'tracker', branch: 'gh-pages' },
-        timezone: { override: true, zone: 'Pacific/Auckland' },
-        site: { tideStationOverride: '9414290' },
-      },
-    }) as any;
-    const flags = built.properties.overrides.properties;
-    expect(flags.overrideRepository.default).toBe(true);
-    expect(flags.overrideBranch.default).toBe(true);
-    expect(flags.overrideTimezone.default).toBe(true);
-    expect(flags.overrideTideStation.default).toBe(true);
-    expect(flags.overrideSiteUrl.default).toBe(false);
-    expect(flags.overridePolar).toBeUndefined();
-    expect(box(built, 'overrideRepository', 'repository').default).toBe('tracker');
-    expect(box(built, 'overrideBranch', 'branch').default).toBe('gh-pages');
-    expect(box(built, 'overrideTimezone', 'timezone').default).toBe('Pacific/Auckland');
-    expect(box(built, 'overrideTideStation', 'tideStation').default).toBe('9414290');
-
-    // Once the Overrides section has been saved, it is the only answer.
-    const saved = buildConfigSchema({
-      saved: { github: { overrideName: true, name: 'tracker' }, overrides: {} },
-    }) as any;
-    expect(saved.properties.overrides.properties.overrideRepository.default).toBe(false);
-  });
-
-  it('leaves the defaults alone for a config that has the settings already', () => {
-    const built = buildConfigSchema({
-      saved: {
-        instrumentLog: { hours: 3, providerId: '' },
-        history: { providerId: 'signalk-to-influxdb2' },
-        notifications: { publish: true, exclude: '', warnAfterMinutes: 30 },
-      },
-    }) as any;
-    // The window is set, so nothing is carried forward beside it — including
-    // the provider id from the section this one replaced.
-    expect(built.properties.instrumentLog.properties.hours.default).toBe(
-      DEFAULT_INSTRUMENT_LOG_HOURS,
-    );
-    expect(built.properties.instrumentLog.properties.providerId.default).toBe('');
   });
 
   it('leaves every other field exactly as it was', () => {
@@ -625,10 +498,6 @@ describe('parsePathList', () => {
     expect(parsePathList('a.b\na.b\n')).toEqual(['a.b']);
   });
 
-  it('still accepts an array, so an older config keeps loading', () => {
-    expect(parsePathList(['a.b', 'c.d'])).toEqual(['a.b', 'c.d']);
-  });
-
   it('treats an empty or missing value as no paths', () => {
     expect(parsePathList('   \n#only a comment\n')).toEqual([]);
     expect(parsePathList(undefined)).toEqual([]);
@@ -664,56 +533,29 @@ describe('the Paths section', () => {
   });
 
   it('treats an empty list as an answer, not as the default', () => {
-    const config = makeConfig({ paths: { hide: '', notGraphed: '' } });
+    const config = makeConfig({ paths: { hide: '' } });
     expect(config.hiddenPaths).toEqual([]);
     expect(config.notificationExclude).toEqual([]);
-    expect(config.instrumentLog.exclude).toEqual([]);
+    expect(config.instrumentLog.exclude).toEqual(DEFAULT_INSTRUMENT_LOG_EXCLUDE);
   });
 
-  it('keeps the exclusions a config from before the section carried', () => {
-    const config = makeConfig({
-      notifications: { exclude: 'server' },
-      instrumentLog: { exclude: 'design\nenvironment.rpi' },
-    });
-    expect(config.hiddenPaths).toEqual(['notifications.server']);
-    expect(config.notificationExclude).toEqual(['server']);
-    expect(config.instrumentLog.exclude).toEqual(['design', 'environment.rpi']);
-    expect(makeConfig({ notificationExclude: '' }).notificationExclude).toEqual([]);
-  });
-
-  it('prefills the old instrument exclusions into the new box', () => {
-    const built = buildConfigSchema({
-      saved: { instrumentLog: { exclude: 'design\nenvironment.rpi' } },
-    }) as any;
-    expect(built.properties.paths.properties.notGraphed.default).toBe('design\nenvironment.rpi');
-    expect(built.properties.instrumentLog.properties.exclude).toBeUndefined();
-    expect(built.properties.notifications.properties.exclude).toBeUndefined();
-  });
 });
 
 describe('the instrument log settings', () => {
-  it('logs everything but an exclusion list, and an empty list is an answer', () => {
-    expect(makeConfig({ instrumentLog: {} }).instrumentLog.exclude).toEqual(
-      DEFAULT_INSTRUMENT_LOG_EXCLUDE,
-    );
-    expect(makeConfig({ paths: { notGraphed: '' } }).instrumentLog.exclude).toEqual([]);
+  it('logs everything but the fixed exclusions and the hidden paths', () => {
+    expect(makeConfig({ instrumentLog: {} }).instrumentLog.exclude).toEqual([
+      ...DEFAULT_INSTRUMENT_LOG_EXCLUDE,
+    ]);
     expect(
-      makeConfig({ paths: { notGraphed: 'design\n# a comment\nenvironment.rpi' } })
-        .instrumentLog.exclude,
-    ).toEqual(['design', 'environment.rpi']);
-    // The allowlist this replaced is not carried over as an exclusion list.
-    expect(
-      makeConfig({ instrumentLog: { paths: 'navigation.speedOverGround' } }).instrumentLog
+      makeConfig({ paths: { hide: 'environment.rpi\nnotifications.server' } }).instrumentLog
         .exclude,
-    ).toEqual(DEFAULT_INSTRUMENT_LOG_EXCLUDE);
-    expect((configSchema.properties as any).instrumentLog.properties.paths).toBeUndefined();
+    ).toEqual([...DEFAULT_INSTRUMENT_LOG_EXCLUDE, 'environment.rpi']);
   });
 
-  it('defaults to an hour from whichever provider the server has', () => {
+  it('defaults to an hour from the server default provider', () => {
     const config = makeConfig({ instrumentLog: {} });
     expect(config.history).toEqual({
       enabled: true,
-      providerId: '',
       resolutionSeconds: HISTORY_RESOLUTION_SECONDS,
       timeoutMs: HISTORY_TIMEOUT_MS,
     });
@@ -731,37 +573,14 @@ describe('the instrument log settings', () => {
     expect(instrumentLogShape(24)).toEqual({ entries: 360, resolutionSeconds: 240 });
   });
 
-  it('takes a provider id from the same section as the window', () => {
-    const config = makeConfig({
-      instrumentLog: { hours: 12, providerId: 'signalk-to-influxdb2' },
-    });
-    expect(config.history.providerId).toBe('signalk-to-influxdb2');
+  it('shapes the log from the window', () => {
+    const config = makeConfig({ instrumentLog: { hours: 12 } });
     expect(config.history.resolutionSeconds).toBe(120);
     expect(config.instrumentLog.entries).toBe(360);
   });
 
   it('publishes no log at all when the window is zero', () => {
     expect(makeConfig({ instrumentLog: { hours: 0 } }).history.enabled).toBe(false);
-  });
-
-  it('reads a window stored the way the two old sections stored it', () => {
-    // entries x resolution, in two sections, with a switch of its own. An
-    // upgrade keeps publishing the window it was publishing.
-    const config = makeConfig({
-      instrumentLog: { paths: 'navigation.speedOverGround', entries: 1440 },
-      history: { providerId: 'signalk-to-influxdb2', resolutionSeconds: 60, timeoutMs: 5000 },
-    });
-    expect(config.instrumentLog.entries).toBe(360);
-    expect(config.history.resolutionSeconds).toBe(240);
-    expect(config.history.providerId).toBe('signalk-to-influxdb2');
-    expect(config.history.timeoutMs).toBe(HISTORY_TIMEOUT_MS);
-
-    expect(
-      makeConfig({
-        instrumentLog: { paths: 'navigation.speedOverGround', entries: 60 },
-        history: { enabled: false },
-      }).history.enabled,
-    ).toBe(false);
   });
 
   it('warns when the window is shorter than one publish interval', () => {

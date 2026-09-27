@@ -17,8 +17,6 @@ export const COMPLETE_FORM = {
   },
   interval: { underwayMinutes: 2, stationaryMinutes: 60 },
   instrumentLog: { hours: 2 },
-  track: { detailMeters: 15 },
-  staleMaxAgeMinutes: 60,
   privacyZones: [],
 };
 

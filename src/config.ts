@@ -70,8 +70,8 @@ export interface PluginConfig {
   hiddenPaths: string[];
   instrumentLog: {
     /**
-     * Paths never logged: the Paths section's "not graphed" list plus every
-     * hidden path. Everything else the provider has stored is logged.
+     * Paths never logged: the fixed exclusions plus every hidden path.
+     * Everything else the provider has stored is logged.
      */
     exclude: string[];
     entries: number;
@@ -87,8 +87,6 @@ export interface PluginConfig {
    */
   history: {
     enabled: boolean;
-    /** Empty means whichever provider the server has as its default. */
-    providerId: string;
     resolutionSeconds: number;
     timeoutMs: number;
   };
@@ -116,20 +114,6 @@ export interface PluginConfig {
    * default.
    */
   notificationExclude: string[];
-  /**
-   * What the plugin publishes from signalk-logbook, per local day, into
-   * `data/telemetry/logbook/`. See `logbook.ts`.
-   */
-  logbook: {
-    /** Off takes every published day off the site on the next cycle. */
-    publish: boolean;
-    /**
-     * Crew and skipper names, each entry's author, and the entries that
-     * announce crew changes. Other people's names on a public page, so it is
-     * a switch of its own.
-     */
-    crewNames: boolean;
-  };
   site: {
     /**
      * The site's own address, with a trailing slash.
@@ -140,7 +124,7 @@ export interface PluginConfig {
      * crawler that never runs the page's JavaScript.
      */
     url: string;
-    /** The logo to publish, or null to leave `data/vessel/logo.png` alone. */
+    /** The logo to publish, or null to show the icon in its place. */
     logo: VesselLogo | null;
     /**
      * The icon to publish, or null to fall back to the bundled generic one.
@@ -168,11 +152,12 @@ export interface PluginConfig {
 }
 
 /**
- * Default `instrumentLog.exclude`: stored paths not worth a sparkline.
+ * Stored paths never worth a sparkline, whatever the boat.
  *
  * Every path the history provider has stored is logged unless it matches one
- * of these, and every logged path is re-uploaded on every publish — so this
- * is the list to extend on a cellular data plan. Each entry is a subtree:
+ * of these or is hidden. Not on the config page: an adopter who wants a path
+ * off the log hides it, which is one list instead of two. Each entry is a
+ * subtree:
  *
  * - `design`: the boat's dimensions, which do not change.
  * - `navigation.course*`: bearing, distance and XTE to a waypoint, which are
@@ -342,21 +327,6 @@ export interface SchemaContext {
   branch?: { name: string; ok: boolean; detail?: string } | null;
   /** The station the site would pick from the boat's position right now. */
   tideStation?: NearestTideStation | null;
-  /**
-   * History providers registered on the server, for the provider dropdown.
-   * Null when the server cannot be asked (no History API).
-   */
-  historyProviders?: { ids: string[]; defaultId?: string } | null;
-  /**
-   * The saved configuration, for settings that have moved between sections.
-   *
-   * The admin UI fills a field the stored config has no value for from the
-   * schema `default` — and submits it. Without this, opening the page on a
-   * config written before a setting moved would show the default beside every
-   * moved setting, and saving would quietly replace what the boat had been
-   * running on.
-   */
-  saved?: Record<string, any>;
 }
 
 /** The marks the Overrides section puts in front of each derived value. */
@@ -364,104 +334,10 @@ const FOUND = '✅';
 const NOT_FOUND = '⚠️';
 const NOT_CHECKED = '⏳';
 
-/**
- * The overrides as a config written before the Overrides section stored them,
- * one flag and one value per setting, each in the section it overrode.
- *
- * Read by `resolveConfig` whenever the new section has not been saved yet, and
- * by `carryForwardMovedSettings` so the page opens with those boxes ticked.
- */
-function legacyOverrides(saved: Record<string, any>): Record<string, unknown> {
-  const github = saved.github ?? {};
-  const site = saved.site ?? {};
-  const timezone = saved.timezone ?? {};
-  const branch = str(github.branch);
-  const tide = str(site.tideStationOverride);
-  return {
-    overrideRepository: bool(github.overrideName),
-    repository: str(github.name),
-    overrideBranch: branch !== '' && branch !== DEFAULT_BRANCH,
-    branch: branch && branch !== DEFAULT_BRANCH ? branch : '',
-    overrideSiteUrl: bool(site.overrideUrl),
-    siteUrl: str(site.url),
-    overrideTimezone: bool(timezone.override),
-    timezone: str(timezone.zone),
-    overrideTideStation: tide !== '',
-    tideStation: tide,
-  };
-}
-
-/**
- * The overrides as `resolveConfig` reads them: the Overrides section once it
- * has been saved, and the old per-section fields until then.
- */
+/** The Overrides section as saved, or nothing ticked when it has not been. */
 export function readOverrides(input: Record<string, any>): Record<string, unknown> {
   const overrides = input.overrides;
-  if (overrides && typeof overrides === 'object') return overrides;
-  return legacyOverrides(input);
-}
-
-/**
- * Prefill the settings that have moved sections from where they used to be
- * stored, so a config written before the move opens showing its own values.
- *
- * Only the keys the page no longer has a place for are read here;
- * `resolveConfig` reads them too, so the plugin publishes the same settings
- * whether or not anyone has opened the page since the upgrade.
- */
-function carryForwardMovedSettings(
-  schema: typeof configSchema,
-  saved: Record<string, any>,
-): void {
-  const properties = schema.properties as any;
-  const instrumentLog = saved.instrumentLog ?? {};
-  const history = saved.history ?? {};
-  const notifications = saved.notifications ?? {};
-  const track = saved.track ?? {};
-
-  if (num(track.detailMeters) === null && num(track.detailMetres) !== null) {
-    properties.track.properties.detailMeters.default = num(track.detailMetres);
-  }
-  if (zeroOrMore(instrumentLog.hours) === null) {
-    const hours = resolveInstrumentLogHours(instrumentLog, history);
-    properties.instrumentLog.properties.hours.default = hours;
-    if (!str(instrumentLog.providerId) && str(history.providerId)) {
-      properties.instrumentLog.properties.providerId.default = str(history.providerId);
-    }
-  }
-  if (notifications.publish === undefined && saved.publishNotifications !== undefined) {
-    properties.notifications.properties.publish.default = saved.publishNotifications !== false;
-  }
-  const paths = saved.paths ?? {};
-  if (paths.hide === undefined) {
-    const legacy = legacyNotificationExclude(notifications, saved);
-    if (legacy) properties.paths.properties.hide.default = legacy.join('\n');
-  }
-  if (paths.notGraphed === undefined && instrumentLog.exclude !== undefined) {
-    properties.paths.properties.notGraphed.default = parsePathList(instrumentLog.exclude).join(
-      '\n',
-    );
-  }
-  if (
-    zeroOrMore(notifications.warnAfterMinutes) === null &&
-    zeroOrMore(saved.notifyAfterFailureMinutes) !== null
-  ) {
-    properties.notifications.properties.warnAfterMinutes.default = zeroOrMore(
-      saved.notifyAfterFailureMinutes,
-    );
-  }
-
-  // The overrides used to sit in the section of the setting they overrode.
-  // A config that has never saved the Overrides section opens with the boxes
-  // it had ticked still ticked, and the values it had typed behind them.
-  if (saved.overrides === undefined) {
-    const legacy = legacyOverrides(saved);
-    for (const { flag, field } of OVERRIDES) {
-      if (legacy[flag] !== true) continue;
-      properties.overrides.properties[flag].default = true;
-      if (legacy[field]) overrideField(schema, flag, field).default = legacy[field] as string;
-    }
-  }
+  return overrides && typeof overrides === 'object' ? overrides : {};
 }
 
 /**
@@ -509,10 +385,8 @@ function annotate(schema: typeof configSchema, flag: string, note: string): void
  * hourglass when no cycle has run to find out.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, branch, tideStation, historyProviders, saved } = context;
+  const { repoName, siteUrl, branch, tideStation } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
-
-  if (saved) carryForwardMovedSettings(schema, saved);
 
   annotate(
     schema,
@@ -552,24 +426,6 @@ export function buildConfigSchema(context: SchemaContext = {}): typeof configSch
           `${tideStation.distanceNm.toFixed(1)} NM from the boat.`
       : `${NOT_FOUND} Not found: the boat has no GPS position, or no listed station is near it.`,
   );
-
-  // The provider dropdown lists what is registered right now. The saved
-  // choice stays selectable even when its plugin is disabled: an enum that no
-  // longer holds the saved value fails validation, and the admin UI then
-  // refuses to save anything until someone works out why.
-  const provider = (schema.properties.instrumentLog.properties as any).providerId;
-  const ids = historyProviders?.ids ?? [];
-  const current = str(saved?.instrumentLog?.providerId) || str(saved?.history?.providerId);
-  const choices = current && !ids.includes(current) ? [...ids, current] : [...ids];
-  provider.enum = ['', ...choices];
-  provider.enumNames = [
-    historyProviders?.defaultId
-      ? `Server default (${historyProviders.defaultId})`
-      : historyProviders
-        ? 'Server default (none registered)'
-        : 'Server default',
-    ...choices.map((id) => (ids.includes(id) ? id : `${id} (not registered)`)),
-  ];
 
   return schema;
 }
@@ -694,7 +550,8 @@ export const configSchema = {
       title: 'Instruments (sparklines)',
       description:
         'The rolling log the sparklines are drawn from, read back every cycle from a ' +
-        'Signal K history provider (signalk-to-influxdb2, for example). With no ' +
+        "Signal K history provider (the server's default one: signalk-to-influxdb2, " +
+        'for example). With no ' +
         'provider the site shows current values and omits the graphs. The map track ' +
         "is not part of this: it is always the plugin's own.",
       properties: {
@@ -708,15 +565,6 @@ export const configSchema = {
             'about the same size however long it is. Zero publishes no log at all.',
           default: DEFAULT_INSTRUMENT_LOG_HOURS,
         },
-        providerId: {
-          type: 'string',
-          title: 'History provider',
-          description:
-            'The history providers registered on this server. The server default is ' +
-            'the one chosen in the server settings; pick another only when more than ' +
-            'one is registered.',
-          default: '',
-        },
       },
     },
     paths: {
@@ -725,8 +573,10 @@ export const configSchema = {
       description:
         'The dashboard is built from whatever the boat reports: every battery bank, ' +
         'solar array, tank, engine and sensor in the Signal K tree gets a card, and ' +
-        'every logged number a sparkline. These two lists are how to take things off ' +
-        'it. One path per line; "*" matches one segment and a parent covers its ' +
+        'every logged number a sparkline. This list is how to take things off ' +
+        'it. Design, course calculations, GNSS housekeeping, sensor configuration and ' +
+        'notifications are never graphed. One path per line; "*" matches one segment ' +
+        'and a parent covers its ' +
         'subtree, so "environment.rpi" drops every Raspberry Pi reading. Lines ' +
         'starting with # are comments. Empty is a real answer: nothing is left out.',
       properties: {
@@ -739,39 +589,6 @@ export const configSchema = {
             '"notifications.server" keeps every server notification off the site, and ' +
             '"notifications" alone keeps all of them off.',
           default: DEFAULT_HIDDEN_PATHS.join('\n'),
-        },
-        notGraphed: {
-          type: 'string',
-          title: 'Published, never graphed',
-          description:
-            'Shown as current values but left out of the instrument log. Every logged ' +
-            'path is uploaded on every publish, so add the ones not worth a sparkline ' +
-            'on a cellular plan. Positions are never logged: the track comes from the ' +
-            'boat, through the privacy zones.',
-          default: DEFAULT_INSTRUMENT_LOG_EXCLUDE.join('\n'),
-        },
-      },
-    },
-    staleMaxAgeMinutes: {
-      type: 'number',
-      title: 'Stale value cutoff (minutes)',
-      description:
-        'Values older than this are dropped from the published snapshot, so the site ' +
-        'shows them as unavailable rather than as current.',
-      default: DEFAULT_STALE_MAX_AGE_MINUTES,
-    },
-    track: {
-      type: 'object',
-      title: 'Track',
-      properties: {
-        detailMeters: {
-          type: 'number',
-          title: 'Track detail (meters)',
-          description:
-            'A fix is kept when dropping it would move the drawn track by more than ' +
-            'this, and at least once per publish cycle. Smaller follows a tack more ' +
-            'closely and uploads more; larger is cheaper on a hotspot.',
-          default: DEFAULT_TRACK_DETAIL_METERS,
         },
       },
     },
@@ -787,40 +604,6 @@ export const configSchema = {
             '24 hours. A notification message is free text from whichever plugin ' +
             'raised it, published verbatim — turn this off if yours say anything you ' +
             'would not put on a public page.',
-          default: true,
-        },
-        warnAfterMinutes: {
-          type: 'number',
-          title: 'Warn after this many minutes of failure',
-          description:
-            'Raise notifications.tracker.publishFailed once publishing has been ' +
-            'failing for this long, so an expired token reaches KIP or the ' +
-            'chartplotter rather than only the server log. Zero turns it off.',
-          default: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-        },
-      },
-    },
-    logbook: {
-      type: 'object',
-      title: 'Logbook',
-      description:
-        'Entries from the signalk-logbook plugin, shown on each voyage. Positions ' +
-        'are never published: the track is the only way a position reaches the site.',
-      properties: {
-        publish: {
-          type: 'boolean',
-          title: 'Publish the logbook',
-          description:
-            'Publish every logbook entry, grouped by local day, with its time, text, ' +
-            'category and conditions. Entry text is published verbatim.',
-          default: true,
-        },
-        crewNames: {
-          type: 'boolean',
-          title: 'Publish crew names',
-          description:
-            'Include the crew list, the skipper, who wrote each entry, and the ' +
-            'entries that record crew changes.',
           default: true,
         },
       },
@@ -844,8 +627,8 @@ export const configSchema = {
           title: 'Vessel logo',
           description:
             'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG. Empty falls back to data/vessel/logo.png if you have ' +
-            'committed one. The tab and home-screen icon is set separately, below.',
+            'JPEG, WebP or SVG. Empty shows the icon instead. The tab and home-screen ' +
+            'icon is set separately, below.',
           default: '',
         },
         icon: {
@@ -965,7 +748,6 @@ export const configUiSchema = {
   site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
   paths: {
     hide: { 'ui:widget': 'textarea', 'ui:options': { rows: 6 } },
-    notGraphed: { 'ui:widget': 'textarea', 'ui:options': { rows: 10 } },
   },
   overrides: {
     // Each typed box directly under its own checkbox. A name the schema does
@@ -1010,18 +792,9 @@ function num(value: unknown): number | null {
   return null;
 }
 
-/**
- * Parse the free-form path list: one path per line, `#` comments allowed.
- *
- * An array is accepted too, so a config written against the array form of
- * this field still loads.
- */
+/** Parse the free-form path list: one path per line, `#` comments allowed. */
 export function parsePathList(value: unknown): string[] {
-  const lines = Array.isArray(value)
-    ? value.map((item) => String(item))
-    : typeof value === 'string'
-      ? value.split(/[\r\n,]+/)
-      : [];
+  const lines = typeof value === 'string' ? value.split(/[\r\n,]+/) : [];
   const seen = new Set<string>();
   for (const line of lines) {
     const path = line.trim();
@@ -1247,65 +1020,13 @@ export function resolveCustomLinks(value: unknown): {
 }
 
 /**
- * How far back the sparklines plot, in hours.
- *
- * The page asks for this one number. A config written before the instrument
- * log and the history provider became a single section stored the window as
- * `entries x resolutionSeconds` in two sections, with a switch of its own —
- * read that back into hours, so an upgrade keeps publishing the window it was
- * publishing rather than silently dropping to the default.
- */
-function resolveInstrumentLogHours(
-  instrumentLog: Record<string, any>,
-  history: Record<string, any>,
-): number {
-  const typed = zeroOrMore(instrumentLog.hours);
-  if (typed !== null) return typed;
-  if (history.enabled === false) return 0;
-  const entries = num(instrumentLog.entries);
-  if (entries === null) return DEFAULT_INSTRUMENT_LOG_HOURS;
-  return (entries * (num(history.resolutionSeconds) ?? HISTORY_RESOLUTION_SECONDS)) / 3600;
-}
-
-/**
- * The notification exclusions a config written before the Paths section kept,
- * as full paths, or null when it never had any.
- *
- * They were written without the `notifications.` prefix, in the notifications
- * section or, before that, at the top level.
- */
-function legacyNotificationExclude(
-  notifications: Record<string, any>,
-  input: Record<string, any>,
-): string[] | null {
-  const value = notifications.exclude ?? input.notificationExclude;
-  if (value === undefined) return null;
-  return parsePathList(value).map((path) => `notifications.${path}`);
-}
-
-/**
  * Paths never published.
  *
  * Empty is a real answer — publish everything — so it must not fall back to
- * the default the way a missing setting does. A config from before this
- * section existed keeps the notification exclusions it had.
+ * the default the way a missing setting does.
  */
-function hiddenPaths(paths: Record<string, any>, input: Record<string, any>): string[] {
-  if (paths.hide !== undefined) return parsePathList(paths.hide);
-  return legacyNotificationExclude(input.notifications ?? {}, input) ?? [...DEFAULT_HIDDEN_PATHS];
-}
-
-/**
- * Paths published but never logged.
- *
- * Empty is a real answer here too: log everything the provider has. It used
- * to be `instrumentLog.exclude`, which is still read when this is unset. The
- * allowlist before that, `instrumentLog.paths`, is not read — an opt-in list
- * carried over as an opt-out one would exclude exactly the paths it named.
- */
-function notGraphedPaths(paths: Record<string, any>, instrumentLog: Record<string, any>): string[] {
-  const value = paths.notGraphed ?? instrumentLog.exclude;
-  return value === undefined ? [...DEFAULT_INSTRUMENT_LOG_EXCLUDE] : parsePathList(value);
+function hiddenPaths(paths: Record<string, any>): string[] {
+  return paths.hide === undefined ? [...DEFAULT_HIDDEN_PATHS] : parsePathList(paths.hide);
 }
 
 /**
@@ -1343,8 +1064,8 @@ function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
  * everything that stops the plugin publishing.
  *
  * Missing numbers fall back to the documented defaults — the schema supplies
- * them in the admin UI, and this repeats the fallback for a config written
- * before a field existed. What has no fallback is what belongs to one boat:
+ * them in the admin UI, and this repeats the fallback for a config saved
+ * without them. What has no fallback is what belongs to one boat:
  * the repository and the token. A privacy zone missing its radius is fatal
  * too: a half-entered zone hides nothing while looking like it does, and the
  * failure mode is a published position someone believed was redacted.
@@ -1358,11 +1079,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   const github = input.github ?? {};
   const interval = input.interval ?? {};
   const instrumentLog = input.instrumentLog ?? {};
-  // A config written before the merge kept these in sections of their own.
-  const history = input.history ?? {};
   const notifications = input.notifications ?? {};
-  const logbook = input.logbook ?? {};
-  const track = input.track ?? {};
   const site = input.site ?? {};
   const paths = input.paths ?? {};
   const overrides = readOverrides(input);
@@ -1443,7 +1160,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   if (problems.length) return { ok: false, problems, warnings };
 
   const underway = intervalSeconds(interval.underwayMinutes, DEFAULT_INTERVAL_UNDERWAY);
-  const hours = resolveInstrumentLogHours(instrumentLog, history);
+  const hours = zeroOrMore(instrumentLog.hours) ?? DEFAULT_INSTRUMENT_LOG_HOURS;
   const { entries, resolutionSeconds } = instrumentLogShape(hours);
   if (hours > 0 && hours * 3600 < underway) {
     // The log would not even span one publish interval, so every cycle would
@@ -1455,7 +1172,7 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
     );
   }
 
-  const hidden = hiddenPaths(paths, input);
+  const hidden = hiddenPaths(paths);
   const notificationsHidden = notificationPatterns(hidden);
 
   return {
@@ -1483,38 +1200,23 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
         // Notification paths are left off: `notifications` is never logged.
         exclude: [
           ...new Set([
-            ...notGraphedPaths(paths, instrumentLog),
+            ...DEFAULT_INSTRUMENT_LOG_EXCLUDE,
             ...hidden.filter((path) => path !== 'notifications' && !path.startsWith('notifications.')),
           ]),
         ],
         entries,
       },
       positionRetentionHours: DEFAULT_POSITION_RETENTION_HOURS,
-      staleMaxAgeMinutes: num(input.staleMaxAgeMinutes) ?? DEFAULT_STALE_MAX_AGE_MINUTES,
+      staleMaxAgeMinutes: DEFAULT_STALE_MAX_AGE_MINUTES,
       history: {
         enabled: hours > 0,
-        providerId: str(instrumentLog.providerId) || str(history.providerId),
         resolutionSeconds,
         timeoutMs: HISTORY_TIMEOUT_MS,
       },
-      track: {
-        detailMeters: Math.max(
-          1,
-          num(track.detailMeters) ?? num(track.detailMetres) ?? DEFAULT_TRACK_DETAIL_METERS,
-        ),
-      },
-      notifyAfterFailureMinutes:
-        zeroOrMore(notifications.warnAfterMinutes) ??
-        zeroOrMore(input.notifyAfterFailureMinutes) ??
-        DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
-      publishNotifications:
-        (notifications.publish ?? input.publishNotifications) !== false &&
-        !notificationsHidden.all,
+      track: { detailMeters: DEFAULT_TRACK_DETAIL_METERS },
+      notifyAfterFailureMinutes: DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES,
+      publishNotifications: notifications.publish !== false && !notificationsHidden.all,
       notificationExclude: notificationsHidden.exclude,
-      logbook: {
-        publish: logbook.publish !== false,
-        crewNames: logbook.crewNames !== false,
-      },
       site: {
         url: siteUrlResult.url,
         logo: logoResult.logo,

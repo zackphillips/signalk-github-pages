@@ -23,12 +23,6 @@ export interface PersistedState {
   /** True once the store has been seeded from the repository. */
   seeded?: boolean;
   /**
-   * Paths this plugin used to publish and has now removed from the
-   * repository. Recorded only after the commit carrying the deletion landed,
-   * so a failed publish retries the removal rather than skipping it.
-   */
-  retired?: string[];
-  /**
    * The privacy zones every published track was last checked against, as
    * `privacyZoneFingerprint` renders them. A cycle whose zones differ checks
    * every GPX file in the repository again. Recorded only after the commit
@@ -41,12 +35,6 @@ export interface PersistedState {
    * person asked for that day to go, not for it to come back truncated.
    */
   removedDays?: string[];
-  /**
-   * The logbook days in the repository, each with a hash of its published
-   * content, so an unchanged day costs nothing and a day that left the
-   * voyage list can be deleted. Recorded only after the commit landed.
-   */
-  logbook?: Record<string, string>;
 }
 
 export class StateStore {

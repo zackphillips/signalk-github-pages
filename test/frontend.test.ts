@@ -99,9 +99,9 @@ describe('template', () => {
 });
 
 describe('frontendOptions', () => {
-  it('falls back to the hand-committed logo path and the generic icon', () => {
+  it('shows the icon in place of a logo, and the generic icon when neither is set', () => {
     const resolved = frontendOptions(makeConfig(), 'Vessel', '1.0.0');
-    expect(resolved.logoPath).toBe('data/vessel/logo.png');
+    expect(resolved.logoPath).toBe('assets/icon.svg');
     expect(resolved.iconPath).toBe('assets/icon.svg');
     expect(resolved.iconType).toBe('image/svg+xml');
   });

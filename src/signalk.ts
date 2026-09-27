@@ -49,17 +49,8 @@ interface ServerSettings {
     settings?: {
       port?: number;
       ssl?: boolean;
-      /** The history provider picked in the server's own settings. */
-      historyApi?: { defaultProvider?: string };
     };
   };
-  /**
-   * The server's plugin list. Real on every release with a History API, but
-   * never part of the published contract, so optional and read defensively.
-   * The config page probes each enabled plugin to find the history providers:
-   * the server keeps that registry to itself.
-   */
-  getPluginsList?: (enabled?: boolean) => Promise<Array<{ id: string }>>;
 }
 
 export type { Plugin, PluginRouter } from '@signalk/server-api';

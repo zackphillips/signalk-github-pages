@@ -28,7 +28,6 @@ src/
   siteConfig.ts     data/vessel/site.json, and the boat read off the self tree
   course.ts         The passage banner, from the Course API
   polars.ts         data/vessel/polars.csv from the active `polars` resource
-  logbook.ts        data/telemetry/logbook/<day>.json, from signalk-logbook's files
   timezones.ts      The IANA list the timezone dropdown offers
   tideStations.ts   The NOAA station nearest the boat, for the tide override's note
   logo.ts           The config page's logo and icon fields, decoded into bytes and a path
@@ -101,14 +100,17 @@ Run `npm test` and `npm run typecheck` before committing.
   the boat just left on a public page. The ETA is left out for a different
   reason: `targetArrivalTime` is recomputed on every update, and `site.json`
   is only rewritten when its content changes.
-- **A retired path is removable but not owned.** `ownedPatterns` is what the
-  published manifest lists and what `isOwnedPath` allows writing.
-  `RETIRED_PATTERNS` is a path this plugin used to write and now only deletes
-  — `data/vessel/info.yaml` and the ship's docs reader — so it is absent from the manifest, which
-  would otherwise tell the repository's owner it is still maintained, while
-  `isRemovablePath` still lets the one-time deletion through the same
-  ownership check every other deletion passes. The deletion is recorded in
-  `state.retired` only after the commit carrying it landed.
+- **1.0 carries no migration code, and should add it deliberately.** The
+  releases before it were never published, so their config shapes (settings
+  that moved sections, the overrides in their old homes, a window stored as
+  entries x resolution) and their files (`info.yaml`, the ship's docs reader, a
+  hand-committed `logo.png`) are not read, migrated or deleted. From 1.0 on a
+  moved setting has real users: read the old key in `resolveConfig`, and carry
+  it into the new field's `default` in `buildConfigSchema`, or the admin UI
+  fills the new field from the schema default, submits it, and the first save
+  after the upgrade silently replaces what the boat was running on. A path the
+  plugin stops writing needs a one-time deletion that passes the same
+  ownership check as every other, and is not listed in the manifest.
 - **Unknown renders as unknown.** The frontend carried seven invented
   fallbacks, each of which turned a missing value into a confident wrong one
   on somebody else's boat: a San Francisco Bay tide location; a privacy zone
@@ -197,7 +199,7 @@ Run `npm test` and `npm run typecheck` before committing.
   navigation data hub's process.
 - **The track is recorded from deltas and thinned by shape.** A fix is kept
   when dropping it would move the drawn track by more than
-  `track.detailMeters`, and at least once per publish cycle. Measured on a
+  `DEFAULT_TRACK_DETAIL_METERS` (15 m), and at least once per publish cycle. Measured on a
   synthetic hour of 60-second tacks: 60 points and the track exactly right,
   against 30 points and 128 m of error for one-fix-per-cycle sampling; a mark
   rounding is 9 points and 9 m against 5 points and 174 m. A straight leg
@@ -235,14 +237,14 @@ Run `npm test` and `npm run typecheck` before committing.
   this one.
 - **The instrument log is an exclusion list, and "found" means found on the
   boat.** Every path the provider has stored *and* the self tree currently
-  carries a number for is logged, less `paths.notGraphed` and `paths.hide`
-  (`DEFAULT_INSTRUMENT_LOG_EXCLUDE`: design, course calculations, GNSS
+  carries a number for is logged, less `paths.hide` and the fixed
+  `DEFAULT_INSTRUMENT_LOG_EXCLUDE` (design, course calculations, GNSS
   housekeeping and the like). The provider alone is not enough: it keeps
   every path it has ever stored, and asking for all of them was once ~167
-  paths a bucket, a megabyte a file and 40 MB an hour underway. The old
-  allowlist, `instrumentLog.paths`, is not read — carried over as an
-  exclusion list it would have excluded exactly what it named. An empty
-  exclusion list is a real answer, like the notification one.
+  paths a bucket, a megabyte a file and 40 MB an hour underway. The fixed
+  list is not on the config page: a second "published, never graphed" list
+  was one more box to explain for a distinction nobody tunes, and hiding a
+  path is how an adopter takes it off the log.
 - **Units, names and descriptions come from `meta`, like the zones do.**
   The published snapshot is the whole self tree, so every path's `units`,
   `displayName` and `description` are already there; the page used to read
@@ -383,17 +385,6 @@ Run `npm test` and `npm run typecheck` before committing.
   shorter than one publish interval, which now only fires on a very slow
   cadence). Zero hours publishes no log at all. `SPARKLINE_MAX_POINTS` is a
   draw cap, not a trim; it does not shorten the window.
-- **A setting that moves is still read.** `resolveConfig` reads the keys a
-  moved or replaced setting used to live under — `instrumentLog.entries` with
-  `history.resolutionSeconds`, `publishNotifications`, `notificationExclude`,
-  `notifyAfterFailureMinutes`, `track.detailMetres`, and every override's old
-  home — and `buildConfigSchema` carries them into the new field's `default`
-  so the page opens showing the boat's own values. Without that second half
-  the admin UI fills the new field from the schema default and submits it, and
-  the first save after an upgrade silently replaces what the boat was running
-  on. A setting that *leaves* is the opposite case: the position retention
-  window was taken off the page and is no longer read at all, because a
-  saved value with no box left to change it is a setting nobody can see.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.
@@ -462,18 +453,6 @@ Run `npm test` and `npm run typecheck` before committing.
   is always the link to what is on screen and no `hashchange` loops back. A
   date the index does not have says so above the list. A crawler never runs
   the script, so a pasted link unfurls as the site, not the voyage.
-- **The logbook is signalk-logbook's; this plugin only publishes it.** Its
-  day files are read in `index.ts` (another plugin's files, like the Course
-  API is another plugin's data) and handed to the cycle as rendered days.
-  Three rules. Every entry is rebuilt from a whitelist in `publishedEntry`,
-  never copied and pruned: an entry carries `position` and `waypoint`, and a
-  blacklist would publish the next position-shaped field a logbook release
-  adds. Only days on the voyage list are published, which is what makes a
-  prune take the log with it and keeps notes written at the dock (inside a
-  zone, with no track) off the site. And `null` means no logbook on this
-  server, which leaves what is published alone, while an empty map means
-  publishing is off, which takes it all down. With `crewNames` off the
-  automatic crew-change entries go too: their text is the names.
 - **Group tracks by local calendar day**, not by the UTC date in the
   timestamp. UTC midnight is mid-afternoon on the US west coast and splits a
   voyage in half.
@@ -495,9 +474,7 @@ Run `npm test` and `npm run typecheck` before committing.
   (`docs.html`, `docs/index.json`) and write starter documents and a
   maintenance log from the console. That was a second product in the same
   repository, and the only code that wrote a path the plugin did not own. It
-  is on the `archive/ships-docs` branch. `docs.html`, `assets/docs.js` and
-  `docs/index.json` are in `RETIRED_PATTERNS`, so an upgraded site loses the
-  reader once and keeps every document. A boat's docs are a
+  is on the `archive/ships-docs` branch. A boat's docs are a
   `site.customLinks` button now. Do not add a writer for a path outside the
   manifest back.
 - **The pages carry the boat's identity, and it is substituted, not scripted.**
@@ -582,11 +559,10 @@ Run `npm test` and `npm run typecheck` before committing.
   polar table someone committed by hand is years of measurement.
 - **The logo is the user's until they set one.** `publishLogo` gates
   `data/vessel/logo.*` in the manifest exactly the way `publishPolars` gates
-  the polar table, and for the same reason: the first adopters committed a
-  logo by hand, and clearing the config field must stop republishing and stop
-  claiming the path rather than deleting their artwork. The pages fall back to
-  `data/vessel/logo.png` and hide the image when it 404s, which is what keeps
-  a hand-committed one working.
+  the polar table: clearing the config field must stop republishing and stop
+  claiming the path rather than deleting someone's artwork. With no logo the
+  pages show the icon in its place, configured or generic, which is also what
+  a shared link unfurls to.
 - **The logo and the icon are two uploads, not one.** `site.logo` feeds the
   status hero and the footer; `site.icon` feeds the browser tab, the
   home-screen icon and the link-preview image. They used to be a single
@@ -596,13 +572,17 @@ Run `npm test` and `npm run typecheck` before committing.
   `parseVesselImage`, `publishIcon` gates `data/vessel/icon.*` in the
   manifest exactly the way `publishLogo` gates the logo, and `iconFile`
   fingerprints and publishes it independently of `logoFile` — setting one
-  must not republish or claim the other. Unlike the logo, the icon has no
-  hand-committed fallback path: it is a new field with no history to keep
-  working, so an unset icon falls straight to the bundled generic
-  `assets/icon.svg`.
+  must not republish or claim the other. An unset icon falls to the bundled
+  generic `assets/icon.svg`.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the exclusion lists all have defaults — the values
-  this tracker has run on for years — so a fresh install works. Privacy zones,
+  this tracker has run on for years — so a fresh install works. Most of them
+  are not on the config page at all: the stale cutoff, the track detail, the
+  failure alarm's delay, the history provider (the server default) and the
+  instrument exclusions are constants in `config.ts`. Each was a field with
+  one right answer for every boat, and a field is a support question and a
+  value someone can set wrong. Add a knob back only when a boat needs a
+  different answer, not because the number exists. Privacy zones,
   the repo owner and the token have none: a guessed privacy zone hides the
   wrong water. An incomplete privacy zone is a hard config error, not a
   warning.
@@ -611,10 +591,7 @@ Run `npm test` and `npm run typecheck` before committing.
   (`<owner>.github.io`), the branch (`main`), the site address from the
   repository (`pagesUrl`, which a custom domain overrides), the timezone from
   the server, and the tide station from the boat's position. `resolveConfig` derives them itself and ignores the typed
-  field whenever its override is unticked. They used to sit in the section of
-  the setting each one overrode; `readOverrides` falls back to those old keys
-  until the Overrides section has been saved once, and
-  `carryForwardMovedSettings` opens the page with the same boxes ticked. Each
+  field whenever its override is unticked. Each
   checkbox's description opens with a mark — found, not found, not checked
   yet — so a derived value that is missing (no owner, a
   branch the last cycle got a 404 on, no GPS for the tide station) is visible
@@ -651,8 +628,7 @@ Run `npm test` and `npm run typecheck` before committing.
   UTC, and split every track at 4pm.
 - **The config page asks for minutes; everything else is seconds.**
   `interval.underwayMinutes` and `interval.stationaryMinutes` are converted in
-  `resolveConfig`. `PluginConfig.interval` and the scheduler stay in seconds,
-  and the legacy seconds fields are still read.
+  `resolveConfig`. `PluginConfig.interval` and the scheduler stay in seconds.
 - **The theme is the site's, not the plugin's.** There is no theme setting and
   no `theme:` key in `info.yaml`; the floating button on the page cycles the
   themes in `site/assets/styles.css` and remembers the choice in
@@ -668,7 +644,7 @@ Run `npm test` and `npm run typecheck` before committing.
   about a plugin, and nobody needs an alarm for them. Do not add
   `setPluginStatus`-style state as data paths.
   The exception is `notifications.tracker.publishFailed`, raised once
-  publishing has failed continuously for `notifications.warnAfterMinutes` and
+  publishing has failed continuously for `DEFAULT_NOTIFY_AFTER_FAILURE_MINUTES` and
   cleared on the next success. An expired token otherwise reaches nobody: the
   admin UI is a browser tab nobody has open at sea, and the first anyone
   ashore knows is that the boat appears to have stopped. A notification is
@@ -705,8 +681,12 @@ Run `npm test` and `npm run typecheck` before committing.
   used to be written the moment the frontend files were assembled, so a
   publish that failed — a 502, a wedged hotspot — left the plugin believing
   it had shipped this release's HTML and JavaScript, and the site kept
-  serving the previous one until the next version bump. It and
-  `state.retired` are both merged in `runCycle` after `publishFiles` returns
+  serving the previous one until the next version bump. The local copies that
+  gate a re-upload (`site.json`, `polars.csv`, the manifest, logo and icon
+  fingerprints) had the same bug until 1.0: a failed commit left the passage
+  banner stale and a new logo unpublished until the content next changed.
+  `frontendVersion` is merged into state, and every other such copy is queued
+  in `onLanding`, both written in `runCycle` only after `publishFiles` returns
   a commit. Anything else that records "this has been published" belongs
   there too.
 - **An upgrade republishes the frontend by itself.** The fingerprint gating
