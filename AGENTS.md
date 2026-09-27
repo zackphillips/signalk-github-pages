@@ -566,6 +566,17 @@ Run `npm test` and `npm run typecheck` before committing.
   the whole of `polars.ts`. Round to two decimals on the way out: the file is
   rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
   comes back as 5.999999999999999.
+- **An edited polar is looked for, not heard about.** Polar Management's
+  webapp saves a table straight to its own store rather than through the
+  Resources API, so editing the active polar emits no delta; only switching
+  polars does (`polars.activePolar`). `checkPolar` in `index.ts` rereads the
+  active polar every `POLAR_CHECK_SECONDS` — a local read, no network — and
+  publishes at once when the CSV differs from the last cycle's, standing aside
+  while any cycle is running. Without it an edit waited for the next tick, an
+  hour at the dock. The page fetches every published file with `cache:
+  'no-cache'` or a `?ts=` for the same reason: GitHub Pages serves with
+  `max-age=600`, and a fresh commit behind a stale browser copy looks exactly
+  like one that never happened.
 - **There is no polar override.** A table typed on the config page used to
   beat the server's active polar, with a parser for every shape a pasted
   table arrives in. It was a second copy of the boat's polar, in the wrong

@@ -99,6 +99,9 @@ function formatClock(date: Date): string {
   return date.toISOString().slice(11, 16);
 }
 
+/** How often the active polar is reread between publishes, in seconds. */
+const POLAR_CHECK_SECONDS = 5 * 60;
+
 /** Where the publish-failure notification lives in the tree. */
 const NOTIFICATION_PATH = 'tracker.publishFailed';
 
@@ -147,6 +150,8 @@ function historySetting(app: SignalKApp, config: PluginConfig): string {
 
 module.exports = function (app: SignalKApp): TrackerPlugin {
   let timer: NodeJS.Timeout | undefined;
+  // The active polar's change check, set on start and cleared on stop.
+  let polarWatch: NodeJS.Timeout | undefined;
   let stopped = true;
   // What the last cycle found for the polar table. Kept out here so it
   // survives a stop/start and so the console can report it.
@@ -418,6 +423,44 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         return read;
       };
 
+      // Cycles in progress. A publish on request, a navigation.state change and
+      // the timer can each start one; the polar check below stands aside for
+      // all of them rather than adding a fourth.
+      let cyclesRunning = 0;
+      const cycle = async (...args: Parameters<Publisher['runCycle']>) => {
+        cyclesRunning += 1;
+        try {
+          return await publisher.runCycle(...args);
+        } finally {
+          cyclesRunning -= 1;
+        }
+      };
+
+      /**
+       * Publish as soon as the active polar changes, rather than at the next
+       * tick — an hour away at the dock.
+       *
+       * Polar Management's webapp saves an edited table straight to its own
+       * store, not through the Resources API, so an edit to the active polar
+       * sends no delta to subscribe to; picking a different one does, but a
+       * check covers both. It is a local read of another plugin's store, no
+       * network, so every few minutes costs nothing, and it only publishes
+       * when the rendered CSV differs from the one the last cycle used.
+       */
+      const checkPolar = async () => {
+        if (stopped || cyclesRunning > 0 || polarStatus === null) return;
+        try {
+          const { csv } = await readActivePolar(app, readSelfTree(app));
+          if (csv === polarCsv || stopped || cyclesRunning > 0) return;
+          app.debug('The active polar changed; publishing now rather than at the next tick.');
+          await publishNow('the active polar changed');
+        } catch (error: any) {
+          app.debug(`Polar check failed: ${error?.message ?? error}`);
+        }
+      };
+      polarWatch = setInterval(() => void checkPolar(), POLAR_CHECK_SECONDS * 1000);
+      polarWatch.unref?.();
+
       const schedule = (seconds: number) => {
         if (stopped) return;
         timer = setTimeout(() => {
@@ -444,7 +487,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         }
         app.debug(`Publishing on request (${reason}).`);
         passage = await readCourse(tree);
-        const result = await publisher.runCycle(tree, {
+        const result = await cycle(tree, {
           polars: await polarsCsv(tree),
           history: await history.read(new Date(), tree),
           passage,
@@ -527,7 +570,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           // stays a pure function of the data it is given and a provider that
           // hangs is one skipped history read rather than a failed publish.
           passage = await readCourse(tree);
-          const result = await publisher.runCycle(tree, {
+          const result = await cycle(tree, {
             polars: await polarsCsv(tree),
             history: await history.read(new Date(), tree),
             passage,
@@ -644,6 +687,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       stopped = true;
       if (timer) clearTimeout(timer);
       timer = undefined;
+      if (polarWatch) clearInterval(polarWatch);
+      polarWatch = undefined;
       webapp = null;
       passage = null;
       recorder?.stop();

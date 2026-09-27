@@ -422,7 +422,7 @@ function renderNotificationsPanel(payload) {
 async function loadNotifications() {
   let payload = null;
   try {
-    const res = await fetch(C.NOTIFICATIONS_URL);
+    const res = await fetch(C.NOTIFICATIONS_URL, { cache: 'no-cache' });
     if (res.ok) payload = await res.json();
     else console.log(`No notifications file: ${res.status} ${res.statusText}`);
   } catch (err) {
@@ -1996,7 +1996,7 @@ async function loadVoyageStats() {
 // banner.
 async function loadVesselData() {
   try {
-    const response = await fetch(C.SITE_CONFIG_URL);
+    const response = await fetch(C.SITE_CONFIG_URL, { cache: 'no-cache' });
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -2960,7 +2960,7 @@ async function loadData() {
     try {
       // Local file only
       console.log('Attempting to fetch signalk_latest.json...');
-      res = await fetch('data/telemetry/signalk_latest.json');
+      res = await fetch('data/telemetry/signalk_latest.json', { cache: 'no-cache' });
       console.log('Local file fetch response:', res.status, res.statusText);
       if (res.ok) {
         data = await res.json();
@@ -3295,7 +3295,11 @@ async function loadData() {
 
 async function loadPolarData() {
   try {
-    const response = await fetch('data/vessel/polars.csv');
+    // Revalidated on every load, like every other published file: GitHub
+    // Pages serves it with max-age=600, so a polar re-imported in Polar
+    // Management reached the repository and then sat behind the browser's
+    // cached copy.
+    const response = await fetch('data/vessel/polars.csv', { cache: 'no-cache' });
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
