@@ -958,36 +958,19 @@ function setRawDataPre(id, obj) {
   }
 }
 
-async function updateMapLocation(lat, lon) {
-  try {
-    // If inside a privacy zone, snap the geocoding lookup to the zone center
-    // so we get a proper landmark name rather than an open-water coordinate.
-    const zone = getPrivacyZoneCenter(lat, lon);
-    const lookupLat = zone ? zone.lat : lat;
-    const lookupLon = zone ? zone.lon : lon;
-    const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lookupLat}&lon=${lookupLon}&format=json&zoom=10&addressdetails=1`);
-    const data = await response.json();
-
-    let locationName = "Unknown Location";
-
-    if (data.display_name) {
-      // Parse the display name to get a more concise location
-      const parts = data.display_name.split(', ');
-      if (parts.length >= 2) {
-        // Try to get city and state/country
-        const city = parts[0];
-        const state = parts[1];
-        locationName = `${city}, ${state}`;
-      } else {
-        locationName = data.display_name;
-      }
-    }
-
-    setStatusSentence(locationName);
-  } catch (error) {
-    console.error('Error fetching location:', error);
-    setStatusSentence('unknown location');
-  }
+// Where the boat is, in words, without asking anyone. This used to send the
+// position to Nominatim from every visitor's browser on every load: a
+// third-party lookup of the boat's position per page view, and a usage
+// pattern OpenStreetMap's policy forbids (no identifying User-Agent, no
+// caching, unbounded request rate), so a link shared in a forum was one busy
+// afternoon away from getting blocked. The published position is already
+// the zone center inside a zone, so the zone's name is the place.
+function describeLocation(lat, lon) {
+  const zone = getPrivacyZoneCenter(lat, lon);
+  if (zone?.name) return zone.name;
+  const ns = lat >= 0 ? 'N' : 'S';
+  const ew = lon >= 0 ? 'E' : 'W';
+  return `${Math.abs(lat).toFixed(2)}\u00b0${ns}, ${Math.abs(lon).toFixed(2)}\u00b0${ew}`;
 }
 
 function setStatusSentence(locationName) {
@@ -3231,8 +3214,8 @@ async function loadData() {
 
         // Load unified 48-hr conditions forecast
         loadConditionsForecast().catch(err => console.error('Conditions forecast error:', err));
-        // Update map location title
-        updateMapLocation(lat, lon).catch(err => console.error('Location fetch error:', err));
+        // The status line: where the boat is, in words
+        setStatusSentence(describeLocation(lat, lon));
         // Load track for last 24 hours
         loadTrack().catch(err => console.error('Track load error:', err));
         // Update polar performance
