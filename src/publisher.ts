@@ -815,17 +815,31 @@ export class Publisher {
    * until Polar Management has a polar selected, and deselecting one later
    * leaves the last published file in the repository rather than deleting a
    * boat's performance data because a dropdown was cleared.
+   *
+   * The local copy says what was last published, not what the repository
+   * holds now. A polars.csv deleted or overwritten on GitHub matched the local
+   * copy forever and never came back, because the polar itself had not moved.
+   * So an unchanged polar is checked against the repository too: one contents
+   * read per cycle, and an unreachable repository is taken as unchanged, since
+   * the commit would fail the same way.
    */
   private async polarsFile(polars: string): Promise<PublishFile[]> {
-    const { store, log } = this.deps;
+    const { store, log, client } = this.deps;
     if (!polars) return [];
     const previous = await store.readText('polars.csv');
-    if (previous === polars) return [];
+    let restoring = false;
+    if (previous === polars) {
+      const remote = await client.getFile(POLARS_PATH).catch(() => polars);
+      if (remote === polars) return [];
+      restoring = true;
+    }
     this.onLanding.set('polars.csv', polars);
-    log(
-      `${previous === null ? 'Publishing' : 'Republishing'} ${POLARS_PATH} ` +
-        `(${polars.trim().split('\n').length - 1} wind angles).`,
-    );
+    const verb = restoring
+      ? `${POLARS_PATH} in the repository differs from the active polar; restoring`
+      : previous === null
+        ? `Publishing ${POLARS_PATH}`
+        : `Republishing ${POLARS_PATH}`;
+    log(`${verb} (${polars.trim().split('\n').length - 1} wind angles).`);
     return [{ path: POLARS_PATH, content: polars }];
   }
 
