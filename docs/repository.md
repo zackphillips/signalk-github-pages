@@ -17,6 +17,7 @@ into a commit.
 | `data/vessel/logo.*` | Plugin, but only while a logo is set on the config page |
 | `data/vessel/icon.*` | Plugin, but only while an icon is set on the config page |
 | `assets/custom.css` | **You** — loaded last by the page, never written here |
+| `logs/*.md` | **You** — [sail logs](site.md#sail-logs), read by the Voyages tab, never written here |
 | Everything else | **You** |
 
 Each publish builds a tree against the live `HEAD` with only those paths

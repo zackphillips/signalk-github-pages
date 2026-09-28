@@ -39,6 +39,11 @@ describe('renderSiteConfig', () => {
     expect(parsed.hull_number).toBe('BEY57004E494');
   });
 
+  it('names the repository the voyage logs are edited in', () => {
+    const parsed = render(CONFIG, IDENTITY, null);
+    expect(parsed.repository).toEqual({ name: CONFIG.github.repo, branch: CONFIG.github.branch });
+  });
+
   it('leaves the boat to the snapshot, which already carries all of it', () => {
     // name, mmsi, callsign, uuid, imo, flag, home port, registrations and
     // design are every one of them in signalk_latest.json. A second copy here

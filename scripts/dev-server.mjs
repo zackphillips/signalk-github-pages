@@ -5,7 +5,7 @@
  * `npm run dev` gives you the published site at http://localhost:8000 without
  * a boat, a Signal K server or a GitHub repository: `site/` is served with the
  * publisher's `{{TOKEN}}` substitutions filled in from the sample vessel, and
- * anything under `data/` falls back to `sample/` when the file is not there.
+ * anything under `data/` or `logs/` falls back to `sample/` when the file is not there.
  * Use it to check a frontend change before it ships in a release.
  */
 import { createServer } from 'node:http';
@@ -43,6 +43,7 @@ const TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.gpx': 'application/gpx+xml',
   '.csv': 'text/csv',
+  '.md': 'text/markdown; charset=utf-8',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
 };

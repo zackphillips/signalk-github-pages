@@ -241,6 +241,11 @@ export interface SiteConfigDocument {
   timezone?: string;
   /** From the Course API; absent whenever nothing is being navigated to. */
   passage?: Passage;
+  /**
+   * Where the site is published from, for the voyage log's GitHub links. The
+   * logs themselves are the adopter's files under `logs/`, never written here.
+   */
+  repository?: { name: string; branch: string };
   privacy_zones: Array<{ name: string; lat: number; lon: number; radius_m: number }>;
 }
 
@@ -304,6 +309,9 @@ export function renderSiteConfig(
   if (tideStations.length) document.tide_stations = tideStations;
   if (config.timezone) document.timezone = config.timezone;
   if (passage) document.passage = passage;
+  if (config.github.repo) {
+    document.repository = { name: config.github.repo, branch: config.github.branch };
+  }
 
   return `${JSON.stringify(document, null, 2)}\n`;
 }
