@@ -85,6 +85,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Voyage logs are edited on GitHub between visits. Stale-while-revalidate
+  // would show the previous text, and a log started since the last visit
+  // would not appear until the load after next.
+  if (/\/logs\/[^/]+\.md$/.test(url.pathname)) {
+    event.respondWith(networkFirstWithCache(request, DATA_CACHE));
+    return;
+  }
+
   // Shell assets — served from cache for speed, refreshed in the background.
   event.respondWith(staleWhileRevalidate(request, SHELL_CACHE));
 });

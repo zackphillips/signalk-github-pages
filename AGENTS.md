@@ -75,8 +75,13 @@ Run `npm test` and `npm run typecheck` before committing.
   boat home for a fortnight still said it was bound for Santa Cruz. A value
   the boat already knows is read from the server; a value the adopter chooses
   is a typed field on the config page. If a new feature needs a person to
-  edit a file in the published repository, that is a design smell — the one
-  deliberate exception is `assets/custom.css`.
+  edit a file in the published repository, that is a design smell — the
+  deliberate exceptions are `assets/custom.css` and the sail logs under
+  `logs/`. A log is the crew's account of a day, which no server knows; the
+  page reads `logs/<date>.md` and links to GitHub's editor, and the plugin
+  never writes, seeds or prunes anything there. The template the "Start log"
+  button fills in lives in `app.js` (overridable by the adopter's
+  `logs/template.md`), not in the repository, so that stays true.
 - **`site.json` is site configuration, not the boat.** Everything about the
   vessel — name, MMSI, callsign, UUID, IMO, flag, home port, registrations,
   dimensions — is in `data/telemetry/signalk_latest.json`, which is the whole

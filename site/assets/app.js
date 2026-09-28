@@ -1571,6 +1571,7 @@ function toggleVoyageDetail(item) {
   item.querySelector('.voyage-row')?.setAttribute('aria-expanded', 'true');
 
   renderVoyageMiniMap(item, entry);
+  loadVoyageLog(item, entry);
 }
 
 function voyageDetailHtml(entry) {
@@ -1609,7 +1610,182 @@ function voyageDetailHtml(entry) {
       <button type="button" class="voyage-detail-btn voyage-show-on-map">Show on main map</button>
       <button type="button" class="voyage-detail-btn voyage-detail-btn--ghost voyage-share">Share</button>
       ${gpx ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${gpx.url}" download="${gpx.filename}">Download GPX</a>` : ''}
-    </div>`;
+    </div>
+    <div class="voyage-log" hidden></div>`;
+}
+
+// ── Voyage logs ─────────────────────────────────────────────────────────────
+// A sail log is `logs/<date>.md` in the published repository, keyed on the
+// same date as the voyage's fragment. It is the adopter's file, like
+// assets/custom.css: the plugin never writes under logs/, because what the
+// crew saw is the one thing on the page the boat cannot know. The page only
+// reads it, and links to GitHub's editor to write it: "Edit log" when the
+// file exists, "Start log" when it does not, with the template filled in
+// through the new-file page's `value` parameter so nothing is committed
+// until someone presses Commit.
+//
+// `logs/template.md`, when the repository has one, replaces the built-in
+// template below. Both take {{date}}, {{start}}, {{end}}, {{distance_nm}},
+// {{duration_hours}} and {{max_speed_kts}}, lowercase so the publisher's
+// substitution, which only matches uppercase tokens, never touches them.
+
+const VOYAGE_LOG_DIR = 'logs';
+const VOYAGE_LOG_TEMPLATE = `# Sail log: {{date}}
+
+Departed {{start}}, arrived {{end}}. {{distance_nm}} nm in {{duration_hours}} hr, max {{max_speed_kts}} kts (from the track).
+
+- **Crew:**
+- **From:**
+- **To:**
+- **Plan:**
+
+## Conditions
+
+- **Wind:**
+- **Sea:**
+- **Sky / visibility:**
+- **Tide / current:**
+
+## Log
+
+| Time | Course | Speed | Wind | Notes |
+|---|---|---|---|---|
+|  |  |  |  |  |
+
+## Sails and engine
+
+- **Sail plan / reefs:**
+- **Engine hours (start / end):**
+
+## Notes
+
+<!-- This repository is public. Name places rather than writing coordinates, especially near home. -->
+`;
+
+// Rendering is lazy: two scripts nobody pays for until a log is opened, and
+// cached by the service worker's CDN rule after that, so a log read once
+// reads again offline. DOMPurify because the file is Markdown anyone with
+// push access can edit, and marked passes raw HTML straight through.
+const MARKDOWN_SCRIPTS = [
+  'https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js',
+  'https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js',
+];
+let markdownReady = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error(`Could not load ${src}`));
+    document.head.appendChild(el);
+  });
+}
+
+function loadMarkdown() {
+  if (!markdownReady) {
+    markdownReady = Promise.all(MARKDOWN_SCRIPTS.map(loadScript)).catch((err) => {
+      markdownReady = null; // let the next open try again, e.g. back in signal
+      throw err;
+    });
+  }
+  return markdownReady;
+}
+
+function renderMarkdown(text) {
+  return window.DOMPurify.sanitize(window.marked.parse(text, { gfm: true }));
+}
+
+// The repository comes from site.json. Without it there is nowhere to link
+// to, so the log is shown if it exists and nothing offers to write one.
+function voyageLogRepository() {
+  const repo = vesselData?.repository;
+  if (!repo || typeof repo.name !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(repo.name)) return null;
+  const branch = typeof repo.branch === 'string' && repo.branch ? repo.branch : 'main';
+  return { name: repo.name, branch };
+}
+
+function voyageLogEditUrl(repo, date) {
+  const branch = repo.branch.split('/').map(encodeURIComponent).join('/');
+  return `https://github.com/${repo.name}/edit/${branch}/${VOYAGE_LOG_DIR}/${date}.md`;
+}
+
+function voyageLogNewUrl(repo, date, text) {
+  const branch = repo.branch.split('/').map(encodeURIComponent).join('/');
+  return `https://github.com/${repo.name}/new/${branch}/${VOYAGE_LOG_DIR}` +
+    `?filename=${encodeURIComponent(`${date}.md`)}&value=${encodeURIComponent(text)}`;
+}
+
+function fillVoyageLogTemplate(template, entry) {
+  const time = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return d && !Number.isNaN(d.getTime())
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : '—';
+  };
+  const num = (v, digits) => (Number.isFinite(v) ? v.toFixed(digits) : '—');
+  const values = {
+    date: entry.date,
+    start: time(entry.start),
+    end: time(entry.end),
+    distance_nm: num(entry.distance_nm, 1),
+    duration_hours: num(entry.duration_hours, 1),
+    max_speed_kts: num(entry.max_speed_kts, 1),
+  };
+  return template.replace(/\{\{(\w+)\}\}/g, (match, key) => (key in values ? values[key] : match));
+}
+
+async function fetchVoyageLogText(path) {
+  try {
+    const resp = await fetch(`${path}?ts=${Date.now()}`);
+    return resp.ok ? await resp.text() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadVoyageLog(item, entry) {
+  const el = item.querySelector('.voyage-log');
+  if (!el) return;
+  const date = entry.date;
+  const repo = voyageLogRepository();
+  const stillOpen = () => item.classList.contains('is-open') && item.querySelector('.voyage-log') === el;
+
+  const text = await fetchVoyageLogText(`${VOYAGE_LOG_DIR}/${date}.md`);
+  if (!stillOpen()) return;
+
+  if (text === null) {
+    if (!repo) return;
+    const template = (await fetchVoyageLogText(`${VOYAGE_LOG_DIR}/template.md`)) ?? VOYAGE_LOG_TEMPLATE;
+    if (!stillOpen()) return;
+    const url = voyageLogNewUrl(repo, date, fillVoyageLogTemplate(template, entry));
+    el.innerHTML = `
+      <div class="voyage-log-actions">
+        <span class="voyage-log-empty">No sail log for this voyage.</span>
+        <a class="voyage-detail-btn voyage-detail-btn--ghost" href="${escapeHtml(url)}" target="_blank" rel="noopener">Start log on GitHub</a>
+      </div>`;
+    el.hidden = false;
+    return;
+  }
+
+  const edit = repo
+    ? `<a class="voyage-detail-btn voyage-detail-btn--ghost" href="${escapeHtml(voyageLogEditUrl(repo, date))}" target="_blank" rel="noopener">Edit log on GitHub</a>`
+    : '';
+  el.innerHTML = `
+    ${edit ? `<div class="voyage-log-actions">${edit}</div>` : ''}
+    <div class="voyage-log-body"><p class="voyage-log-empty">Loading…</p></div>`;
+  el.hidden = false;
+
+  const body = el.querySelector('.voyage-log-body');
+  try {
+    await loadMarkdown();
+    if (!stillOpen()) return;
+    body.innerHTML = renderMarkdown(text);
+  } catch {
+    // Offline before the renderer was ever cached: the words still matter
+    // more than the formatting.
+    body.innerHTML = `<pre class="voyage-log-raw">${escapeHtml(text)}</pre>`;
+  }
 }
 
 function renderVoyageMiniMap(item, entry) {

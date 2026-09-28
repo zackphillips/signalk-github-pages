@@ -219,6 +219,15 @@ describe('the shipped service worker', () => {
     expect(source).toContain("url.pathname.startsWith('/data/')");
   });
 
+  it('fetches voyage logs from the network before the cache', async () => {
+    // Logs are edited on GitHub between visits; stale-while-revalidate showed
+    // the previous text and hid a newly started log until the load after next.
+    const source = (await read()).replace(/\s+/g, ' ');
+    expect(source).toContain(
+      "if (/\\/logs\\/[^/]+\\.md$/.test(url.pathname)) { event.respondWith(networkFirstWithCache(request, DATA_CACHE));",
+    );
+  });
+
   it('gets the version substituted on the way into the repository', async () => {
     const files = await loadFrontend(SITE_DIR, options({ version: '9.9.9' }));
     const worker = files.find((file) => file.path === 'sw.js');

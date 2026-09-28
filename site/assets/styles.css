@@ -896,6 +896,56 @@ body.map-fills .footer {
   opacity: 1;
 }
 
+/* The crew's sail log, logs/<date>.md, rendered under the voyage's stats. */
+.voyage-log {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.voyage-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.voyage-log-empty {
+  color: var(--text-secondary);
+}
+
+.voyage-log-body { overflow-wrap: anywhere; }
+.voyage-log-body h1 { font-size: 1.2em; margin: 12px 0 6px; }
+.voyage-log-body h2 { font-size: 1.05em; margin: 12px 0 6px; }
+.voyage-log-body h3 { font-size: 1em; margin: 10px 0 4px; }
+.voyage-log-body ul, .voyage-log-body ol { padding-left: 1.3em; margin: 6px 0; }
+.voyage-log-body a { color: var(--accent); }
+.voyage-log-body img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
+.voyage-log-body li:has(> input[type="checkbox"]) { list-style: none; margin-left: -1.3em; }
+.voyage-log-body table {
+  display: block;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+.voyage-log-body th, .voyage-log-body td {
+  border: 1px solid var(--border-color);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.voyage-log-raw {
+  white-space: pre-wrap;
+  font-family: inherit;
+  margin: 8px 0 0;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Raw data (Data tab)
    ───────────────────────────────────────────────────────────────────────── */

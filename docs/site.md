@@ -221,6 +221,48 @@ Nothing stands in for it beyond that. There is no built-in default location,
 vessel identity or sample telemetry: a site whose data will not load says so
 rather than showing someone else's boat.
 
+## Sail logs
+
+Each voyage can carry a sail log: a Markdown file at `logs/<date>.md` in the
+published repository, where `<date>` is the voyage's date as it appears in its
+link (`#voyages/2026-08-14` reads `logs/2026-08-14.md`). The plugin never
+writes under `logs/`. The files are yours, like `assets/custom.css`: the track
+is what the boat knows, and the log is what the crew saw.
+
+Open a voyage on the Voyages tab and the page does one of two things:
+
+- **A log exists.** It is rendered under the stats, with *Edit log on GitHub*
+  linking to GitHub's editor for that file.
+- **No log.** *Start log on GitHub* opens GitHub's new-file page with the
+  filename set and a template filled in: date, departure and arrival times,
+  distance, duration and top speed from the track, then headings for crew,
+  conditions, a timed log table, sails and engine, and notes. Nothing is
+  committed until you press *Commit changes*.
+
+To use your own template, commit `logs/template.md`. The page reads it in
+place of the built-in one, and fills `{{date}}`, `{{start}}`, `{{end}}`,
+`{{distance_nm}}`, `{{duration_hours}}` and `{{max_speed_kts}}` wherever they
+appear. Anything else is copied as written.
+
+The buttons link to the repository and branch the plugin publishes to, which
+it writes to `site.json`. A visitor without push access who presses one is
+offered a fork by GitHub, and nothing reaches your repository.
+
+A few things to know:
+
+- **One log per day.** A voyage here is a local calendar day, so a two-day
+  passage is two logs. Link them to each other if you want to read it as one.
+- **Pages takes a minute.** A committed log appears after the Pages build
+  finishes, usually under a minute; reload the voyage then.
+- **The privacy zones do not reach the log.** They redact positions the
+  plugin publishes, not text you write. The repository is public: name places
+  rather than writing coordinates, especially near home.
+- **Offline.** A log read once is cached by the service worker. Rendering
+  needs two small scripts from jsDelivr (marked and DOMPurify), cached the
+  same way; before they are cached, the log shows as plain text.
+- **Pruning leaves logs alone.** Removing a voyage removes its GPX, not its
+  log, and a log for a day with no voyage is not shown anywhere.
+
 ## Polars
 
 The polar table is not configured here. Install
