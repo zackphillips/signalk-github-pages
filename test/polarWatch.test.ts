@@ -57,6 +57,7 @@ describe('an edited polar', () => {
 
   it('is published within one check, not at the next tick', async () => {
     let stored = polar(4.1);
+    const statuses: string[] = [];
     plugin = createPlugin({
       selfId: 'urn:mrn:imo:mmsi:338000000',
       getSelfPath: (p: string) => (p === '' ? TREE : undefined),
@@ -65,14 +66,19 @@ describe('an edited polar', () => {
       handleMessage: () => {},
       debug: () => {},
       error: () => {},
-      setPluginStatus: () => {},
+      setPluginStatus: (status: string) => statuses.push(status),
       setPluginError: () => {},
     } as any);
     plugin.start({ github: { owner: 'owner', token: 'ghp_test' } } as any);
 
-    await vi.waitFor(() => expect(fake.files.get('data/vessel/polars.csv')).toContain('4.1'), {
+    // The status, not the file: the commit lands before the cycle finishes,
+    // and a check that fires in between stands aside for the running cycle,
+    // which on a slow runner left the edit below waiting for a check that the
+    // fake clock never fired.
+    await vi.waitFor(() => expect(statuses.some((s) => s.startsWith('Published'))).toBe(true), {
       timeout: 5000,
     });
+    expect(fake.files.get('data/vessel/polars.csv')).toContain('4.1');
     const commits = fake.commits.length;
 
     // Nothing changed: the check reads the polar and publishes nothing.
