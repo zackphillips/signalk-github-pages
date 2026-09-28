@@ -256,6 +256,10 @@ There is no polar table to type on this plugin's config page: one copy of
 the polar, in the plugin whose job it is, rather than two that drift apart. The
 console names the polar being published.
 
+While a polar is active, `polars.csv` is the plugin's: delete or edit it on
+GitHub and the next cycle puts the active polar back. To change the chart,
+change the polar in Polar Management.
+
 No active polar means the plugin publishes none and does not claim
 the path: a `polars.csv` you committed by hand stays yours, and clearing the
 active polar later leaves the last published file in place rather than

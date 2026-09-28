@@ -384,6 +384,22 @@ describe('Publisher', () => {
     expect(result.files).not.toContain('data/vessel/polars.csv');
   });
 
+  it('restores a published polar deleted or overwritten on GitHub', async () => {
+    const polars = 'twa/tws;6;10\n52;4.1;5.8\n';
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), { polars });
+
+    fake.deleteFile('data/vessel/polars.csv');
+    const restored = await publisher.runCycle(tree(), { polars });
+    expect(restored.files).toContain('data/vessel/polars.csv');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe(polars);
+
+    fake.commitFile('data/vessel/polars.csv', 'twa/tws;6\n52;3\n');
+    const overwritten = await publisher.runCycle(tree(), { polars });
+    expect(overwritten.files).toContain('data/vessel/polars.csv');
+    expect(fake.files.get('data/vessel/polars.csv')).toBe(polars);
+  });
+
   it('leaves a hand-committed polars.csv alone when no polar is active', async () => {
     fake.commitFile('data/vessel/polars.csv', 'twa/tws;6\n52;4.1\n');
     const publisher = makePublisher();
