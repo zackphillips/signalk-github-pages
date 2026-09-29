@@ -1854,6 +1854,7 @@ window.focusTrackDay = focusTrackDay;
 let tideChartInstance = null;
 let polarChartInstance = null;
 let polarData = null;
+let polarWindSpeeds = []; // knots, the CSV header's columns in order
 let currentEnv = null; // Global environment data
 let currentNav = null; // Global navigation data
 let isDrawingPolarChart = false; // Flag to prevent multiple simultaneous chart draws
@@ -3483,20 +3484,26 @@ async function loadPolarData() {
 
     const csvText = await response.text();
 
-    // Parse CSV data
+    // Parse CSV data. The header names the wind speed of each column; an
+    // empty cell is an angle that wind speed cannot sail (in irons), kept as
+    // null so the curve stops there instead of dropping to zero.
     const lines = csvText.split('\n');
     const headers = lines[0].split(';');
-    const windSpeeds = headers.slice(1).map(Number); // [4, 6, 8, 10, 12, 14, 16, 20, 24]
+    polarWindSpeeds = headers.slice(1).map(Number);
 
     polarData = [];
     for (let i = 1; i < lines.length; i++) {
       const values = lines[i].split(';');
       const twa = parseFloat(values[0]); // True Wind Angle
       if (!isNaN(twa)) {
-        const speeds = values.slice(1).map(v => parseFloat(v) || 0);
+        const speeds = values.slice(1).map(v => {
+          const speed = parseFloat(v);
+          return Number.isFinite(speed) && speed > 0 ? speed : null;
+        });
         polarData.push({ twa, speeds });
       }
     }
+    polarData.sort((a, b) => a.twa - b.twa);
   } catch (error) {
     console.error('Error loading polar data:', error);
   }
@@ -3606,26 +3613,24 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
     focusSide = relativeAngle > 0 ? 'starboard' : 'port';
   }
 
-  // Create full 360° angle array.
-  // Labels use sailing sign convention: positive = starboard, negative = port.
+  // Full 360° at 1°, because a radar chart spaces its categories evenly and
+  // the polar's angles are not: the published curve is every 5° plus each
+  // wind speed's pinch limit, a fraction of a degree apart near the bow.
+  // Labels every 30° use sailing sign convention: positive = starboard,
+  // negative = port (stored internally as 181°→359° for Chart.js).
   const fullAngles = [];
   const fullLabels = [];
-
-  // Starboard side: 0° → +180°
-  for (let i = 0; i <= 180; i += 15) {
+  for (let i = 0; i < 360; i++) {
     fullAngles.push(i);
-    fullLabels.push(i === 0 ? '0°' : `+${i}°`);
-  }
-
-  // Port side: -165° → -15° (stored internally as 195°→345° for Chart.js)
-  for (let i = 195; i <= 345; i += 15) {
-    fullAngles.push(i);
-    fullLabels.push(`${i - 360}°`);  // 195→-165, 210→-150, … 345→-15
+    if (i % 30 !== 0) fullLabels.push('');
+    else if (i === 0) fullLabels.push('0°');
+    else if (i <= 180) fullLabels.push(`+${i}°`);
+    else fullLabels.push(`${i - 360}°`);
   }
 
   // Create datasets for each wind speed
   const polarDatasets = [];
-  const windSpeeds = [4, 6, 8, 10, 12, 14, 16, 20, 24];
+  const windSpeeds = polarWindSpeeds;
 
   // Find the closest wind speed to current wind speed
   let closestWindSpeedIndex = 0;
@@ -3639,27 +3644,39 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
   }
 
   windSpeeds.forEach((tws, index) => {
+    // This wind speed's points, ascending. Between two of them the speed is
+    // interpolated; outside them it is null, so the curve ends where the
+    // polar ends rather than borrowing the nearest row's speed and closing
+    // over the bow at full beat speed.
+    const points = polarData
+      .filter(point => point.speeds[index] != null)
+      .map(point => ({ twa: point.twa, speed: point.speeds[index] }));
+
     const speeds = fullAngles.map(angle => {
       // For angles > 180°, use the mirror angle (360° - angle)
       const lookupAngle = angle > 180 ? 360 - angle : angle;
+      if (points.length === 0) return null;
 
-      // Find closest angle in polar data
-      let closestAngle = polarData[0];
-      let minDiff = Math.abs(lookupAngle - polarData[0].twa);
+      // A category within half a degree of a point shows that point, so the
+      // pinch limit at 38.77° lands on 39° rather than being interpolated away.
+      let nearest = points[0];
+      for (const point of points) {
+        if (Math.abs(point.twa - lookupAngle) < Math.abs(nearest.twa - lookupAngle)) nearest = point;
+      }
+      if (Math.abs(nearest.twa - lookupAngle) <= 0.5) return nearest.speed;
 
-      for (const point of polarData) {
-        const diff = Math.abs(lookupAngle - point.twa);
-        if (diff < minDiff) {
-          minDiff = diff;
-          closestAngle = point;
+      for (let i = 1; i < points.length; i++) {
+        const lower = points[i - 1];
+        const upper = points[i];
+        if (lookupAngle > lower.twa && lookupAngle < upper.twa) {
+          const ratio = (lookupAngle - lower.twa) / (upper.twa - lower.twa);
+          return lower.speed + ratio * (upper.speed - lower.speed);
         }
       }
-
-      return closestAngle.speeds[index] || 0;
+      return null;
     });
 
-    const validSpeeds = speeds.filter(speed => speed > 0);
-    if (validSpeeds.length > 0) {
+    if (speeds.some(speed => speed != null)) {
       // Reverse the color order: red for max wind, blue for min wind
       const reversedIndex = windSpeeds.length - 1 - index;
       const hue = reversedIndex * 30; // 0 = red, 30 = orange, 60 = yellow, 120 = green, 180 = cyan, 240 = blue
@@ -3674,7 +3691,12 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
         backgroundColor: isClosestWindSpeed ? (isDark ? 'rgba(96,165,250,0.2)' : 'rgba(37,99,235,0.2)') : `hsla(${hue}, 70%, 50%, 0.025)`, // Reduced alpha for background too
         borderWidth: isClosestWindSpeed ? 4 : 2, // Thicker line for current wind speed
         fill: false,
-        tension: 0.4,
+        // Straight segments: the points are already the smoothed curve, and a
+        // spline over them would bow outward where the polar pinches.
+        tension: 0,
+        pointRadius: 0,
+        pointHoverRadius: 0,
+        spanGaps: false,
         order: isClosestWindSpeed ? 0 : 1 // Current wind speed drawn last (on top)
       });
     }
@@ -3719,6 +3741,14 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
   let startAngle = 0;
   let endAngle = 180;
 
+  // Room for the fastest point on the polar and the boat's own speed, rounded
+  // up to the 2-knot ticks. A fixed 12 clipped a fast polar's broad reach.
+  let fastest = currentSpeed || 0;
+  for (const point of polarData) {
+    for (const speed of point.speeds) if (speed != null && speed > fastest) fastest = speed;
+  }
+  const radialMax = Math.max(8, Math.ceil(fastest / 2) * 2);
+
   polarChartInstance = new Chart(ctx, {
     type: 'radar',
     data: {
@@ -3749,6 +3779,12 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
             grid: {
               color: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)'
             },
+            // One spoke per category would be 360; draw the labelled 30° ones.
+            angleLines: {
+              color: context => context.index % 30 === 0
+                ? (isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)')
+                : 'transparent'
+            },
             ticks: {
               stepSize: 2,
               color: isDark ? '#ffffff' : '#2c3e50',
@@ -3774,7 +3810,7 @@ function drawPolarChart(currentTWA, currentSpeed, currentTWS) {
             },
             startAngle: startAngle,
             min: 0,
-            max: 12,
+            max: radialMax,
             backgroundColor: 'transparent'
           }
         }

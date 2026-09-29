@@ -277,15 +277,29 @@ Polar Management reaches the site within minutes rather than at the next
 stationary cycle an hour later:
 
 ```
-twa/tws;6;8;10;12;14;16;20
-52;5.0;5.9;6.5;6.9;7.1;7.2;7.3
-90;5.6;6.5;7.2;7.6;7.9;8.2;8.7
-150;4.0;5.0;6.0;6.7;7.2;7.6;8.5
+twa/tws;6;10;16
+37.64;;;6.52
+39.32;;5.89;6.89
+40;;6.03;6.99
+40.45;4.42;6.11;7.04
+45;4.9;6.59;7.35
+…
+180;3.39;4.57;4.99
 ```
+
+What is written is the curve Polar Management's own chart draws, not the
+table as imported. An ORC table stops at 52° and 150°, with the beat and run
+angles stored beside it; Polar Management fills in between and beyond with
+[`polar-math`](https://www.npmjs.com/package/polar-math) (a smooth curve
+through the points and targets, a pinch down to zero below the beat angle, a
+taper out to dead downwind) and samples it every 5°. This plugin samples the
+same way, plus the first sailable angle at each wind speed; an empty cell is
+an angle that wind speed cannot sail. If `polar-math` rejects the document,
+the table is published as imported instead.
 
 The resource is stored in SI units — true wind speed and boat speed in m/s,
 true wind angle in radians, the matrix indexed `[tws][twa]` — so it is
-converted to knots and degrees and transposed on the way out, rounded to two
+converted to knots and degrees on the way out, rounded to two
 decimals so a polar that has not moved produces a byte-identical file and no
 commit. Anything unreadable is named in the log: a polar table is a chart, not
 a position, so it never stops a publish.
