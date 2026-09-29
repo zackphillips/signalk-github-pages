@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   activePolarId,
+  curveTable,
   polarTableFromResource,
   readActivePolar,
   renderPolarCsv,
@@ -121,6 +122,63 @@ describe('renderPolarCsv', () => {
   });
 });
 
+/** RESOURCE with the beat and run targets an ORC import stores beside the grid. */
+const WITH_TARGETS = {
+  ...RESOURCE,
+  derived: {
+    rows: [
+      {
+        tws: 6 * KN,
+        beat: { twa: 45 * RAD, tbs: 3.8 * KN, vmg: 3.8 * KN * Math.cos(45 * RAD) },
+        run: { twa: 140 * RAD, tbs: 4.2 * KN, vmg: -4.2 * KN * Math.cos(140 * RAD) },
+      },
+      {
+        tws: 10 * KN,
+        beat: { twa: 42 * RAD, tbs: 5.4 * KN, vmg: 5.4 * KN * Math.cos(42 * RAD) },
+        run: { twa: 145 * RAD, tbs: 6.2 * KN, vmg: -6.2 * KN * Math.cos(145 * RAD) },
+      },
+    ],
+  },
+};
+
+describe('curveTable', () => {
+  it('samples every 5° out to 180°, as Polar Management draws it', () => {
+    const table = curveTable(WITH_TARGETS)!;
+    expect(table.windSpeeds).toEqual([6, 10]);
+    const angles = table.rows.map((row) => row.twa);
+    for (const twa of [45, 50, 90, 150, 180]) expect(angles).toContain(twa);
+    expect(angles).toEqual([...angles].sort((a, b) => a - b));
+  });
+
+  it('leaves the bow empty, so the chart does not close over it at beat speed', () => {
+    const table = curveTable(WITH_TARGETS)!;
+    const first = table.rows[0]!;
+    expect(first.twa).toBeGreaterThan(25);
+    expect(first.twa).toBeLessThan(42);
+    expect(table.rows.find((row) => row.twa === 0)).toBeUndefined();
+  });
+
+  it('pinches: below the beat angle the speed falls away', () => {
+    const table = curveTable(WITH_TARGETS)!;
+    const at = (twa: number) => table.rows.find((row) => row.twa === twa)!.speeds[1]!;
+    const pinch = table.rows.find((row) => row.speeds[1] !== null)!;
+    expect(pinch.speeds[1]!).toBeLessThan(at(45));
+  });
+
+  it('marks an angle one wind speed cannot sail yet another can as null', () => {
+    const table = curveTable(WITH_TARGETS)!;
+    const partial = table.rows.find((row) => row.speeds.includes(null));
+    expect(partial?.speeds.some((speed) => speed !== null)).toBe(true);
+  });
+
+  it('is null for a document polar-math will not take, so the raw grid is used', () => {
+    expect(
+      curveTable({ ...RESOURCE, units: { tws: 'kn', twa: 'deg', boatSpeed: 'kn' } }),
+    ).toBeNull();
+    expect(curveTable(null)).toBeNull();
+  });
+});
+
 describe('readActivePolar', () => {
   const app = (resource: unknown) => ({
     resourcesApi: {
@@ -138,6 +196,27 @@ describe('readActivePolar', () => {
     expect(result.id).toBe('mermug-orc');
     expect(result.csv).toContain('twa/tws;6;10');
     expect(result.problems).toEqual([]);
+  });
+
+  it('publishes the sampled curve, with empty cells where a wind speed is in irons', async () => {
+    const result = await readActivePolar(app(WITH_TARGETS), selected);
+    const lines = result.csv.trim().split('\n');
+    expect(lines).toContain(renderPolarCsv(curveTable(WITH_TARGETS)!).trim().split('\n')[1]);
+    expect(lines.at(-1)).toMatch(/^180;/);
+    expect(lines.some((line) => /;;|;$/.test(line))).toBe(true);
+  });
+
+  it('publishes the raw grid when polar-math refuses the document', async () => {
+    const result = await readActivePolar(
+      app({
+        ...RESOURCE,
+        units: { tws: 'kn', twa: 'deg', boatSpeed: 'kn' },
+        axes: { tws: [6, 10], twa: [52, 90, 150] },
+        values: { boatSpeedMatrix: [[4.1, 4.8, 4.0], [5.8, 6.5, 6.0]] },
+      }),
+      selected,
+    );
+    expect(result.csv).toBe('twa/tws;6;10\n52;4.1;5.8\n90;4.8;6.5\n150;4;6\n');
   });
 
   it('publishes nothing when no polar is selected', async () => {

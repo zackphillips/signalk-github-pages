@@ -16,7 +16,17 @@
  * `[twsRow][twaColumn]`, and only the 0..π half stored because the format
  * assumes port/starboard symmetry. The chart wants knots and degrees, so
  * everything is converted on the way out.
+ *
+ * What is published is the curve Polar Management draws, not the raw grid.
+ * An ORC table starts at 52° and stops at 150°; its beat and run targets sit
+ * in `derived.rows`, off the grid. Polar Management fills the gaps with
+ * `polar-math` (a spline through the points and the targets, a pinch down to
+ * zero below the beat angle, a VMG taper out to 180°) and samples every 5°.
+ * Publishing that same sampling means the site's chart and the management
+ * screen are the same curve. The raw grid is the fallback when `polar-math`
+ * refuses the document.
  */
+import { Polar } from 'polar-math';
 import type { SignalKApp } from './signalk';
 import type { Tree } from './snapshot';
 
@@ -41,9 +51,15 @@ const DEG_PER_RAD = 180 / Math.PI;
 export interface PolarTable {
   /** True wind speeds, knots, in column order. */
   windSpeeds: number[];
-  /** One row per true wind angle, in degrees, ascending. */
-  rows: Array<{ twa: number; speeds: number[] }>;
+  /**
+   * One row per true wind angle, in degrees, ascending. A null speed is an
+   * angle that wind speed cannot sail: in irons, or past the modeled run.
+   */
+  rows: Array<{ twa: number; speeds: Array<number | null> }>;
 }
+
+/** Angular step of the published curve, the same as Polar Management's. */
+export const CURVE_STEP_DEGREES = 5;
 
 /**
  * Round to two decimals, the precision ORC and every VPP export publishes.
@@ -214,11 +230,60 @@ export function polarTableFromResource(resource: unknown): ParsedPolars {
   };
 }
 
-/** Render the canonical semicolon CSV the frontend parses. */
+/**
+ * Sample the polar the way Polar Management's chart does: `polar-math` at
+ * every 5° from 0° to 180° and at each pinch limit, for each wind speed on the
+ * table's axis.
+ *
+ * Null when `polar-math` will not take the document, which it validates
+ * strictly as canonical polar-format (a document in knots and degrees, say);
+ * the caller then publishes the raw grid instead. Angles no wind speed can
+ * sail are dropped, so the file starts at the first pinch angle rather than
+ * with a run of empty rows.
+ */
+export function curveTable(resource: unknown): PolarTable | null {
+  let polar: Polar;
+  try {
+    polar = Polar.fromTable(resource);
+  } catch {
+    return null;
+  }
+  const tws = numbers((resource as any)?.axes?.tws);
+  if (!tws) return null;
+
+  // Every 5°, plus each wind speed's first sailable angle: the pinch is only a
+  // few degrees wide, and a grid alone steps straight past where the curve
+  // turns in toward the middle. Rounded up, so the sample is inside the range.
+  const angles = new Set<number>();
+  for (let twa = 0; twa <= 180; twa += CURVE_STEP_DEGREES) angles.add(twa);
+  for (const windSpeed of tws) {
+    const minTwa = polar.rangeAt({ tws: windSpeed }).value?.minTwa;
+    if (typeof minTwa === 'number' && Number.isFinite(minTwa)) {
+      angles.add(Math.min(180, Math.ceil(minTwa * DEG_PER_RAD * 100) / 100));
+    }
+  }
+
+  const rows: PolarTable['rows'] = [];
+  for (const twa of [...angles].sort((a, b) => a - b)) {
+    const speeds = tws.map((windSpeed) => {
+      const speed = polar.speedAt({ tws: windSpeed, twa: twa / DEG_PER_RAD }).value;
+      return typeof speed === 'number' && Number.isFinite(speed) && speed > 0
+        ? round2(speed / MS_PER_KNOT)
+        : null;
+    });
+    if (speeds.some((speed) => speed !== null)) rows.push({ twa, speeds });
+  }
+  if (rows.length === 0) return null;
+  return { windSpeeds: tws.map((speed) => round2(speed / MS_PER_KNOT)), rows };
+}
+
+/** Render the canonical semicolon CSV the frontend parses; a null is empty. */
 export function renderPolarCsv(table: PolarTable): string {
   const lines = [[HEADER_LABEL, ...table.windSpeeds.map(fmt)].join(';')];
   for (const row of table.rows) {
-    lines.push([fmt(row.twa), ...row.speeds.map(fmt)].join(';'));
+    lines.push(
+      [fmt(row.twa), ...row.speeds.map((speed) => (speed === null ? '' : fmt(speed)))].join(';'),
+    );
   }
   return `${lines.join('\n')}\n`;
 }
@@ -270,12 +335,15 @@ export async function readActivePolar(
         const parsed = polarTableFromResource(resource);
         problems.push(...parsed.problems);
         if (parsed.table) {
+          const curve = curveTable(resource);
           return {
             id,
-            csv: renderPolarCsv(parsed.table),
+            csv: renderPolarCsv(curve ?? parsed.table),
             source: 'resource',
             problems,
-            summary: `"${id}" from Polar Management, ${describe(parsed.table)}`,
+            summary: curve
+              ? `"${id}" from Polar Management, ${describe(parsed.table)}, drawn every ${CURVE_STEP_DEGREES}°`
+              : `"${id}" from Polar Management, ${describe(parsed.table)}`,
           };
         }
       } catch (error: any) {

@@ -567,10 +567,19 @@ Run `npm test` and `npm run typecheck` before committing.
   at `polars.activePolar`. This plugin reads that href off the self tree,
   fetches the resource through `app.resourcesApi.getResource` and renders the
   CSV; it never has a copy of its own. The resource is canonical polar-format
-  — m/s, radians, matrix `[tws][twa]` — so converting and transposing it is
-  the whole of `polars.ts`. Round to two decimals on the way out: the file is
-  rewritten whenever its content changes, and 6 knots stored as 3.086664 m/s
-  comes back as 5.999999999999999.
+  — m/s, radians, matrix `[tws][twa]`. Round to two decimals on the way out:
+  the file is rewritten whenever its content changes, and 6 knots stored as
+  3.086664 m/s comes back as 5.999999999999999.
+- **The site draws Polar Management's curve, not the raw grid.** An ORC grid
+  runs 52°–150°; the beat and run targets are in `derived.rows`, off it.
+  Polar Management's chart samples `polar-math` every 5° (spline through the
+  points and targets, pinch to zero below the beat, VMG taper to 180°), and
+  `curveTable` publishes that same sampling plus each wind speed's pinch
+  limit, with an empty cell where a wind speed is in irons. The chart used
+  to snap every angle to the nearest grid row, so 0°–45° all drew the 52°
+  speed and the curves closed over the bow. The page interpolates between
+  published points and draws nothing outside them; do not reintroduce
+  nearest-row lookup, spline tension or a hard-coded wind-speed list.
 - **An edited polar is looked for, not heard about.** Polar Management's
   webapp saves a table straight to its own store rather than through the
   Resources API, so editing the active polar emits no delta; only switching
