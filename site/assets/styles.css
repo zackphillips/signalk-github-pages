@@ -391,6 +391,26 @@ body.map-fills .footer {
   }
 }
 
+/* Updated in the last publish: a faint accent tint and a left bar, plus a dot
+   so it still reads in glare or without color. Stale and static cards stay
+   exactly as they were. */
+.info-item--fresh {
+  position: relative;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-quaternary));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.info-item--fresh::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 .info-item[data-unit-group] {
   cursor: pointer;
   user-select: none;
