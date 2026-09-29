@@ -6,15 +6,15 @@
 
          Tile    #12202f, the bay at night. Rounded 12 on a 64 grid.
          Bridge  #f05a28, International Orange lifted for contrast on the
-                 tile. One Golden Gate tower and its cable, 3px line art,
-                 cropped by the tile. Never changes between plugins.
+                 tile. One Golden Gate tower and its main cable, 3.5px line
+                 art, cropped by the tile. Never changes between plugins.
          Glyph   #eef2f5, fog. Solid shapes, no line art, so it reads against
                  the bridge at 16px. Lives in x 26–58, y 12–56, right of the
                  tower. A 2.5px stroke in the tile colour, painted under the
-                 fill, knocks the bridge out behind it.
+                 fill, knocks the cable out behind it.
 
        Examples for the glyph slot: an anchor, a gauge needle, a tide curve.
-       This plugin's is a sloop.
+       This plugin's is a sail and hull.
 
        Not the site's fallback icon: site/assets/icon.svg ships into every
        adopter's repository and stays generic. -->
@@ -25,25 +25,19 @@
     <rect width="64" height="64" fill="#12202f"/>
 
     <!-- Bridge -->
-    <g fill="none" stroke="#f05a28" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-      <!-- Main cable: back span to the left, main span sagging to the right -->
-      <path d="M-2 28Q8 21 15 9Q30 36 66 38"/>
-      <!-- Tower: two legs and the portal struts -->
-      <path d="M11 9V66M19 9V66M11 16H19M11 26H19"/>
-      <!-- Deck -->
-      <path d="M-2 40H66"/>
+    <g fill="none" stroke="#f05a28" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Main cable -->
+      <path d="M17 10Q30 38 66 40"/>
+      <!-- Tower: two legs and the top strut -->
+      <path d="M13 10V66M21 10V66M13 18H21"/>
     </g>
 
     <!-- Glyph -->
     <g fill="#eef2f5" stroke="#12202f" stroke-width="2.5" stroke-linejoin="round" paint-order="stroke">
-      <!-- Clears the bridge between the sails, where the mast would be -->
-      <path d="M40 20h5v23h-5z" fill="#12202f" stroke="none"/>
-      <!-- Mainsail -->
-      <path d="M44 14L56 43H44z"/>
-      <!-- Headsail -->
-      <path d="M41 20L30 43h11z"/>
+      <!-- Sail -->
+      <path d="M42 16L54 44H42z"/>
       <!-- Hull -->
-      <path d="M27 47h31l-5 8H32z"/>
+      <path d="M28 48h30l-5 8H33z"/>
     </g>
   </g>
 </svg>
