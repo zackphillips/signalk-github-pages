@@ -21,6 +21,16 @@ anyone with the link sees where you are, where you have been, what the wind is
 doing and how the batteries are holding up — served by GitHub Pages, which
 does not go down when the hotspot does, and costs nothing.
 
+> [!TIP]
+> Buy a domain and point it at the Pages site, so the link you give people is
+> `myboat.com` rather than `you.github.io`. In the repository's Settings →
+> Pages, set the custom domain, add the DNS records GitHub lists at your
+> registrar, and tick **Override site address** on the plugin's config page so
+> link previews resolve against the new address. Use a domain attached to
+> Pages, not an HTTP redirect: a redirect changes the address in the browser to
+> the `github.io` one, which defeats the point, and breaks the installed
+> home-screen app's scope. Costs about $12 a year for a `.com`.
+
 ```
    Signal K server                          GitHub                    Ashore
 ┌────────────────────┐              ┌──────────────────┐        ┌──────────────┐
@@ -68,6 +78,13 @@ live `HEAD`.
   rate limit left, and warns when the instrument log gets expensive.
 - **On-boat console.** A Signal K webapp that previews the site from live
   data, publishes on request and prunes old voyages.
+
+## Live example
+
+[**mermug.com**](https://mermug.com) is this plugin running on a 1994 Beneteau
+First 42s7 on a Raspberry Pi 5, served from a custom domain. It shows the whole
+thing: the position map, daily tracks on the Voyages tab, instruments with
+sparklines, tides and the 48-hour forecast.
 
 ## Quick start
 
