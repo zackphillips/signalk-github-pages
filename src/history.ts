@@ -21,7 +21,12 @@
  * wedged query costs one cycle's sparklines, never the publish.
  */
 import { Temporal } from '@js-temporal/polyfill';
-import { isExcludedPath, type InstrumentLogEntry } from './instrumentLog';
+import {
+  isExcludedPath,
+  type InstrumentLogEntry,
+  type StateRun,
+  type StateRuns,
+} from './instrumentLog';
 import type { SignalKApp } from './signalk';
 import { parseTimestamp } from './time';
 
@@ -92,6 +97,8 @@ export type HistoryResult =
       entries: InstrumentLogEntry[];
       /** Paths actually asked for: stored, live on the boat, and not excluded. */
       requestedPaths: string[];
+      /** Categorical paths as runs. Empty when none, or when the provider refused them. */
+      states: StateRuns;
     }
   | { status: 'unavailable'; reason: string }
   | { status: 'none' };
@@ -200,34 +207,123 @@ export function selectInstrumentPaths(
  */
 export function liveNumericPaths(tree: unknown): Set<string> {
   const found = new Set<string>();
+  walkValues(tree, (path, value) => {
+    const numeric =
+      (typeof value === 'number' && Number.isFinite(value)) ||
+      (!!value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.values(value as Record<string, unknown>).some(
+          (member) => typeof member === 'number' && Number.isFinite(member),
+        ));
+    if (!numeric) return;
+    found.add(path.join('.'));
+    // A provider may store a composite by its members instead.
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value as object)) found.add([...path, key].join('.'));
+    }
+  });
+  return found;
+}
+
+/** Call `visit` for every `{value}` node in a Signal K tree, with its path. */
+function walkValues(tree: unknown, visit: (path: string[], value: unknown) => void): void {
   const walk = (node: unknown, path: string[]): void => {
     if (!node || typeof node !== 'object' || Array.isArray(node)) return;
     const record = node as Record<string, unknown>;
-    if ('value' in record) {
-      const value = record.value;
-      const numeric =
-        (typeof value === 'number' && Number.isFinite(value)) ||
-        (!!value &&
-          typeof value === 'object' &&
-          !Array.isArray(value) &&
-          Object.values(value as Record<string, unknown>).some(
-            (member) => typeof member === 'number' && Number.isFinite(member),
-          ));
-      if (numeric && path.length) {
-        found.add(path.join('.'));
-        // A provider may store a composite by its members instead.
-        if (value && typeof value === 'object') {
-          for (const key of Object.keys(value as object)) found.add([...path, key].join('.'));
-        }
-      }
-    }
+    if ('value' in record && path.length) visit(path, record.value);
     for (const [key, child] of Object.entries(record)) {
       if (key === 'value' || key === 'meta' || key === 'values' || key.startsWith('$')) continue;
       walk(child, [...path, key]);
     }
   };
   walk(tree, []);
+}
+
+/**
+ * A categorical value is a short string or a boolean. Anything longer than
+ * this is prose: a message, a name someone typed, a timestamp. Those are not
+ * states, and the log is a public file.
+ */
+export const MAX_STATE_LENGTH = 32;
+
+/** A path with more distinct values than this is an identifier, not a state. */
+export const MAX_STATE_VALUES = 16;
+
+/** Runs kept per path, newest. A flapping switch must not grow the file. */
+export const MAX_STATE_RUNS = 200;
+
+/** Finest bucket asked for states: a one-minute transition must survive. */
+export const STATE_RESOLUTION_SECONDS = 60;
+
+/** A string or boolean as the text a run carries, or null when it is neither. */
+function stateText(value: unknown): string | null {
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 && text.length <= MAX_STATE_LENGTH ? text : null;
+}
+
+/**
+ * The paths the boat is reporting a string or boolean for right now.
+ *
+ * Generic on purpose: no list of known state paths, because the useful ones
+ * are the ones nobody anticipated (an autopilot mode, a charger stage, a
+ * pump's state from a plugin written next year). A string that is too long or
+ * looks like a position is left out here; one that changes too often is left
+ * out after the query, when its values are known.
+ */
+export function liveStatePaths(tree: unknown): Set<string> {
+  const found = new Set<string>();
+  walkValues(tree, (path, value) => {
+    if (stateText(value) === null) return;
+    found.add(path.join('.'));
+  });
   return found;
+}
+
+/**
+ * Run-length encode a `last`-aggregated history response.
+ *
+ * Only changes are kept, so the result is the transitions and not the
+ * buckets. A path is dropped whole, not trimmed, when any value is prose or
+ * when it takes more than MAX_STATE_VALUES values: a half-shown identifier is
+ * worse than none, and this is what stops a free-text field becoming a
+ * published history. Positions are dropped as they are everywhere else.
+ */
+export function stateRunsFromHistory(response: HistoryValuesResponse): StateRuns {
+  const runs = new Map<string, StateRun[]>();
+  const rejected = new Set<string>();
+  const descriptors = response.values ?? [];
+  for (const row of response.data ?? []) {
+    const timestamp = parseTimestamp(row[0]);
+    if (!timestamp) continue;
+    const iso = timestamp.toISOString();
+    for (const [path, value] of rowByPath(descriptors, row)) {
+      if (isPositionPath(path) || rejected.has(path)) continue;
+      if (value && typeof value === 'object') {
+        // A coordinate pair or anything else structured is not a state.
+        rejected.add(path);
+        continue;
+      }
+      if (typeof value === 'number') continue;
+      const text = stateText(value);
+      if (text === null) {
+        rejected.add(path);
+        continue;
+      }
+      const list = runs.get(path) ?? [];
+      if (list.length === 0 || list[list.length - 1]![1] !== text) list.push([iso, text]);
+      runs.set(path, list);
+    }
+  }
+  const out: StateRuns = {};
+  for (const [path, list] of [...runs].sort(([a], [b]) => a.localeCompare(b))) {
+    if (rejected.has(path)) continue;
+    if (new Set(list.map((run) => run[1])).size > MAX_STATE_VALUES) continue;
+    out[path] = list.slice(-MAX_STATE_RUNS);
+  }
+  return out;
 }
 
 /** Reject rather than hang: a provider query is a database call. */
@@ -262,6 +358,8 @@ export const PATH_CACHE_MS = 15 * 60_000;
 export class HistoryReader {
   private api: HistoryApiLike | null = null;
   private pathCache: { paths: string[]; at: number } | null = null;
+  /** State paths the provider failed on alone, and when. Retried after PATH_CACHE_MS. */
+  private readonly badStatePaths = new Map<string, number>();
   /** Logged once per state change, not once per cycle. */
   private lastAvailability: boolean | null = null;
 
@@ -285,10 +383,14 @@ export class HistoryReader {
       const api = await this.resolveApi();
       const { entries, requestedPaths } = await this.readInstruments(api, now, tree);
       this.announce(true);
+      // After the numbers are safe: a provider that cannot answer for strings
+      // costs the state strips, never the sparklines.
+      const states = await this.readStates(api, now, tree);
       return {
         status: 'ok',
         entries,
         requestedPaths,
+        states,
       };
     } catch (error: any) {
       // A provider that is down, still starting, or slow is not a failed
@@ -371,6 +473,67 @@ export class HistoryReader {
       entries: instrumentEntriesFromHistory(response, { entries: instrumentEntries }),
       requestedPaths,
     };
+  }
+
+  /**
+   * History for every string or boolean path the boat reports, as runs.
+   *
+   * Asked with `last` at no coarser than a minute: the default `average` means
+   * nothing for a string, and a coarse bucket would swallow a short
+   * transition. The provider is not asked whether it has stored the path,
+   * because a provider's path list is not known to include non-numeric
+   * paths; the live tree says what exists, and the query says what is stored.
+   *
+   * One path a provider cannot answer for must not cost the rest. If the
+   * batch fails, each path is asked alone, the ones that fail are set aside
+   * for PATH_CACHE_MS, and the others are kept.
+   */
+  private async readStates(api: HistoryApiLike, now: Date, tree?: unknown): Promise<StateRuns> {
+    if (tree === undefined) return {};
+    const { history, exclude, instrumentEntries, log } = this.deps;
+    const candidates = [...liveStatePaths(tree)]
+      .filter((path) => !isPositionPath(path) && !isExcludedPath(path, exclude))
+      .filter((path) => {
+        const failedAt = this.badStatePaths.get(path);
+        return failedAt === undefined || now.getTime() - failedAt >= PATH_CACHE_MS;
+      })
+      .sort();
+    if (candidates.length === 0) return {};
+
+    const resolution = Math.min(history.resolutionSeconds, STATE_RESOLUTION_SECONDS);
+    const windowSeconds = history.resolutionSeconds * instrumentEntries;
+    const ask = (paths: string[]) =>
+      withTimeout(
+        api.getValues({
+          ...this.range(now, windowSeconds),
+          context: 'vessels.self',
+          resolution,
+          pathSpecs: paths.map((path) => ({ path, aggregate: 'last', parameter: [] })),
+        }),
+        history.timeoutMs,
+        'history getValues (states)',
+      );
+
+    try {
+      return stateRunsFromHistory(await ask(candidates));
+    } catch (batchError: any) {
+      const settled = await Promise.allSettled(candidates.map((path) => ask([path])));
+      const states: StateRuns = {};
+      let failed = 0;
+      settled.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          Object.assign(states, stateRunsFromHistory(result.value));
+        } else {
+          failed += 1;
+          this.badStatePaths.set(candidates[index]!, now.getTime());
+        }
+      });
+      log(
+        `History: the provider refused the state query (${batchError?.message ?? batchError}); ` +
+          `${candidates.length - failed} of ${candidates.length} path(s) answered alone.`,
+      );
+      return states;
+    }
   }
 
   /**

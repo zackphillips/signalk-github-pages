@@ -269,6 +269,26 @@ Run `npm test` and `npm run typecheck` before committing.
   list is not on the config page: a second "published, never graphed" list
   was one more box to explain for a distinction nobody tunes, and hiding a
   path is how an adopter takes it off the log.
+- **A string or boolean path is logged as runs, found the same way.**
+  `liveStatePaths` walks the self tree for short strings (at most
+  `MAX_STATE_LENGTH`) and booleans, `readStates` asks the provider for them
+  with `last` at `min(resolution, 60 s)`, and `stateRunsFromHistory` keeps only
+  the changes, published as `states` in `instrument_log.json`. There is no list
+  of known state paths and there must not be one: the useful ones are the ones
+  nobody anticipated. What keeps it safe to do generically is the filter, not a
+  list. A path is dropped whole when any value is prose, structured or a
+  position, or takes more than `MAX_STATE_VALUES` values, because the log is a
+  public file and a free-text field must not become a published history. The
+  provider is not asked whether it has stored the path: its path list is not
+  known to include non-numeric paths, and the live tree already says what
+  exists. The state query is isolated from the numeric one: a provider that
+  refuses strings costs the strips, never the sparklines, and when the batch
+  fails each path is asked alone so the answerable ones survive (the ones that
+  fail are set aside for `PATH_CACHE_MS`). `states` is an additive key, absent
+  when empty, so a boat with none publishes the file it always did. The frontend
+  finds the card by `data-state-path`, which `pathCard` puts on every string or
+  boolean value, and `paintOtherInstruments` lists state paths that no other
+  card covers.
 - **Units, names and descriptions come from `meta`, like the zones do.**
   The published snapshot is the whole self tree, so every path's `units`,
   `displayName` and `description` are already there; the page used to read

@@ -473,7 +473,8 @@ export class Publisher {
 
     const entries: InstrumentLogEntry[] =
       history.status === 'ok' ? history.entries : [];
-    const contents = renderInstrumentLog(entries);
+    const states = history.status === 'ok' ? history.states : {};
+    const contents = renderInstrumentLog(entries, states);
     const bytes = Buffer.byteLength(contents, 'utf-8');
 
     if (history.status === 'none') {
@@ -490,6 +491,7 @@ export class Publisher {
     log(
       `Instrument log: ${entries.length} entries from the history provider, ` +
         `${history.requestedPaths.length} path(s) asked for, ` +
+        `${Object.keys(states).length} state path(s), ` +
         `${kb(bytes)}.`,
     );
     if (bytes > INSTRUMENT_LOG_WARN_BYTES) {

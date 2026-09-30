@@ -147,6 +147,18 @@ right now. The first condition is what makes a sparkline possible. The second
 keeps out everything the database remembers but the boat no longer has: the
 sensor you unplugged in March, the bank you renamed.
 
+**Text and on/off paths get a timeline instead.** Any path the boat reports as
+a short string or a boolean (`navigation.state`, an autopilot mode, a pump's
+state) has no line to draw, so its history is a strip of colored segments, one
+per value, in the same slot under the same **Show History** toggle and window.
+Nothing on the list is special: the site finds them from the tree, asks the
+provider for each with `last` at no coarser than a minute, and publishes only
+the changes, so a week of `moored` is one entry. A path is left out when a value
+is longer than 32 characters (that is prose, not a state), when it takes more
+than 16 different values (that is an identifier), or when a provider refuses the
+query; one refusing path does not cost the others. The exclusion list below and
+**Never published** apply to these the same way.
+
 These are shown as current values but never logged, because none of them is
 worth a graph:
 
