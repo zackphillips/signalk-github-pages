@@ -154,6 +154,8 @@ export interface PositionFix {
   timestamp: string | null;
   speedOverGround: number | null;
   courseOverGroundTrue: number | null;
+  /** True wind speed, m/s; feeds the per-voyage wind stats. */
+  windSpeedTrue?: number | null;
 }
 
 /** Pull the position fix (and the two values the track needs) out of a tree. */
@@ -180,6 +182,7 @@ export function extractPositionFix(blob: Tree): PositionFix | null {
     // what the published GPX has always carried and what the frontend's
     // course arrow reads.
     courseOverGroundTrue: numeric(navigation.headingTrue),
+    windSpeedTrue: numeric(blob?.environment?.wind?.speedTrue),
   };
 }
 

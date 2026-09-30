@@ -79,6 +79,9 @@ export function buildPositionEntry(
         value: fix.courseOverGroundTrue,
       });
     }
+    if (typeof fix.windSpeedTrue === 'number') {
+      values.push({ path: 'environment.wind.speedTrue', value: fix.windSpeedTrue });
+    }
   }
   return { timestamp: timestamp.toISOString(), values };
 }

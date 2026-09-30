@@ -14,6 +14,7 @@ import { formatGpxTime, localDay, parseTimestamp } from './time';
 
 const NS_GPX = 'http://www.topografix.com/GPX/1/1';
 const NS_GPXTPX = 'http://www.garmin.com/xmlschemas/TrackPointExtension/v1';
+const NS_SK = 'https://signalk.org/specification/';
 
 export interface TrackPoint {
   timestamp: string;
@@ -21,6 +22,8 @@ export interface TrackPoint {
   longitude: number;
   speed_ms: number | null;
   course_rad: number | null;
+  /** True wind speed, m/s. Absent on tracks recorded before it was kept. */
+  wind_ms?: number | null;
 }
 
 export interface TrackMeta {
@@ -32,6 +35,9 @@ export interface TrackMeta {
   points: number;
   max_speed_kts: number;
   distance_nm: number;
+  /** True wind over the day; absent when no wind was recorded. */
+  max_wind_kts?: number;
+  avg_wind_kts?: number;
 }
 
 export const TRACKS_INDEX_SCHEMA_VERSION = 1;
@@ -50,11 +56,13 @@ export function extractPosFromValues(values: PositionValue[] | undefined): {
   lon: number | null;
   speed: number | null;
   course: number | null;
+  wind: number | null;
 } {
   let lat: number | null = null;
   let lon: number | null = null;
   let speed: number | null = null;
   let course: number | null = null;
+  let wind: number | null = null;
   for (const entry of values ?? []) {
     if (!entry || typeof entry !== 'object') continue;
     const { path, value } = entry;
@@ -65,9 +73,11 @@ export function extractPosFromValues(values: PositionValue[] | undefined): {
       speed = value;
     } else if (path === 'navigation.courseOverGroundTrue' && typeof value === 'number') {
       course = value;
+    } else if (path === 'environment.wind.speedTrue' && typeof value === 'number') {
+      wind = value;
     }
   }
-  return { lat, lon, speed, course };
+  return { lat, lon, speed, course, wind };
 }
 
 /** Serialize one day's points as a GPX 1.1 document (without the XML header). */
@@ -79,7 +89,7 @@ export function buildDayGpx(
   const name = escapeXml(`${vesselName} — ${dateStr}`);
   const lines: string[] = [];
   lines.push(
-    `<gpx xmlns="${NS_GPX}" xmlns:gpxtpx="${NS_GPXTPX}" version="1.1" creator="${escapeXml(vesselName)}">`,
+    `<gpx xmlns="${NS_GPX}" xmlns:gpxtpx="${NS_GPXTPX}" xmlns:sk="${NS_SK}" version="1.1" creator="${escapeXml(vesselName)}">`,
   );
   lines.push('  <metadata>');
   lines.push(`    <name>${name}</name>`);
@@ -91,7 +101,8 @@ export function buildDayGpx(
   for (const point of points) {
     const lat = point.latitude.toFixed(6);
     const lon = point.longitude.toFixed(6);
-    const hasExtension = point.speed_ms !== null || point.course_rad !== null;
+    const hasWind = typeof point.wind_ms === 'number';
+    const hasExtension = point.speed_ms !== null || point.course_rad !== null || hasWind;
     lines.push(`      <trkpt lat="${lat}" lon="${lon}">`);
     lines.push(`        <time>${formatGpxTime(point.timestamp)}</time>`);
     if (hasExtension) {
@@ -105,6 +116,9 @@ export function buildDayGpx(
         lines.push(`            <gpxtpx:course>${degrees.toFixed(1)}</gpxtpx:course>`);
       }
       lines.push('          </gpxtpx:TrackPointExtension>');
+      if (hasWind) {
+        lines.push(`          <sk:windSpeedTrue>${point.wind_ms!.toFixed(3)}</sk:windSpeedTrue>`);
+      }
       lines.push('        </extensions>');
     }
     lines.push('      </trkpt>');
@@ -130,7 +144,15 @@ const round = (value: number, digits: number): number =>
 export function makeTrackMeta(dateStr: string, points: TrackPoint[]): TrackMeta {
   let totalNm = 0;
   let maxSpeedKts = 0;
+  let maxWindMs = 0;
+  let windSum = 0;
+  let windCount = 0;
   points.forEach((point, index) => {
+    if (typeof point.wind_ms === 'number' && Number.isFinite(point.wind_ms)) {
+      maxWindMs = Math.max(maxWindMs, point.wind_ms);
+      windSum += point.wind_ms;
+      windCount += 1;
+    }
     if (point.speed_ms !== null) {
       maxSpeedKts = Math.max(maxSpeedKts, point.speed_ms * 1.94384);
     }
@@ -160,6 +182,12 @@ export function makeTrackMeta(dateStr: string, points: TrackPoint[]): TrackMeta 
     points: points.length,
     max_speed_kts: round(maxSpeedKts, 1),
     distance_nm: round(totalNm, 2),
+    ...(windCount > 0
+      ? {
+          max_wind_kts: round(maxWindMs * 1.94384, 1),
+          avg_wind_kts: round((windSum / windCount) * 1.94384, 1),
+        }
+      : {}),
   };
 }
 
@@ -178,7 +206,7 @@ export function groupPointsByDay(
   const byDay = new Map<string, TrackPoint[]>();
   for (const entry of entries) {
     const timestamp = entry?.timestamp;
-    const { lat, lon, speed, course } = extractPosFromValues(entry?.values);
+    const { lat, lon, speed, course, wind } = extractPosFromValues(entry?.values);
     if (lat === null || lon === null || !timestamp) continue;
     if (isPositionPrivate(options.zones, lat, lon)) continue;
     const parsed = parseTimestamp(timestamp);
@@ -191,6 +219,7 @@ export function groupPointsByDay(
       longitude: lon,
       speed_ms: speed,
       course_rad: course,
+      wind_ms: wind,
     });
     byDay.set(day, points);
   }
@@ -268,12 +297,15 @@ function parseTrackPoint(block: string): TrackPoint | null {
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !timestamp) return null;
   const speed = Number(/<gpxtpx:speed>([^<]+)</.exec(block)?.[1]);
   const course = Number(/<gpxtpx:course>([^<]+)</.exec(block)?.[1]);
+  const windRaw = /<sk:windSpeedTrue>([^<]+)</.exec(block)?.[1];
+  const wind = windRaw === undefined ? NaN : Number(windRaw);
   return {
     timestamp,
     latitude: lat,
     longitude: lon,
     speed_ms: Number.isFinite(speed) ? speed : null,
     course_rad: Number.isFinite(course) ? (course * Math.PI) / 180 : null,
+    wind_ms: Number.isFinite(wind) ? wind : null,
   };
 }
 

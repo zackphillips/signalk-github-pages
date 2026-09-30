@@ -177,14 +177,17 @@ body {
 }
 
 .status-privacy {
-  align-self: flex-start;
-  margin-top: 2px;
-  padding: 1px 8px;
+  position: absolute;
+  left: 10px;
+  bottom: 24px;
+  z-index: 1000; /* above Leaflet's panes (up to 700) and controls (800) */
+  padding: 3px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  background: rgba(0, 0, 0, 0.18);
-  color: #ffffff;
-  font-size: 0.72em;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  font-size: 0.75em;
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
@@ -198,6 +201,7 @@ body {
    ───────────────────────────────────────────────────────────────────────── */
 .map-section {
   width: 100%;
+  position: relative;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -408,24 +412,12 @@ body.map-fills .footer {
   }
 }
 
-/* Updated in the last publish: a faint accent tint and a left bar, plus a dot
-   so it still reads in glare or without color. Stale and static cards stay
-   exactly as they were. */
+/* Updated in the last publish: a faint tint and a left bar in the color of
+   the panel the card sits in (--panel-accent, set per panel below). Stale and
+   static cards stay exactly as they were. */
 .info-item--fresh {
-  position: relative;
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-quaternary));
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.info-item--fresh::after {
-  content: '';
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
+  background: color-mix(in srgb, var(--panel-accent, var(--accent)) 10%, var(--bg-quaternary));
+  box-shadow: inset 3px 0 0 var(--panel-accent, var(--accent));
 }
 
 .info-item[data-unit-group] {
@@ -1159,14 +1151,14 @@ body.map-fills .footer {
 }
 
 /* Per-panel accent colors on the left border */
-#navigation-panel  { border-left-color: #4a90d9; }
-#wind-panel        { border-left-color: #00b4d8; }
-#power-panel       { border-left-color: #f59e0b; }
-#vessel-panel      { border-left-color: #8b5cf6; }
-#sensors-panel { border-left-color: #10b981; }
-#internet-panel    { border-left-color: #f97316; }
-#propulsion-panel  { border-left-color: #ef4444; }
-#tanks-panel       { border-left-color: #a78bfa; }
+#navigation-panel  { border-left-color: #4a90d9; --panel-accent: #4a90d9; }
+#wind-panel        { border-left-color: #00b4d8; --panel-accent: #00b4d8; }
+#power-panel       { border-left-color: #f59e0b; --panel-accent: #f59e0b; }
+#vessel-panel      { border-left-color: #8b5cf6; --panel-accent: #8b5cf6; }
+#sensors-panel { border-left-color: #10b981; --panel-accent: #10b981; }
+#internet-panel    { border-left-color: #f97316; --panel-accent: #f97316; }
+#propulsion-panel  { border-left-color: #ef4444; --panel-accent: #ef4444; }
+#tanks-panel       { border-left-color: #a78bfa; --panel-accent: #a78bfa; }
 
 .alert-chips {
   display: flex;
