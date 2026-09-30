@@ -718,11 +718,13 @@ function pathCard(path, options = {}) {
   const described =
     typeof meta.description === 'string' && meta.description.trim() ? meta.description.trim() : path;
   const title = escapeHtml(tooltipFor(described, node));
-  if (raw === null && typeof value === 'string') {
+  if (raw === null && (typeof value === 'string' || typeof value === 'boolean')) {
+    // No `data-path`: there is nothing to plot on a line. `data-state-path`
+    // is how initInlineSparklines finds the card if the log has runs for it.
     return `
-      <div class="info-item${isFreshStamp(node?.timestamp) ? ' info-item--fresh' : ''}" title="${title}">
+      <div class="info-item${isFreshStamp(node?.timestamp) ? ' info-item--fresh' : ''}" data-state-path="${escapeHtml(path)}" title="${title}">
         <div class="label">${escapeHtml(label)}</div>
-        <div class="value value-text">${escapeHtml(value)}</div>
+        <div class="value value-text">${escapeHtml(String(value))}</div>
       </div>`;
   }
   const group = unitGroupForPath(path);
@@ -882,13 +884,17 @@ function paintOtherInstruments() {
   // cold load, which would briefly list every logged path as "other".
   if (!paintedPanels.has('navigation-grid')) return;
 
+  // A string or boolean the log has runs for is a path like any other: it
+  // counts as covered when a card already carries it, and gets one here when
+  // nothing does. Its card is drawn by the same pathCard, which gives it the
+  // `data-state-path` the state strip is found by.
   const covered = new Set(
-    [...document.querySelectorAll('.info-item[data-path]')]
+    [...document.querySelectorAll('.info-item[data-path], .info-item[data-state-path]')]
       .filter((item) => !item.closest('#other-grid') && !item.closest('#alert-summary'))
-      .map((item) => item.dataset.path)
+      .map((item) => item.dataset.path ?? item.dataset.statePath)
       .filter(Boolean),
   );
-  const paths = [...(seriesByPath?.keys() ?? [])]
+  const paths = [...new Set([...(seriesByPath?.keys() ?? []), ...stateRunsByPath.keys()])]
     .filter((path) => !covered.has(path))
     .sort();
 
@@ -1863,6 +1869,7 @@ let lastPolarChartUpdate = 0; // Timestamp of last chart update
 const SPARKLINE_MAX_POINTS = C.SPARKLINE_MAX_POINTS;
 let seriesByPath = null;
 let seriesPromise = null;
+let stateRunsByPath = new Map(); // path -> [{t, v}] at each change, from the log's `states`
 let refreshSparklines = null; // set once initInlineSparklines is ready
 
 // ── History window ─────────────────────────────────────────────────────────
@@ -2719,6 +2726,25 @@ async function loadData() {
     return map;
   };
 
+  // Build a Map<path, [{t, v}]> from the log's `states`: {path: [[iso, text]]}.
+  // Runs, not buckets: each one lasts until the next starts.
+  const buildStatesFromLog = (states) => {
+    const map = new Map();
+    if (!states || typeof states !== 'object') return map;
+    for (const [path, runs] of Object.entries(states)) {
+      if (!Array.isArray(runs)) continue;
+      const list = [];
+      for (const run of runs) {
+        if (!Array.isArray(run) || typeof run[1] !== 'string') continue;
+        const t = new Date(run[0]);
+        if (!Number.isNaN(t.getTime())) list.push({ t, v: run[1] });
+      }
+      list.sort((a, b) => a.t - b.t);
+      if (list.length) map.set(path, list);
+    }
+    return map;
+  };
+
   const loadSeries = async () => {
     if (seriesByPath) return seriesByPath;
     if (seriesPromise) return seriesPromise;
@@ -2732,6 +2758,7 @@ async function loadData() {
         // so the longer windows had nothing to show.
         const entries = Array.isArray(payload?.entries) ? payload.entries : [];
         seriesByPath = buildSeriesFromLog(entries);
+        stateRunsByPath = buildStatesFromLog(payload?.states);
         return seriesByPath;
       })
       .catch(() => {
@@ -2773,6 +2800,177 @@ async function loadData() {
     canvas.height = Math.round(SPARKLINE_CSS_HEIGHT * dpr);
     canvas.style.height = `${SPARKLINE_CSS_HEIGHT}px`;
     return { width, height: SPARKLINE_CSS_HEIGHT, dpr };
+  };
+
+  // Categorical slots, in fixed order: the same eight hues stepped for each
+  // surface. Text never wears these; a segment's label takes the ink that
+  // reads on its fill.
+  const STATE_SLOTS = {
+    light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3aa7', '#e34948'],
+    dark:  ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'],
+  };
+  const STATE_OTHER = '#898781';
+
+  /**
+   * One color per value in a strip, stable across cards.
+   *
+   * Color follows the value, not its rank: a value starts at the slot its text
+   * hashes to, so "moored" is the same color on every card. Two values in one
+   * strip that hash to the same slot are the only collision that matters, and
+   * the later one takes the next free slot. Past eight values in one strip the
+   * rest are one gray; a ninth hue would be invented, not chosen.
+   */
+  const stateColors = (values, isDark) => {
+    const slots = isDark ? STATE_SLOTS.dark : STATE_SLOTS.light;
+    const taken = new Set();
+    const colors = new Map();
+    for (const value of values) {
+      let hash = 5381;
+      for (let i = 0; i < value.length; i += 1) hash = ((hash * 33) ^ value.charCodeAt(i)) >>> 0;
+      let slot = hash % slots.length;
+      let tries = 0;
+      while (taken.has(slot) && tries < slots.length) { slot = (slot + 1) % slots.length; tries += 1; }
+      if (tries >= slots.length) {
+        colors.set(value, STATE_OTHER);
+      } else {
+        taken.add(slot);
+        colors.set(value, slots[slot]);
+      }
+    }
+    return colors;
+  };
+
+  /** Black or white, whichever reads on this fill. */
+  const inkOn = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+    return lum > 0.6 ? '#0b0b0b' : '#ffffff';
+  };
+
+  /**
+   * The runs inside [start, end], as segments with their own times.
+   *
+   * A run lasts until the next one starts and the last lasts to `end`. The run
+   * already under way at `start` is clipped to it, which is why a week of one
+   * value still draws as a full strip in a 1-hour window.
+   */
+  const stateSegments = (runs, start, end) => {
+    const segments = [];
+    for (let i = 0; i < runs.length; i += 1) {
+      const from = Math.max(runs[i].t.getTime(), start);
+      const to = i + 1 < runs.length ? runs[i + 1].t.getTime() : end;
+      if (to <= start || from >= end) continue;
+      segments.push({ value: runs[i].v, from, to });
+    }
+    return segments;
+  };
+
+  /**
+   * A state timeline in the sparkline's slot: one strip, a segment per run.
+   *
+   * Drawn for any path the log has runs for, which is any string or boolean
+   * the boat reports, so nothing here knows what a path means. Segments are
+   * separated by a surface-colored gap, labeled inside when the text fits, and
+   * a legend carries identity whenever there is more than one value, so color
+   * is never the only thing telling two of them apart.
+   */
+  const renderStateStrip = (canvas, runs, window_, colors, isDark, item = null) => {
+    const { width, height, dpr } = sizeSparkline(canvas, item);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.font = SPARKLINE_FONT;
+    canvas.title = '';
+    canvas.onmousemove = null;
+    const { start, end } = window_;
+    const segments = stateSegments(runs, start, end);
+    if (!segments.length) {
+      ctx.fillStyle = colors.noData;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('No data', 6, height / 2);
+      return;
+    }
+
+    const padX = 4;
+    const plotW = width - 2 * padX;
+    const stripY = 4;
+    const stripH = 24;
+    const span = Math.max(1, end - start);
+    const fills = stateColors([...new Set(segments.map((s) => s.value))], isDark);
+    const gap = segments.length > 1 ? 1 : 0;
+
+    const drawn = segments.map((segment) => {
+      const x0 = padX + ((segment.from - start) / span) * plotW;
+      const x1 = padX + ((segment.to - start) / span) * plotW;
+      return { ...segment, x0, x1: Math.max(x1, x0 + 3) };
+    });
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const seg of drawn) {
+      const x = seg.x0 + gap;
+      const w = Math.max(2, seg.x1 - seg.x0 - 2 * gap);
+      const fill = fills.get(seg.value);
+      ctx.fillStyle = fill;
+      ctx.fillRect(x, stripY, w, stripH);
+      if (ctx.measureText(seg.value).width + 8 <= w) {
+        ctx.fillStyle = inkOn(fill);
+        ctx.fillText(seg.value, x + w / 2, stripY + stripH / 2);
+      }
+    }
+
+    // Time axis: the two ends of the window, in the muted ink.
+    const formatTime = (ms) =>
+      new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    ctx.fillStyle = colors.label;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    ctx.fillText(formatTime(start), padX, stripY + stripH + 13);
+    ctx.textAlign = 'right';
+    ctx.fillText(formatTime(end), width - padX, stripY + stripH + 13);
+
+    // Legend: only with two or more values. Text is in the label ink; the
+    // swatch carries the color. It wraps onto a second row before it drops
+    // anything, because a card is narrow; what still does not fit is counted.
+    const values = [...fills.keys()];
+    if (values.length > 1) {
+      ctx.textAlign = 'left';
+      const rows = [height - 22, height - 8];
+      let row = 0;
+      let x = padX;
+      for (let i = 0; i < values.length; i += 1) {
+        const text = values[i];
+        const need = 8 + 4 + ctx.measureText(text).width + 12;
+        const more = values.length - i - 1;
+        const reserve = more > 0 ? ctx.measureText(`+${more}`).width + 8 : 0;
+        if (x + need + reserve > width - padX && x > padX) {
+          if (row + 1 < rows.length) {
+            row += 1;
+            x = padX;
+          } else {
+            ctx.fillStyle = colors.label;
+            ctx.fillText(`+${values.length - i}`, x, rows[row]);
+            break;
+          }
+        }
+        ctx.fillStyle = fills.get(text);
+        ctx.fillRect(x, rows[row] - 8, 8, 8);
+        ctx.fillStyle = colors.label;
+        ctx.fillText(text, x + 12, rows[row]);
+        x += need;
+      }
+    }
+
+    // Hover: the canvas has no per-mark targets, so the title follows the
+    // pointer to the segment under it.
+    canvas.onmousemove = (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = ((event.clientX - rect.left) / rect.width) * width;
+      const hit = drawn.find((seg) => px >= seg.x0 && px < seg.x1);
+      canvas.title = hit
+        ? `${hit.value}, ${formatTime(hit.from)} to ${formatTime(hit.to)}`
+        : '';
+    };
   };
 
   const renderSparkline = (canvas, points, displayConfig = {}, colors = {}, item = null) => {
@@ -3051,17 +3249,50 @@ async function loadData() {
     // The log is what says which paths exist, and it arrives after the first
     // dashboard paint, so the "Other Instruments" grid is filled in here.
     paintOtherInstruments();
-    if (!seriesMap || !seriesMap.size) return;
+    const hasStates = stateRunsByPath.size > 0;
+    if ((!seriesMap || !seriesMap.size) && !hasStates) return;
 
     // Clamp a remembered window the current log cannot answer. A device that
     // last saw a 24-hour log keeps that preference; the site it opens next
     // may publish an hour.
     const span = seriesSpan(seriesMap);
-    const covered = coveredWindows(span);
+    // A log of states alone has no bucket width to measure a span by, so it
+    // offers the shortest window, which every log covers.
+    const covered = span ? coveredWindows(span) : hasStates ? HISTORY_WINDOWS.slice(0, 1) : [];
     if (covered.length && !covered.some((w) => w.hours === historyWindowHours)) {
       historyWindowHours = covered[covered.length - 1].hours;
     }
     const cutoff = span ? span.newest - historyWindowHours * 3_600_000 : 0;
+
+    // A run has no end time of its own, so the strip ends where the numeric
+    // log does, or at the latest change when there is no numeric log.
+    const stateEnd = span
+      ? span.newest
+      : Math.max(0, ...[...stateRunsByPath.values()].map((runs) => runs[runs.length - 1].t.getTime()));
+    const stateWindow = { start: stateEnd - historyWindowHours * 3_600_000, end: stateEnd };
+
+    const ensureCanvas = (item) => {
+      let canvas = item.querySelector('.sparkline-inline');
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        canvas.className = 'sparkline-inline';
+        // Hidden until the panel's toggle opens it. A grid that is repainted
+        // while its panel is open (Other Instruments is, on every pass) makes
+        // new cards, and they must follow the toggle rather than reset it.
+        const toggle = item.closest('.info-panel')?.querySelector('.sparkline-toggle-btn');
+        canvas.style.display = toggle?.dataset.open === 'true' ? 'block' : 'none';
+        item.appendChild(canvas);
+      }
+      return canvas;
+    };
+
+    // Any string or boolean the log has runs for gets a strip in the same
+    // slot, under the same toggle and window.
+    document.querySelectorAll('.info-item[data-state-path]').forEach((item) => {
+      const runs = stateRunsByPath.get(item.dataset.statePath);
+      if (!runs || !runs.length) return;
+      renderStateStrip(ensureCanvas(item), runs, stateWindow, baseColors, isDark, item);
+    });
 
     // Render a canvas per info-item.
     document.querySelectorAll('.info-item[data-path]').forEach((item) => {
@@ -3069,13 +3300,7 @@ async function loadData() {
       const list = seriesMap.get(path);
       if (!list || !list.length) return;
 
-      let canvas = item.querySelector('.sparkline-inline');
-      if (!canvas) {
-        canvas = document.createElement('canvas');
-        canvas.className = 'sparkline-inline';
-        canvas.style.display = 'none'; // hidden by default
-        item.appendChild(canvas);
-      }
+      const canvas = ensureCanvas(item);
 
       // Derive line color from the parent panel's left-border accent.
       let lineColor = fallbackLine;

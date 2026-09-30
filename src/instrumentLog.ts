@@ -44,9 +44,20 @@ export interface InstrumentLogEntry {
   values: Record<string, number>;
 }
 
+/**
+ * A categorical path's history as runs: `[timestamp, value]` at each change,
+ * oldest first. A run lasts until the next one starts, and the last lasts to
+ * the end of the log. Paths that never change are a single run, which is what
+ * keeps a week of `moored` at one entry rather than one per bucket.
+ */
+export type StateRun = [timestamp: string, value: string];
+export type StateRuns = Record<string, StateRun[]>;
+
 export interface InstrumentLog {
   schema_version: number;
   entries: InstrumentLogEntry[];
+  /** Left out when the boat reports no categorical paths. */
+  states?: StateRuns;
 }
 
 export const INSTRUMENT_LOG_SCHEMA_VERSION = 1;
@@ -55,12 +66,18 @@ export const INSTRUMENT_LOG_SCHEMA_VERSION = 1;
  * The file as it is published.
  *
  * Written without indentation: it is the largest file in a publish and nobody
- * reads it by hand.
+ * reads it by hand. `states` is an additive key, present only when there is
+ * something in it, so a log without categorical paths is byte for byte what
+ * it was before they existed and nothing republishes on upgrade.
  */
-export function renderInstrumentLog(entries: InstrumentLogEntry[]): string {
+export function renderInstrumentLog(
+  entries: InstrumentLogEntry[],
+  states: StateRuns = {},
+): string {
   const log: InstrumentLog = {
     schema_version: INSTRUMENT_LOG_SCHEMA_VERSION,
     entries,
+    ...(Object.keys(states).length ? { states } : {}),
   };
   return `${JSON.stringify(log)}\n`;
 }

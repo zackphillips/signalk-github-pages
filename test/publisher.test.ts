@@ -33,11 +33,15 @@ const tree = (over: { lat?: number; lon?: number; state?: string; timestamp?: st
 });
 
 /** A history result as the reader would hand one back. */
-const fromHistory = (entries: Array<{ timestamp: string; values: Record<string, number> }>) =>
+const fromHistory = (
+  entries: Array<{ timestamp: string; values: Record<string, number> }>,
+  states: Record<string, Array<[string, string]>> = {},
+) =>
   ({
     status: 'ok' as const,
     entries,
     requestedPaths: Object.keys(entries[0]?.values ?? {}),
+    states,
   });
 
 const LOG_ENTRIES = [
@@ -202,6 +206,19 @@ describe('Publisher', () => {
     expect(result.files).toContain('data/telemetry/instrument_log.json');
     const log = JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!);
     expect(log.entries).toEqual(LOG_ENTRIES);
+  });
+
+  it('publishes categorical runs beside the numbers', async () => {
+    const states = { 'navigation.state': [['2026-03-01T19:58:00.000Z', 'moored']] as [string, string][] };
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES, states) });
+    expect(JSON.parse(fake.files.get('data/telemetry/instrument_log.json')!).states).toEqual(states);
+  });
+
+  it('leaves the states key out when there are none, so the file is what it always was', async () => {
+    const publisher = makePublisher();
+    await publisher.runCycle(tree(), { history: fromHistory(LOG_ENTRIES) });
+    expect(fake.files.get('data/telemetry/instrument_log.json')).not.toContain('"states"');
   });
 
   it('publishes no instrument log at all when the provider did not answer', async () => {
