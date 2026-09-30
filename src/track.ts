@@ -207,12 +207,13 @@ function toFix(
   speedOverGround: number | null,
   heading: number | null,
   timestamp: string,
+  windSpeedTrue: number | null = null,
 ): PositionFix | null {
   if (!value || typeof value !== 'object') return null;
   const { latitude, longitude } = value as { latitude?: unknown; longitude?: unknown };
   if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-  return { latitude, longitude, timestamp, speedOverGround, courseOverGroundTrue: heading };
+  return { latitude, longitude, timestamp, speedOverGround, courseOverGroundTrue: heading, windSpeedTrue };
 }
 
 /**
@@ -229,6 +230,7 @@ export class PositionRecorder {
   private pending: PositionFix[] = [];
   private speedOverGround: number | null = null;
   private heading: number | null = null;
+  private windSpeedTrue: number | null = null;
   private subscribed = false;
   private maxIntervalSeconds: number;
 
@@ -282,8 +284,23 @@ export class PositionRecorder {
       this.listen('navigation.headingTrue', (value) => {
         this.heading = typeof value === 'number' ? value : null;
       });
+      // Wind is optional: a boat without a wind instrument has no stream,
+      // and that must not turn off track recording.
+      try {
+        this.listen('environment.wind.speedTrue', (value) => {
+          this.windSpeedTrue = typeof value === 'number' ? value : null;
+        });
+      } catch {
+        this.windSpeedTrue = null;
+      }
       this.listen('navigation.position', (value) => {
-        const fix = toFix(value, this.speedOverGround, this.heading, new Date().toISOString());
+        const fix = toFix(
+          value,
+          this.speedOverGround,
+          this.heading,
+          new Date().toISOString(),
+          this.windSpeedTrue,
+        );
         if (fix) this.pending.push(...this.decimator.add(fix));
       });
     } catch (error: any) {

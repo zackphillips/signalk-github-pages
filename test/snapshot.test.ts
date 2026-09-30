@@ -72,6 +72,7 @@ describe('extractPositionFix', () => {
       timestamp: '2026-03-01T11:59:00Z',
       speedOverGround: 4.1,
       courseOverGroundTrue: 1.57,
+      windSpeedTrue: null,
     });
   });
 

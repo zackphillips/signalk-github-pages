@@ -5,7 +5,9 @@ import {
   groupPointsByDay,
   makeTrackMeta,
   parseTracksIndex,
+  renderGpxDocument,
   renderTracksIndex,
+  trimPrivatePoints,
   updateTracks,
   type TrackPoint,
 } from '../src/gpx';
@@ -58,6 +60,7 @@ describe('extractPosFromValues', () => {
       lon: -122.4,
       speed: 4,
       course: 1.5,
+      wind: null,
     });
   });
 
@@ -66,9 +69,9 @@ describe('extractPosFromValues', () => {
       extractPosFromValues([
         { path: 'navigation.position', value: { latitude: 1, longitude: 2 } },
       ]),
-    ).toEqual({ lat: 1, lon: 2, speed: null, course: null });
-    expect(extractPosFromValues([])).toEqual({ lat: null, lon: null, speed: null, course: null });
-    expect(extractPosFromValues(undefined)).toEqual({ lat: null, lon: null, speed: null, course: null });
+    ).toEqual({ lat: 1, lon: 2, speed: null, course: null, wind: null });
+    expect(extractPosFromValues([])).toEqual({ lat: null, lon: null, speed: null, course: null, wind: null });
+    expect(extractPosFromValues(undefined)).toEqual({ lat: null, lon: null, speed: null, course: null, wind: null });
   });
 });
 
@@ -134,6 +137,24 @@ describe('makeTrackMeta', () => {
   it('sums distance in nautical miles', () => {
     // 0.1 degrees of latitude is ~6 nm.
     expect(makeTrackMeta('2026-03-01', points).distance_nm).toBeCloseTo(6, 1);
+  });
+
+  it('reports max and average true wind in knots, and omits them without wind', () => {
+    expect(makeTrackMeta('2026-03-01', points).max_wind_kts).toBeUndefined();
+    const windy = [
+      { ...points[0]!, wind_ms: 5 },
+      { ...points[1]!, wind_ms: 10 },
+    ];
+    const meta = makeTrackMeta('2026-03-01', windy);
+    expect(meta.max_wind_kts).toBe(19.4);
+    expect(meta.avg_wind_kts).toBe(14.6);
+  });
+
+  it('keeps wind through a GPX round trip', () => {
+    const xml = renderGpxDocument([{ ...points[0]!, wind_ms: 5 }, points[1]!], '2026-03-01', 'Test');
+    const kept = trimPrivatePoints(xml, [{ name: 'x', lat: 0, lon: 0, radius_m: 1 } as any]);
+    expect(kept.kept[0]!.wind_ms).toBe(5);
+    expect(kept.kept[1]!.wind_ms).toBeNull();
   });
 });
 

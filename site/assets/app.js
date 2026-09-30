@@ -1613,6 +1613,9 @@ function voyageDetailHtml(entry) {
     ['Duration',  fmtVoyageNum(entry.duration_hours, 2, 'hr')],
     ['Max speed', fmtVoyageNum(entry.max_speed_kts, 1, 'kts')],
     ['Avg speed', fmtVoyageNum(avgKts, 1, 'kts')],
+    // Only voyages recorded since wind was kept carry these; older ones omit the rows.
+    ...(Number.isFinite(entry.max_wind_kts) ? [['Max wind', fmtVoyageNum(entry.max_wind_kts, 1, 'kts')]] : []),
+    ...(Number.isFinite(entry.avg_wind_kts) ? [['Avg wind', fmtVoyageNum(entry.avg_wind_kts, 1, 'kts')]] : []),
     ['Fixes',     Number.isFinite(entry.points) ? String(entry.points) : '—'],
   ];
 
