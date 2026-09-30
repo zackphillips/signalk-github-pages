@@ -75,6 +75,11 @@ live `HEAD`.
 unless you override the name; anything else is served at `/<repo>/`.
 Settings → Pages → Deploy from a branch → `main` / `(root)`.
 
+Use a repository that holds only the tracker. The token can rewrite every file
+in it, and the site is served from your `github.io` origin, so a leaked token
+means someone else's JavaScript on your page. A dedicated repository keeps that
+to the tracker. The plugin shares a repository politely, but the token does not.
+
 **2. A token.** [Make a fine-grained
 PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
 this much:
@@ -85,7 +90,7 @@ this much:
 | Repository access | **Only select repositories** → the Pages repository |
 | Repository permissions → **Contents** | **Read and write** |
 | Repository permissions → Metadata | Read-only — added for you, cannot be removed |
-| Expiration | Your call; publishing stops with a 401 the day it lapses |
+| Expiration | 90 days, with a calendar reminder to rotate. Publishing stops with a 401 the day it lapses, and the plugin raises `notifications.tracker.publishFailed` after half an hour of failures |
 
 Nothing else is needed: no Actions, no Pages, no account permissions. The
 commonly missed one is **Contents**, because a token without it reads the
@@ -147,10 +152,15 @@ derived, and each has an override. The polar comes from
 [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md).
 
 > [!WARNING]
-> Signal K stores plugin configuration as plain JSON under
-> `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
-> shell on the server. Scope it to the one repository, and rotate it if the Pi
-> ever leaves your hands.
+> A token typed into the config page is stored as plain JSON under
+> `~/.signalk/plugin-config-data/`, and Signal K's admin API returns plugin
+> configuration to any admin session. It is readable by anyone with a shell on
+> the server, anyone logged in as a Signal K admin, and anything that backs up
+> that directory. Scope it to the one repository, and rotate it if the Pi ever
+> leaves your hands.
+>
+> To keep it off the config page, put it in a file and point the plugin at it
+> ([Token from a file](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md#token-from-a-file)).
 
 ## Privacy
 
@@ -193,7 +203,7 @@ that could freeze the site on stale data.
 **It needs a data link.** The site updates when the boat has one. Offshore it
 shows the last publish and how long ago that was.
 
-**The token sits in plain text**, as above.
+**The token sits in plain text**, on the page or in the file you point the plugin at. The file keeps it out of the admin API and config backups, not off the Pi's disk.
 
 **One commit per cycle.** The repository grows at the rate you publish.
 Exclude the instrument paths you do not look at.

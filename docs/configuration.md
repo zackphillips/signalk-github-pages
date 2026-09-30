@@ -1,7 +1,7 @@
 # Configuration
 
 Everything is on **Server → Plugin Config → GitHub Pages Vessel Tracker**.
-Only the owner and the token are required; the rest has a working default or
+Only the owner and a token are required; the rest has a working default or
 is read from the server.
 
 ## Fields
@@ -9,7 +9,7 @@ is read from the server.
 | Field | Default | Notes |
 |---|---|---|
 | `github.owner` | **required** | The user or organization, e.g. `yourname` |
-| `github.token` | **required** | Fine-grained PAT, Contents: read/write, this repo only |
+| `github.token` | **required**, here or [from a file](#token-from-a-file) | Fine-grained PAT, Contents: read/write, a repository that holds only the tracker, 90-day expiry |
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](privacy.md) |
@@ -44,8 +44,53 @@ boat: privacy zones start empty, and [the vessel's own
 details](site.md#what-comes-from-signal-k) come from Signal K rather than from this
 page.
 
+## Token from a file
+
 > [!WARNING]
-> Signal K stores plugin configuration as plain JSON under
-> `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
-> shell on the server. Scope it to the one repository, and rotate it if the Pi
-> ever leaves your hands.
+> A token typed into the config page is stored as plain JSON under
+> `~/.signalk/plugin-config-data/`, and Signal K's admin API returns plugin
+> configuration to any admin session. It is readable by anyone with a shell on
+> the server, anyone logged in as a Signal K admin, and anything that backs up
+> that directory.
+
+To keep it off the page, put it in a file only the Signal K user can read and
+tell the plugin where the file is:
+
+```bash
+install -m 600 /dev/null ~/.signalk/github-pages-token
+nano ~/.signalk/github-pages-token          # paste the token, save
+sudo systemctl edit signalk                 # or however you run the server
+```
+
+```ini
+[Service]
+Environment=SIGNALK_GITHUB_PAGES_TOKEN_FILE=/home/pi/.signalk/github-pages-token
+```
+
+Restart the server, then clear the token field on the config page. The plugin
+looks in this order and takes the first it finds:
+
+1. `SIGNALK_GITHUB_PAGES_TOKEN_FILE`, the path of a file holding the token.
+2. `SIGNALK_GITHUB_PAGES_TOKEN`, the token itself. Simpler, but the value shows
+   in `systemctl show` and the process environment, so prefer the file.
+3. The config page.
+
+A file that is named but missing or empty stops the plugin with an error; it
+does not fall back to a token saved on the page, because that one may be the
+credential you meant to replace. A file readable by other users, or a token
+still saved on the page beside a file, is a warning in the log.
+
+This is not encryption. The token is still plain text on the Pi's disk. What the
+file buys is that it stays out of the admin API and out of backups of
+`plugin-config-data`.
+
+Whichever way it is stored:
+
+- **Scope it to one repository**, and make that repository one that holds only
+  the tracker. The token can rewrite every file in it, and the site is served
+  from your `github.io` origin.
+- **Set a 90-day expiry** and put the rotation date in a calendar. Publishing
+  stops with a 401 the day it lapses; after half an hour of failures the plugin
+  raises `notifications.tracker.publishFailed`, but a reminder beats finding out
+  from a stale map.
+- **Rotate it** if the Pi ever leaves your hands.

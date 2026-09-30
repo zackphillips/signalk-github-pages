@@ -20,6 +20,9 @@ import {
   pagesUrl,
   parsePathList,
   resolveConfig,
+  TOKEN_ENV,
+  TOKEN_FILE_ENV,
+  type SecretSource,
   resolveSiteUrl,
   siteBasePath,
 } from '../src/config';
@@ -29,12 +32,12 @@ import { COMPLETE_FORM, makeConfig } from './helpers/config';
 
 describe('resolveConfig', () => {
   it('refuses an empty form, naming only what has no sensible default', () => {
-    const resolved = resolveConfig({});
+    const resolved = resolveConfig({}, { env: {}, readFile: () => '', fileMode: () => null });
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
     expect(resolved.problems).toEqual([
       'GitHub repository owner is not set (your username, or the organization).',
-      'GitHub personal access token is not set.',
+      `GitHub personal access token is not set. Enter it on this page, or set ${TOKEN_FILE_ENV}.`,
     ]);
   });
 
@@ -436,10 +439,11 @@ describe('the Overrides section', () => {
     }
   });
 
-  it('asks only for the owner and the token in the repository section', () => {
+  it('offers only the owner and the token in the repository section', () => {
     const github = (configSchema.properties as any).github;
     expect(Object.keys(github.properties).sort()).toEqual(['owner', 'token']);
-    expect(github.required).toEqual(['owner', 'token']);
+    // The token can come from the environment instead, so the form cannot insist on it.
+    expect(github.required).toEqual(['owner']);
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
@@ -476,6 +480,79 @@ describe('the Overrides section', () => {
     expect(description).not.toMatch(/organi[sz]ation/i);
     // Trimmed to what the token will not work without.
     expect(description.length).toBeLessThan(300);
+  });
+});
+
+describe('token sources', () => {
+  const secrets = (
+    env: Record<string, string>,
+    files: Record<string, string> = {},
+    mode: number | null = 0o600,
+  ): SecretSource => ({
+    env,
+    readFile: (path) => {
+      if (!(path in files)) throw new Error('ENOENT');
+      return files[path]!;
+    },
+    fileMode: () => mode,
+  });
+  const noToken = { github: { owner: 'zack' } };
+
+  it('runs on a token that is not on the config page at all', () => {
+    const resolved = resolveConfig(noToken, secrets({ [TOKEN_ENV]: 'ghp_env' }));
+    expect(resolved.ok && resolved.config.github.token).toBe('ghp_env');
+  });
+
+  it('reads the token from a file, trimming the trailing newline', () => {
+    const resolved = resolveConfig(
+      noToken,
+      secrets({ [TOKEN_FILE_ENV]: '/etc/tok' }, { '/etc/tok': 'ghp_file\n' }),
+    );
+    expect(resolved.ok && resolved.config.github.token).toBe('ghp_file');
+    expect(resolved.ok && resolved.warnings).toEqual([]);
+  });
+
+  it('prefers the file over the environment over the page, and says the page copy is stale', () => {
+    const resolved = resolveConfig(
+      { github: { owner: 'zack', token: 'ghp_page' } },
+      secrets({ [TOKEN_FILE_ENV]: '/t', [TOKEN_ENV]: 'ghp_env' }, { '/t': 'ghp_file' }),
+    );
+    if (!resolved.ok) throw new Error('expected ok');
+    expect(resolved.config.github.token).toBe('ghp_file');
+    expect(resolved.warnings.join(' ')).toContain('also saved on the config page');
+  });
+
+  it('does not fall back to the page when the named file cannot be read', () => {
+    const resolved = resolveConfig(
+      { github: { owner: 'zack', token: 'ghp_page' } },
+      secrets({ [TOKEN_FILE_ENV]: '/missing' }),
+    );
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems.join(' ')).toContain('cannot be read');
+  });
+
+  it('refuses an empty token file', () => {
+    const resolved = resolveConfig(noToken, secrets({ [TOKEN_FILE_ENV]: '/t' }, { '/t': '\n' }));
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems.join(' ')).toContain('is empty');
+  });
+
+  it('warns when the token file is readable by other users', () => {
+    const resolved = resolveConfig(
+      noToken,
+      secrets({ [TOKEN_FILE_ENV]: '/t' }, { '/t': 'ghp_file' }, 0o644),
+    );
+    expect(resolved.ok && resolved.warnings.join(' ')).toContain('chmod 600');
+  });
+
+  it('names the file route when no token is set anywhere', () => {
+    const resolved = resolveConfig(noToken, secrets({}));
+    expect(resolved.ok).toBe(false);
+    if (resolved.ok) return;
+    expect(resolved.problems.join(' ')).toContain('is not set');
+    expect(resolved.problems.join(' ')).toContain(TOKEN_FILE_ENV);
   });
 });
 

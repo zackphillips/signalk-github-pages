@@ -24,6 +24,7 @@
  * stand-in.
  */
 
+import { readFileSync, statSync } from 'node:fs';
 import { parseIcon, parseLogo, type VesselIcon, type VesselLogo } from './logo';
 import { DEFAULT_NOTIFICATION_EXCLUDE } from './notifications';
 import { availableTimezones, serverTimezone } from './timezones';
@@ -298,7 +299,7 @@ const TIMEZONES = availableTimezones();
 export const PAT_GUIDANCE =
   'GitHub > Settings > Developer settings > Personal access tokens > Fine-grained ' +
   'tokens. Repository access: Only select repositories, this one. Repository ' +
-  'permissions: Contents "Read and write".';
+  'permissions: Contents "Read and write". Expiry: 90 days.';
 
 /** What the last cycle found for the polar table, for the console. */
 export interface PolarStatus {
@@ -495,7 +496,7 @@ export const configSchema = {
       description:
         'The repository name, branch and site address follow from the owner; each ' +
         'can be changed under Overrides.',
-      required: ['owner', 'token'],
+      required: ['owner'],
       properties: {
         owner: {
           type: 'string',
@@ -970,6 +971,100 @@ function tokenWarning(token: string): string | null {
   );
 }
 
+/** Environment variable holding the token itself. */
+export const TOKEN_ENV = 'SIGNALK_GITHUB_PAGES_TOKEN';
+/** Environment variable holding the path of a file that holds the token. */
+export const TOKEN_FILE_ENV = 'SIGNALK_GITHUB_PAGES_TOKEN_FILE';
+
+/** Where the token can come from besides the config page; injectable for tests. */
+export interface SecretSource {
+  env: Record<string, string | undefined>;
+  /** File contents as text; throws when it cannot be read. */
+  readFile: (path: string) => string;
+  /** Permission bits of a file, or null when they mean nothing (Windows). */
+  fileMode: (path: string) => number | null;
+}
+
+export const processSecrets: SecretSource = {
+  env: process.env,
+  readFile: (path) => readFileSync(path, 'utf-8'),
+  fileMode: (path) => (process.platform === 'win32' ? null : statSync(path).mode & 0o777),
+};
+
+interface TokenResolution {
+  token: string;
+  problems: string[];
+  warnings: string[];
+}
+
+/**
+ * The token, from the first of: a file named by `SIGNALK_GITHUB_PAGES_TOKEN_FILE`,
+ * `SIGNALK_GITHUB_PAGES_TOKEN`, then the config page.
+ *
+ * Signal K keeps plugin config as plain JSON that its admin API hands to any
+ * admin session, so a token typed into the page is as exposed as that file.
+ * The file route keeps it out of `plugin-config-data` and out of anything that
+ * backs that directory up. A source that is named but unusable is a problem
+ * rather than a silent fall-through: falling back to a stale token on the page
+ * would publish with a credential the owner believed they had replaced.
+ */
+function resolveToken(typed: unknown, secrets: SecretSource): TokenResolution {
+  const problems: string[] = [];
+  const warnings: string[] = [];
+  const fromPage = typeof typed === 'string' ? typed.trim() : '';
+  const file = (secrets.env[TOKEN_FILE_ENV] ?? '').trim();
+  const fromEnv = (secrets.env[TOKEN_ENV] ?? '').trim();
+
+  let token = '';
+  let source = '';
+  if (file) {
+    try {
+      token = secrets.readFile(file).trim();
+    } catch (error) {
+      problems.push(
+        `${TOKEN_FILE_ENV} is set to ${file}, which cannot be read (${(error as Error).message}).`,
+      );
+    }
+    if (!token && !problems.length) problems.push(`${TOKEN_FILE_ENV} points to ${file}, which is empty.`);
+    if (token) {
+      source = TOKEN_FILE_ENV;
+      let mode: number | null = null;
+      try {
+        mode = secrets.fileMode(file);
+      } catch {
+        // The read worked; a mode that cannot be read is not worth a warning.
+      }
+      if (mode !== null && (mode & 0o077) !== 0) {
+        warnings.push(
+          `${file} is readable by other users (mode ${mode.toString(8)}); run chmod 600 on it.`,
+        );
+      }
+    }
+  } else if (fromEnv) {
+    token = fromEnv;
+    source = TOKEN_ENV;
+  } else if (fromPage) {
+    token = fromPage;
+  }
+
+  if (!token && !problems.length) {
+    problems.push(
+      `GitHub personal access token is not set. Enter it on this page, or set ${TOKEN_FILE_ENV}.`,
+    );
+  }
+  if (token && source && fromPage) {
+    warnings.push(
+      `A token is also saved on the config page; ${source} wins. Clear the page field so the ` +
+        'secret is not left in plugin-config-data.',
+    );
+  }
+  if (token) {
+    const warning = tokenWarning(token);
+    if (warning) warnings.push(warning);
+  }
+  return { token, problems, warnings };
+}
+
 export interface ResolvedConfig {
   ok: true;
   config: PluginConfig;
@@ -1076,7 +1171,10 @@ function intervalSeconds(minutes: unknown, fallbackSeconds: number): number {
  * told about the next one is a miserable way to configure a plugin over a
  * boat's wifi.
  */
-export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
+export function resolveConfig(
+  raw: unknown,
+  secrets: SecretSource = processSecrets,
+): ResolvedConfig | UnresolvedConfig {
   const input = (raw ?? {}) as Record<string, any>;
   const github = input.github ?? {};
   const interval = input.interval ?? {};
@@ -1104,12 +1202,10 @@ export function resolveConfig(raw: unknown): ResolvedConfig | UnresolvedConfig {
   }
   const branch = (bool(overrides.overrideBranch) && typedBranch) || DEFAULT_BRANCH;
 
-  const token = typeof github.token === 'string' ? github.token.trim() : '';
-  if (!token) problems.push('GitHub personal access token is not set.');
-  else {
-    const warning = tokenWarning(token);
-    if (warning) warnings.push(warning);
-  }
+  const resolvedToken = resolveToken(github.token, secrets);
+  const token = resolvedToken.token;
+  problems.push(...resolvedToken.problems);
+  warnings.push(...resolvedToken.warnings);
 
   const customLinkResult = resolveCustomLinks(site.customLinks);
   const customLinks = customLinkResult.links;
