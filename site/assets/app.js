@@ -969,6 +969,27 @@ function setStatusSentence(locationName) {
   }
 }
 
+/**
+ * Say so when the published position is a privacy zone's center, not the boat.
+ * The plugin swaps a position inside a zone for the zone center, so without a
+ * note the page shows a confident fix that is deliberately not the boat's.
+ * Pass null to clear it (no fix, or a fix outside every zone).
+ */
+function setPrivacyIndicator(zone) {
+  const el = document.getElementById('status-privacy');
+  if (!el) return;
+  if (!zone) {
+    el.hidden = true;
+    el.textContent = '';
+    el.title = '';
+    return;
+  }
+  const name = zone.name ? ` (${zone.name})` : '';
+  el.textContent = '\u{1F512} Inside privacy zone';
+  el.title = `Position withheld${name}: the map and coordinates show the zone center, not the boat.`;
+  el.hidden = false;
+}
+
 // 24 distinct colors for per-day track segments (cycles if more than 24 days).
 const DAY_TRACK_COLORS = [
   '#e74c3c', '#e67e22', '#f39c12', '#2ecc71', '#1abc9c', '#3498db',
@@ -3364,11 +3385,13 @@ async function loadData() {
         loadConditionsForecast().catch(err => console.error('Conditions forecast error:', err));
         // The status line: where the boat is, in words
         setStatusSentence(describeLocation(lat, lon));
+        setPrivacyIndicator(getPrivacyZoneCenter(lat, lon));
         // Load track for last 24 hours
         loadTrack().catch(err => console.error('Track load error:', err));
         // Update polar performance
         updatePolarPerformance();
       } else {
+        setPrivacyIndicator(null);
         const sentenceEl = document.getElementById('status-sentence');
         if (sentenceEl) sentenceEl.textContent = 'Waiting for GPS position...';
       }
@@ -3407,6 +3430,9 @@ async function loadData() {
     // well and was not something any anchor alarm on board agreed with. The
     // alarm itself now reaches the page through notifications.navigation.anchor
     // instead of being re-derived here from a number and a guess.
+    const inZone = hasGpsFix ? getPrivacyZoneCenter(lat, lon) : null;
+    const positionLock = inZone ? ' \u{1F512}' : '';
+    const positionNote = inZone ? '\nInside a privacy zone: this is the zone center, not the boat.' : '';
     const anchorRawSI = nav.anchor?.currentRadius?.value ?? null;
     const anchorValueHtml = colorValue(
       fmtUnit('length', anchorRawSI),
@@ -3414,8 +3440,8 @@ async function loadData() {
     );
 
     paintPanel('navigation-grid', () => `
-      <div class="info-item" data-fresh-path="navigation.position" title="${withUpdated('Current vessel latitude position', nav.position)}"><div class="label">Latitude</div><div class="value">${lat?.toFixed(6) ?? 'N/A'}</div></div>
-      <div class="info-item" data-fresh-path="navigation.position" title="${withUpdated('Current vessel longitude position', nav.position)}"><div class="label">Longitude</div><div class="value">${lon?.toFixed(6) ?? 'N/A'}</div></div>
+      <div class="info-item" data-fresh-path="navigation.position" title="${withUpdated('Current vessel latitude position', nav.position)}${positionNote}"><div class="label">Latitude${positionLock}</div><div class="value">${lat?.toFixed(6) ?? 'N/A'}</div></div>
+      <div class="info-item" data-fresh-path="navigation.position" title="${withUpdated('Current vessel longitude position', nav.position)}${positionNote}"><div class="label">Longitude${positionLock}</div><div class="value">${lon?.toFixed(6) ?? 'N/A'}</div></div>
       <div class="info-item" data-path="navigation.speedOverGround" data-label="SOG" data-unit-group="speed" data-raw="${nav.speedOverGround?.value ?? ''}" title="${withUpdated('Speed Over Ground - actual speed relative to the seabed', nav.speedOverGround)}"><div class="label">SOG</div><div class="value">${fmtUnit('speed', nav.speedOverGround?.value)}</div></div>
       <div class="info-item" data-path="navigation.speedThroughWater" data-label="STW" data-unit-group="speed" data-raw="${nav.speedThroughWater?.value ?? ''}" title="${withUpdated('Speed Through Water - speed relative to the water', nav.speedThroughWater)}"><div class="label">STW</div><div class="value">${fmtUnit('speed', nav.speedThroughWater?.value)}</div></div>
       <div class="info-item" data-path="navigation.trip.log" data-label="Trip" data-unit-group="distance" data-raw="${nav.trip?.log?.value ?? ''}" title="${withUpdated('Trip distance - distance traveled on current trip', nav.trip?.log)}"><div class="label">Trip</div><div class="value">${fmtUnit('distance', nav.trip?.log?.value)}</div></div>
