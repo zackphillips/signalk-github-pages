@@ -894,7 +894,21 @@ function paintOtherInstruments() {
       .map((item) => item.dataset.path ?? item.dataset.statePath)
       .filter(Boolean),
   );
-  const paths = [...new Set([...(seriesByPath?.keys() ?? []), ...stateRunsByPath.keys()])]
+  // A temperature the boat reports is shown whether or not a history provider
+  // has stored it: a refrigerator or engine-room probe on a 1-Wire bus lands
+  // wherever its plugin chose to put it (`environment.<name>`, `sensors.*`),
+  // which is not `environment.inside` and so not a panel above, and with no
+  // provider or a provider that missed it, the log would not list it either.
+  const liveTemperatures = Object.keys(currentTree ?? {})
+    .filter((key) => !NODE_FIELDS.has(key) && key !== 'design')
+    .flatMap((key) => leafPaths(key))
+    .filter((path) => typeof nodeAtPath(path)?.value === 'number' &&
+      (unitGroupForPath(path) === 'temperature' || /temperature$/i.test(path)));
+  const paths = [...new Set([
+    ...(seriesByPath?.keys() ?? []),
+    ...stateRunsByPath.keys(),
+    ...liveTemperatures,
+  ])]
     .filter((path) => !covered.has(path))
     .sort();
 
