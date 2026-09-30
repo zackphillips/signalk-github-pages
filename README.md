@@ -21,6 +21,16 @@ anyone with the link sees where you are, where you have been, what the wind is
 doing and how the batteries are holding up — served by GitHub Pages, which
 does not go down when the hotspot does, and costs nothing.
 
+> [!TIP]
+> Buy a domain and point it at the Pages site, so the link you give people is
+> `myboat.com` rather than `you.github.io`. In the repository's Settings →
+> Pages, set the custom domain, add the DNS records GitHub lists at your
+> registrar, and tick **Override site address** on the plugin's config page so
+> link previews resolve against the new address. Use a domain attached to
+> Pages, not an HTTP redirect: a redirect changes the address in the browser to
+> the `github.io` one, which defeats the point, and breaks the installed
+> home-screen app's scope. Costs about $12 a year for a `.com`.
+
 ```
    Signal K server                          GitHub                    Ashore
 ┌────────────────────┐              ┌──────────────────┐        ┌──────────────┐
@@ -69,11 +79,23 @@ live `HEAD`.
 - **On-boat console.** A Signal K webapp that previews the site from live
   data, publishes on request and prunes old voyages.
 
+## Live example
+
+[**mermug.com**](https://mermug.com) is this plugin running on a 1994 Beneteau
+First 42s7 on a Raspberry Pi 5, served from a custom domain. It shows the whole
+thing: the position map, daily tracks on the Voyages tab, instruments with
+sparklines, tides and the 48-hour forecast.
+
 ## Quick start
 
 **1. A repository with Pages on.** The plugin publishes to `<you>.github.io`
 unless you override the name; anything else is served at `/<repo>/`.
 Settings → Pages → Deploy from a branch → `main` / `(root)`.
+
+Use a repository that holds only the tracker. The token can rewrite every file
+in it, and the site is served from your `github.io` origin, so a leaked token
+means someone else's JavaScript on your page. A dedicated repository keeps that
+to the tracker. The plugin shares a repository politely, but the token does not.
 
 **2. A token.** [Make a fine-grained
 PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
@@ -85,7 +107,7 @@ this much:
 | Repository access | **Only select repositories** → the Pages repository |
 | Repository permissions → **Contents** | **Read and write** |
 | Repository permissions → Metadata | Read-only — added for you, cannot be removed |
-| Expiration | Your call; publishing stops with a 401 the day it lapses |
+| Expiration | 90 days, with a calendar reminder to rotate. Publishing stops with a 401 the day it lapses, and the plugin raises `notifications.tracker.publishFailed` after half an hour of failures |
 
 Nothing else is needed: no Actions, no Pages, no account permissions. The
 commonly missed one is **Contents**, because a token without it reads the
@@ -147,10 +169,15 @@ derived, and each has an override. The polar comes from
 [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md).
 
 > [!WARNING]
-> Signal K stores plugin configuration as plain JSON under
-> `~/.signalk/plugin-config-data/`. Your token is readable by anyone with a
-> shell on the server. Scope it to the one repository, and rotate it if the Pi
-> ever leaves your hands.
+> A token typed into the config page is stored as plain JSON under
+> `~/.signalk/plugin-config-data/`, and Signal K's admin API returns plugin
+> configuration to any admin session. It is readable by anyone with a shell on
+> the server, anyone logged in as a Signal K admin, and anything that backs up
+> that directory. Scope it to the one repository, and rotate it if the Pi ever
+> leaves your hands.
+>
+> To keep it off the config page, put it in a file and point the plugin at it
+> ([Token from a file](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md#token-from-a-file)).
 
 ## Privacy
 
@@ -193,7 +220,7 @@ that could freeze the site on stale data.
 **It needs a data link.** The site updates when the boat has one. Offshore it
 shows the last publish and how long ago that was.
 
-**The token sits in plain text**, as above.
+**The token sits in plain text**, on the page or in the file you point the plugin at. The file keeps it out of the admin API and config backups, not off the Pi's disk.
 
 **One commit per cycle.** The repository grows at the rate you publish.
 Exclude the instrument paths you do not look at.
