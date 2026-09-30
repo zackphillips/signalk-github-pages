@@ -176,6 +176,23 @@ body {
   letter-spacing: 0.01em;
 }
 
+.status-privacy {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.18);
+  color: #ffffff;
+  font-size: 0.72em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.status-privacy[hidden] { display: none; }
+
 /* ─────────────────────────────────────────────────────────────────────────
    Map
    ───────────────────────────────────────────────────────────────────────── */
