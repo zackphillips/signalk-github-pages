@@ -1,18 +1,10 @@
-<h1 align="center">GitHub Pages Vessel Tracker</h1>
+# GitHub Pages Vessel Tracker
 
-<p align="center">
-  <em>Your boat publishes its own website.</em><br>
-  <code>signalk-github-pages</code>: a Signal K plugin that turns live vessel data into a static GitHub Pages site —
-  position, tracks, instruments and conditions — with no server ashore
-  and no git checkout on board.
-</p>
+*Your boat publishes its own website.*
 
-<p align="center">
-  <img alt="Signal K plugin" src="https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4">
-  <img alt="Node 20+" src="https://img.shields.io/badge/node-%E2%89%A520-5fa04e">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6">
-  <img alt="License BSD-3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-blue">
-</p>
+`signalk-github-pages`: a Signal K plugin that turns live vessel data into a static GitHub Pages site — position, tracks, instruments and conditions — with no server ashore and no git checkout on board.
+
+![Signal K plugin](https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4) ![Node 20+](https://img.shields.io/badge/node-%E2%89%A520-5fa04e) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6) ![License BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)
 
 ---
 
@@ -21,7 +13,7 @@ anyone with the link sees where you are, where you have been, what the wind is
 doing and how the batteries are holding up — served by GitHub Pages, which
 does not go down when the hotspot does, and costs nothing.
 
-> [!TIP]
+> **Tip:**
 > Buy a domain and point it at the Pages site, so the link you give people is
 > `myboat.com` rather than `you.github.io`. In the repository's Settings →
 > Pages, set the custom domain, add the DNS records GitHub lists at your
@@ -143,7 +135,7 @@ default or is derived.
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
 only. Give Pages a minute, then open the URL.
 
-> [!TIP]
+> **Tip:**
 > Install [signalk-autostate](https://www.npmjs.com/package/@meri-imperiumi/signalk-autostate)
 > if you have not. It sets `navigation.state`, which is what makes the cadence
 > adaptive. Without it every cycle uses the stationary interval.
@@ -168,7 +160,7 @@ derived, and each has an override. The polar comes from
 [Polar Management](https://www.npmjs.com/package/signalk-polar-management). The full field list is in
 [Configuration](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md).
 
-> [!WARNING]
+> **Warning:**
 > A token typed into the config page is stored as plain JSON under
 > `~/.signalk/plugin-config-data/`, and Signal K's admin API returns plugin
 > configuration to any admin session. It is readable by anyone with a shell on
