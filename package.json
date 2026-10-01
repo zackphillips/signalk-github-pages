@@ -37,7 +37,11 @@
   ],
   "signalk": {
     "displayName": "GitHub Pages Vessel Tracker",
-    "appIcon": "./icon.svg"
+    "appIcon": "./icon.png",
+    "screenshots": [
+      "./screenshots/site.png",
+      "./screenshots/data.png"
+    ]
   },
   "files": [
     "data",
