@@ -1,6 +1,6 @@
 {
   "name": "signalk-github-pages",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Publish Signal K vessel telemetry to a GitHub Pages site — a static tracker, updated from the boat, with no server ashore.",
   "author": "Zack Phillips",
   "homepage": "https://github.com/zackphillips/signalk-github-pages#readme",
