@@ -6,6 +6,6 @@
 - App store screenshots replaced with current captures of the map, voyages, environment, data and polars pages.
 - Development dependency `vitest` moved from 2.x to 3.2, which clears the high and critical `npm audit` findings in the test toolchain. Nothing the plugin ships at runtime changed.
 
-## 1.0.0 - 2026-09-30
+## 1.0.0 - 2026-09-23
 
 First release.
