@@ -39,8 +39,11 @@
     "displayName": "GitHub Pages Vessel Tracker",
     "appIcon": "./icon.png",
     "screenshots": [
-      "./screenshots/site.png",
-      "./screenshots/data.png"
+      "./screenshots/map.png",
+      "./screenshots/voyages.png",
+      "./screenshots/environment.png",
+      "./screenshots/data.png",
+      "./screenshots/polars.png"
     ]
   },
   "files": [
