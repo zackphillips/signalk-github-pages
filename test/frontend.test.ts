@@ -186,6 +186,12 @@ describe('loadFrontend', () => {
     }
   });
 
+  it('marks the page with a generator tag, so adopters can be found by code search', async () => {
+    const files = await loadFrontend(SITE_DIR, options());
+    const page = files.find((file) => file.path === 'index.html');
+    expect(String(page?.content)).toContain('<meta name="generator" content="signalk-github-pages" />');
+  });
+
   it('never ships assets/custom.css, which belongs to the user', async () => {
     await expect(fs.access(path.join(SITE_DIR, 'assets', 'custom.css'))).rejects.toThrow();
   });
