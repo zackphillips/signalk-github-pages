@@ -4,7 +4,7 @@
 
 `signalk-github-pages`: a Signal K plugin that turns live vessel data into a static GitHub Pages site — position, tracks, instruments and conditions — with no server ashore and no git checkout on board.
 
-![Signal K plugin](https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4) ![Node 20+](https://img.shields.io/badge/node-%E2%89%A520-5fa04e) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6) ![License BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)
+![Signal K plugin](https://img.shields.io/badge/Signal%20K-server%20plugin-0a7ea4) ![Node 20+](https://img.shields.io/badge/node-%E2%89%A520-5fa04e) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6) ![License BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue) [![npm downloads](https://img.shields.io/npm/dm/signalk-github-pages)](https://www.npmjs.com/package/signalk-github-pages) ![Boats](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fzackphillips%2Fsignalk-github-pages%2Fbadges%2Fboats.json)
 
 ---
 

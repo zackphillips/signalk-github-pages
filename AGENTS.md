@@ -534,6 +534,11 @@ Run `npm test` and `npm run typecheck` before committing.
   other — and a `{{TOKEN}}` reaching the repository is a page naming nobody's
   boat, which `loadFrontend`'s test asserts against. Anything substituted is in
   the frontend fingerprint, so a rename republishes the pages that carry it.
+- **The generator tag is how boats are counted.** `site/index.html` carries
+  `<meta name="generator" content="signalk-github-pages">`, and
+  `.github/workflows/boats.yml` runs a code search for it daily to feed the
+  README's boat-count badge. Remove or reword it and the badge goes to zero.
+  Pages published before 1.0.3 have no tag and are not counted, by choice.
 - **Nothing in `site/` names one boat.** Not the pages, not the icons, not a
   localStorage key, not a theme, not a `window.` global. What used to be there:
   six favicon and home-screen PNGs of one boat's burgee under `assets/`, which
