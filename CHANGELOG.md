@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The vessel logo and icon are uploaded from the plugin's console instead of the config page, and kept as files in the plugin's data directory. As data URLs in the plugin config they were sent with every plugin's settings, so a large logo slowed down the config page for every plugin on the server. On the first start after upgrading, a saved logo and icon are moved out of the config automatically.
+
 ## 1.0.3 - 2026-10-03
 
 - Published pages carry `<meta name="generator" content="signalk-github-pages">`, so sites can be found with GitHub code search. Each boat picks it up on the first cycle after upgrading.

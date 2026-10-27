@@ -14,8 +14,8 @@ into a commit.
 | `data/vessel/site.json` | Plugin, when the configuration or the passage changes |
 | `index.html`, `sw.js`, `manifest.json`, `.nojekyll`, `assets/**` | Plugin, on install and whenever the shipped files change |
 | `data/vessel/polars.csv` | Plugin, but only while it has a polar to publish |
-| `data/vessel/logo.*` | Plugin, but only while a logo is set on the config page |
-| `data/vessel/icon.*` | Plugin, but only while an icon is set on the config page |
+| `data/vessel/logo.*` | Plugin, but only while a logo is uploaded in the console |
+| `data/vessel/icon.*` | Plugin, but only while an icon is uploaded in the console |
 | `assets/custom.css` | **You** — loaded last by the page, never written here |
 | `logs/*.md` | **You** — [sail logs](site.md#sail-logs), read by the Voyages tab, never written here |
 | Everything else | **You** |
@@ -29,7 +29,7 @@ never force-updated, so a concurrent edit is never lost.
 ## The console
 
 Signal K serves a page for the plugin at **`http://<your-pi>:3000/signalk-github-pages/`**,
-linked from the server's Webapps list. It does three things the config page
+linked from the server's Webapps list. It does four things the config page
 cannot.
 
 **The preview** renders the published site from the plugin's own data, on the
@@ -50,6 +50,12 @@ GitHub, a commit that landed half-way, a repository rolled back.
 The same thing is a PUT to `tracker.publishNow` on `vessels.self`, so a KIP
 button, a Node-RED flow or a switch wired through another plugin can ask for
 a publish without opening this page.
+
+**The logo and icon** are uploaded here, one file picker each, and kept in
+the plugin's data directory rather than in its config — see
+[Branding](site.md#branding). An upload shows in the preview at once and goes
+out on the next publish; *Clear* stops publishing one and leaves the copy
+already on the site.
 
 **Pruning** removes old voyages. A year of two-minute cycles is a lot of GPX,
 and nothing else this plugin does ever takes anything away.

@@ -1,5 +1,9 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { loadVesselImage } from '../src/logo';
+import { StateStore } from '../src/state';
 import {
   parsePruneRequest,
   registerRoutes,
@@ -49,7 +53,14 @@ function fakeRouter() {
       set: (field: string, value: string) => void (sent.headers[field] = value),
     };
     if (!route) return { ...sent, status: 404, matched: null };
-    await route.handler({ params: { 0: '' }, url, body }, response);
+    // Named parameters, as Express binds them.
+    const params: Record<string, string> = { 0: '' };
+    const names = route.path.split('/');
+    const parts = (url.split('?')[0] ?? '').split('/');
+    names.forEach((name, index) => {
+      if (name.startsWith(':') && parts[index] !== undefined) params[name.slice(1)] = parts[index]!;
+    });
+    await route.handler({ params, url, body }, response);
     return { ...sent, matched: route.path };
   };
 
@@ -213,6 +224,64 @@ describe('while the plugin is stopped', () => {
     registerRoutes(stopped.router, () => null);
     for (const route of ['/publish', '/publish/site']) {
       expect((await stopped.call('post', route)).status, route).toBe(503);
+    }
+  });
+});
+
+describe('the logo and icon uploads', () => {
+  const PNG =
+    'data:image/png;base64,' +
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  const setup = async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'skgp-webapp-'));
+    const store = new StateStore(dir);
+    const current = deps({ store });
+    const { router, call } = fakeRouter();
+    registerRoutes(router, () => current);
+    return { dir, store, current, call };
+  };
+
+  it('stores an upload and swaps it into the running config', async () => {
+    const { dir, store, current, call } = await setup();
+    try {
+      const result = await call('post', '/images/logo', { dataUrl: PNG });
+      expect(result.status).toBe(200);
+      expect(result.body.logo).toMatchObject({ path: 'data/vessel/logo.png', large: false });
+      expect(current.config.site.logo?.mediaType).toBe('image/png');
+      expect((await loadVesselImage(store, 'logo'))?.path).toBe('data/vessel/logo.png');
+
+      // And the preview serves it, which is what the console's thumbnail shows.
+      const preview = await call('get', '/preview/data/vessel/logo.png');
+      expect(preview.mime).toBe('image/png');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses something that is not an image, and changes nothing', async () => {
+    const { dir, store, current, call } = await setup();
+    try {
+      const result = await call('post', '/images/icon', { dataUrl: 'https://example.com/a.png' });
+      expect(result.status).toBe(400);
+      expect(current.config.site.icon).toBeNull();
+      expect(await loadVesselImage(store, 'icon')).toBeNull();
+      expect((await call('post', '/images/banner', { dataUrl: PNG })).status).toBe(404);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears one', async () => {
+    const { dir, store, current, call } = await setup();
+    try {
+      await call('post', '/images/logo', { dataUrl: PNG });
+      const result = await call('post', '/images/logo/clear');
+      expect(result.status).toBe(200);
+      expect(current.config.site.logo).toBeNull();
+      expect(await loadVesselImage(store, 'logo')).toBeNull();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 });

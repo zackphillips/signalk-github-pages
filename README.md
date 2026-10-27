@@ -69,7 +69,8 @@ live `HEAD`.
 - **Measures its own cost.** Every cycle logs bytes on the wire, API calls and
   rate limit left, and warns when the instrument log gets expensive.
 - **On-boat console.** A Signal K webapp that previews the site from live
-  data, publishes on request and prunes old voyages.
+  data, publishes on request, prunes old voyages, and takes the logo and
+  icon uploads.
 
 ## Live example
 
@@ -153,7 +154,6 @@ are most likely to change:
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}`; see [Privacy](#privacy) |
 | `paths.hide` | one server notice | Paths never published, notifications included |
 | `instrumentLog.hours` | `1` | How far back the sparklines reach; 0 publishes none |
-| `site.logo`, `site.icon` | *empty* | The boat's logo, and the tab and home-screen icon |
 
 The repository name, branch, site URL, timezone and tide station are
 derived, and each has an override. The polar comes from

@@ -126,7 +126,14 @@ export interface PluginConfig {
      * crawler that never runs the page's JavaScript.
      */
     url: string;
-    /** The logo to publish, or null to show the icon in its place. */
+    /**
+     * The logo to publish, or null to show the icon in its place.
+     *
+     * Loaded from the plugin data directory by `index.ts`, not from the
+     * options, and replaced in place when the console uploads a new one; see
+     * `logo.ts`. `resolveConfig` fills it only from a value saved before the
+     * images left the config, which `index.ts` then moves.
+     */
     logo: VesselLogo | null;
     /**
      * The icon to publish, or null to fall back to the bundled generic one.
@@ -618,32 +625,6 @@ export const configSchema = {
         'Name, MMSI, callsign, registrations and dimensions are read from the Signal K ' +
         'tree every cycle and written into data/vessel/site.json.',
       properties: {
-        logo: {
-          type: 'string',
-          // `format: data-url` is what makes react-json-schema-form render a
-          // file picker and hand back `data:image/png;base64,...`; the
-          // ui:schema asks for the same widget by name, because the two have
-          // been spelled differently across the versions the Signal K admin UI
-          // has shipped. A renderer that understands neither shows a text box,
-          // which still takes a pasted data URL.
-          format: 'data-url',
-          title: 'Vessel logo',
-          description:
-            'Shown beside the name at the top of the site and in the footer. PNG, ' +
-            'JPEG, WebP or SVG. Empty shows the icon instead. The tab and home-screen ' +
-            'icon is set separately, below.',
-          default: '',
-        },
-        icon: {
-          type: 'string',
-          format: 'data-url',
-          title: 'Vessel icon',
-          description:
-            'The browser tab icon, the home-screen icon, and the image a shared link ' +
-            'unfurls to in a chat app. A simple square mark works best. PNG, JPEG, ' +
-            'WebP or SVG. Empty falls back to a generic tracker icon.',
-          default: '',
-        },
         customLinks: {
           type: 'array',
           title: 'Custom buttons',
@@ -748,7 +729,6 @@ export const configSchema = {
 /** Admin-UI hints: which boxes are passwords, and which are textareas. */
 export const configUiSchema = {
   github: { token: { 'ui:widget': 'password' } },
-  site: { logo: { 'ui:widget': 'file' }, icon: { 'ui:widget': 'file' } },
   paths: {
     hide: { 'ui:widget': 'textarea', 'ui:options': { rows: 6 } },
   },
@@ -1219,14 +1199,18 @@ export function resolveConfig(
   );
   warnings.push(...siteUrlResult.warnings);
 
-  // A logo or icon that will not decode is fatal rather than a warning: it is
-  // the one setting whose failure is invisible on the config page, and the
-  // site would go on showing the previous image — or a broken one — while the
-  // page said a new one was set.
+  // `site.logo` and `site.icon` are no longer config fields: the images are
+  // uploaded from the console and kept in the plugin data directory, because
+  // the admin UI loads every plugin's options in one response and a data URL
+  // there slowed every plugin's config page. A value still saved here is from
+  // before that change; it is decoded so `index.ts` can move it into the data
+  // directory and take it out of the saved options. One that will not decode
+  // is a warning, not a problem: the field it could be fixed in is gone, and
+  // it is removed from the options either way.
   const logoResult = parseLogo(site.logo);
-  problems.push(...logoResult.problems);
+  warnings.push(...logoResult.problems.map((problem) => `${problem} It was discarded.`));
   const iconResult = parseIcon(site.icon);
-  problems.push(...iconResult.problems);
+  warnings.push(...iconResult.problems.map((problem) => `${problem} It was discarded.`));
 
   const zones: PrivacyZone[] = Array.isArray(input.privacyZones)
     ? input.privacyZones

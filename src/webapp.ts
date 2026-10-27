@@ -10,6 +10,8 @@
  *   POST /prune             remove old voyages from the repository
  *   POST /publish           publish now, rather than waiting for the next tick
  *   POST /publish/site      rewrite every frontend file, then publish
+ *   POST /images/:kind      upload the logo or the icon
+ *   POST /images/:kind/clear  stop publishing it
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -32,6 +34,14 @@ import type { Tree } from './snapshot';
 import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
 import type { PolarStatus } from './config';
+import {
+  LARGE_IMAGE_BYTES,
+  VESSEL_IMAGE_KINDS,
+  parseVesselImageFor,
+  saveVesselImage,
+  type VesselImage,
+  type VesselImageKind,
+} from './logo';
 
 /** The bits of an Express response this module uses. */
 interface Response {
@@ -168,6 +178,10 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
         timezone: config.timezone,
         privacyZones: config.privacyZones.length,
         polars: polars.status,
+        images: {
+          logo: describeImage(config.site.logo),
+          icon: describeImage(config.site.icon),
+        },
         tracks: await publisher.listTracks(),
       });
     } catch (error) {
@@ -246,6 +260,66 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     try {
       await current.publisher.forceFrontendRepublish();
       response.json(await current.publishNow('a full site rewrite from the console'));
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * Upload the logo or the icon.
+   *
+   * The body is `{ dataUrl }`, read by the console with FileReader: JSON
+   * because the server already parses JSON bodies for plugin routes, up to
+   * its `FILEUPLOADSIZELIMIT`. The image is stored in the data directory and
+   * swapped into the running config, so the preview shows it straight away
+   * and the next cycle publishes it; nothing is sent to GitHub from here.
+   *
+   * The running config is mutated rather than the plugin restarted: a restart
+   * re-seeds and publishes, and changing a picture is not a reason to.
+   */
+  router.post('/images/:kind', async (request, response) => {
+    const current = running(response);
+    if (!current) return;
+    const kind = imageKind(request.params.kind);
+    if (!kind) {
+      response.status(404).json({ error: 'No such image.' });
+      return;
+    }
+    try {
+      const dataUrl = (request.body as { dataUrl?: unknown } | undefined)?.dataUrl;
+      const { image, problems } = parseVesselImageFor(kind, dataUrl);
+      if (!image) {
+        response.status(400).json({ error: problems[0] ?? `No ${kind} was sent.` });
+        return;
+      }
+      await saveVesselImage(current.store, kind, image);
+      current.config.site[kind] = image;
+      current.log(`New vessel ${kind} uploaded from the console (${image.content.length} bytes).`);
+      response.json({ [kind]: describeImage(image) });
+    } catch (error) {
+      fail(response, error);
+    }
+  });
+
+  /**
+   * Stop publishing the logo or the icon.
+   *
+   * It is not deleted from the repository: same rule as the polar table, a
+   * file that stops being ours is left where it is. The pages stop pointing
+   * at it on the next cycle.
+   */
+  router.post('/images/:kind/clear', async (request, response) => {
+    const current = running(response);
+    if (!current) return;
+    const kind = imageKind(request.params.kind);
+    if (!kind) {
+      response.status(404).json({ error: 'No such image.' });
+      return;
+    }
+    try {
+      await saveVesselImage(current.store, kind, null);
+      current.config.site[kind] = null;
+      response.json({ [kind]: null });
     } catch (error) {
       fail(response, error);
     }
@@ -367,6 +441,21 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     response.set('Location', 'preview/');
     response.status(302).send('');
   });
+}
+
+function imageKind(value: string | undefined): VesselImageKind | null {
+  return VESSEL_IMAGE_KINDS.find((kind) => kind === value) ?? null;
+}
+
+/** What the console shows for an image: never the bytes. */
+function describeImage(image: VesselImage | null) {
+  if (!image) return null;
+  return {
+    path: image.path,
+    mediaType: image.mediaType,
+    bytes: image.content.length,
+    large: image.content.length > LARGE_IMAGE_BYTES,
+  };
 }
 
 /**

@@ -16,8 +16,6 @@ is read from the server.
 | `paths.hide` | `notifications.server.history.defaultProvider` | Paths never published: no card, no sparkline, and for `notifications.` lines no notification — [details](instruments.md#instrument-paths) |
 | `instrumentLog.hours` | `1` | How far back the sparklines plot; 0 publishes no log — [details](instruments.md#history-provider) |
 | `notifications.publish` | on | Publish active notifications and the 24-hour firing log — [details](site.md#zones-and-notifications) |
-| `site.logo` | *empty* | The vessel's logo, uploaded here — see [Branding](site.md#branding) |
-| `site.icon` | *empty* | The tab, home-screen and link-preview icon, uploaded separately from the logo — see [Branding](site.md#branding) |
 | `site.customLinks[]` | *empty* | `{label, url}` buttons added to the site's link row |
 
 ## Overrides

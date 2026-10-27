@@ -30,7 +30,7 @@ src/
   polars.ts         data/vessel/polars.csv from the active `polars` resource
   timezones.ts      The IANA list the timezone dropdown offers
   tideStations.ts   The NOAA stations the site queries, chosen from data/tide_stations.json
-  logo.ts           The config page's logo and icon fields, decoded into bytes and a path
+  logo.ts           The logo and icon: decoded from an upload, kept in the data dir
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
   manifest.ts       Ownership allowlist — what the plugin may write
@@ -545,8 +545,7 @@ Run `npm test` and `npm run typecheck` before committing.
   the plugin owns and overwrites on upgrade, so the only way to have your own
   was to fork the plugin; a theme named after that boat; `mermug.checklist.`
   and `mermug-active-tab` in localStorage; `window.mermugMap`. The logo and
-  icon are `site.logo` and `site.icon` on the config page now, two separate
-  uploads published to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
+  icon are two separate uploads on the console now, published to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`,
   with `assets/icon.svg` as the generic icon fallback.
 - **The preview renders through the same `template` the publisher uses.** It is
   the only place the substitutions can be checked before a commit goes out, so
@@ -629,7 +628,7 @@ Run `npm test` and `npm run typecheck` before committing.
   polar table someone committed by hand is years of measurement.
 - **The logo is the user's until they set one.** `publishLogo` gates
   `data/vessel/logo.*` in the manifest exactly the way `publishPolars` gates
-  the polar table: clearing the config field must stop republishing and stop
+  the polar table: clearing it in the console must stop republishing and stop
   claiming the path rather than deleting someone's artwork. With no logo the
   pages show the icon in its place, configured or generic, which is also what
   a shared link unfurls to.
@@ -644,6 +643,18 @@ Run `npm test` and `npm run typecheck` before committing.
   fingerprints and publishes it independently of `logoFile` — setting one
   must not republish or claim the other. An unset icon falls to the bundled
   generic `assets/icon.svg`.
+- **No binary in the plugin config.** The logo and icon used to be data-URL
+  file pickers on the config page. The admin UI's plugin list carries every
+  plugin's saved options in one response, so a 5 MB logo was a 7 MB string
+  that slowed every plugin's config page on the server, not just this one.
+  They are uploaded from the console (`POST /images/:kind`), stored as plain
+  files under `images/` in the plugin data directory, and swapped into the
+  running config without a restart. `adoptVesselImages` moves a data URL
+  still in the saved options into the data directory at start and then
+  strips the keys with `savePluginOptions`, storing the bytes first so a
+  failure part-way loses nothing. A saved value that will not decode is a
+  warning, not a problem: the field it could be fixed in is gone. Do not put
+  anything large back in the options; a file belongs in the data directory.
 - **Default the operational numbers, never the boat.** Intervals, retention,
   stale cutoff, log length and the exclusion lists all have defaults — the values
   this tracker has run on for years — so a fresh install works. Most of them
