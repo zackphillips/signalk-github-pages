@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-10-27
 
 - The vessel logo and icon are uploaded from the plugin's console instead of the config page, and kept as files in the plugin's data directory. As data URLs in the plugin config they were sent with every plugin's settings, so a large logo slowed down the config page for every plugin on the server. On the first start after upgrading, a saved logo and icon are moved out of the config automatically.
 
