@@ -11,6 +11,7 @@
  * a day of history.
  */
 import { promises as fs } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import path from 'node:path';
 
 export interface PersistedState {
@@ -66,6 +67,45 @@ export class StateStore {
       await handle.close();
     }
     await fs.rename(temp, target);
+  }
+
+  async readBytes(name: string): Promise<Buffer | null> {
+    try {
+      return await fs.readFile(this.resolve(name));
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  /** Same temp file + fsync + rename as `writeText`, for binary content. */
+  async writeBytes(name: string, contents: Buffer): Promise<void> {
+    const target = this.resolve(name);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const temp = `${target}.tmp`;
+    const handle = await fs.open(temp, 'w');
+    try {
+      await handle.writeFile(contents);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(temp, target);
+  }
+
+  /** Remove a file; one that is already gone is not an error. */
+  async remove(name: string): Promise<void> {
+    await fs.rm(this.resolve(name), { force: true });
+  }
+
+  /** File names in a subdirectory, or an empty list when it does not exist. */
+  async list(directory: string): Promise<string[]> {
+    try {
+      return await fs.readdir(this.resolve(directory));
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    }
   }
 
   async readJson<T>(name: string, fallback: T): Promise<T> {

@@ -9,8 +9,9 @@
 
   Two jobs: show the site as it stands right now, from the boat's own data
   and without a round trip to GitHub; and take away voyages that have
-  outlived their usefulness. Everything else about this plugin is configured
-  on the plugin config page.
+  outlived their usefulness. The logo and icon are uploaded here too, because
+  a data URL in the plugin config is shipped to every plugin's config page.
+  Everything else about this plugin is configured on the plugin config page.
 
   Plain HTML, no build step and no framework: it is served off a Raspberry Pi
   to a phone over the boat's wifi, and it has to keep working after the plugin
@@ -105,6 +106,15 @@
      the prune confirmation, without the red that says something is about to
      be taken away. */
   .bad { color: var(--danger); }
+  .image-slot .k { color: var(--muted); font-size: 13px; }
+  .thumb { display: block; max-width: 120px; max-height: 80px; margin: 6px 0; }
+  .file-button {
+    padding: 7px 13px;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .file-button:hover { border-color: var(--accent); }
   .empty { color: var(--muted); font-style: italic; }
 </style>
 </head>
@@ -134,6 +144,38 @@
       that landed half-way.
     </p>
     <p class="note" id="publish-result" hidden></p>
+  </section>
+
+  <section class="panel">
+    <h2>Logo and icon</h2>
+    <div class="grid">
+      <div class="image-slot" data-kind="logo">
+        <div class="k">Vessel logo</div>
+        <img class="thumb" alt="" hidden>
+        <div class="v image-desc">—</div>
+        <div class="row">
+          <label class="file-button"><input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>Choose file</label>
+          <button class="small image-clear" hidden>Clear</button>
+        </div>
+        <p class="note">Beside the name at the top of the site and in the footer. Empty shows the icon instead.</p>
+      </div>
+      <div class="image-slot" data-kind="icon">
+        <div class="k">Vessel icon</div>
+        <img class="thumb" alt="" hidden>
+        <div class="v image-desc">—</div>
+        <div class="row">
+          <label class="file-button"><input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden>Choose file</label>
+          <button class="small image-clear" hidden>Clear</button>
+        </div>
+        <p class="note">The browser tab, the home-screen icon and the image a shared link unfurls to. A simple square mark works best. Empty uses a generic icon.</p>
+      </div>
+    </div>
+    <p class="note">
+      PNG, JPEG, WebP or SVG. Kept on the boat in the plugin's data directory,
+      not in the plugin config, and published on the next cycle. Clearing one
+      stops publishing it; the copy already on the site is left in place.
+    </p>
+    <p class="note" id="image-result" hidden></p>
   </section>
 
   <section class="panel">
@@ -256,6 +298,81 @@ function renderStatus(data) {
   }
 }
 
+// The logo and icon. The bytes never come back through /status: the thumbnail
+// is the preview route's copy, which serves the image the next cycle publishes.
+function renderImages(images) {
+  document.querySelectorAll('.image-slot').forEach(function (slot) {
+    var image = images && images[slot.dataset.kind];
+    var thumb = slot.querySelector('.thumb');
+    var desc = slot.querySelector('.image-desc');
+    slot.querySelector('.image-clear').hidden = !image;
+    if (!image) {
+      thumb.hidden = true;
+      thumb.removeAttribute('src');
+      desc.textContent = 'Not set';
+      desc.className = 'v image-desc';
+      return;
+    }
+    thumb.src = PREVIEW + image.path + '?t=' + Date.now();
+    thumb.hidden = false;
+    desc.textContent = image.path + ', ' + Math.round(image.bytes / 1024) + ' kB' +
+      (image.large ? ' — every visitor downloads this; a smaller file loads faster on a phone' : '');
+    desc.className = image.large ? 'v image-desc bad' : 'v image-desc';
+  });
+}
+
+function readAsDataUrl(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () { resolve(reader.result); };
+    reader.onerror = function () { reject(reader.error || new Error('Could not read the file')); };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function imageAction(kind, file) {
+  if (busy) return;
+  setBusy(true);
+  var result = el('image-result');
+  result.classList.remove('bad');
+  result.textContent = file ? 'Uploading the ' + kind + '…' : 'Clearing the ' + kind + '…';
+  result.hidden = false;
+  try {
+    if (file) {
+      var dataUrl = await readAsDataUrl(file);
+      await api('/images/' + kind, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataUrl: dataUrl }),
+      });
+      result.textContent = 'The ' + kind + ' is saved and goes out on the next publish.';
+    } else {
+      await api('/images/' + kind + '/clear', { method: 'POST' });
+      result.textContent = 'The ' + kind + ' is cleared.';
+    }
+    await refresh();
+    el('preview').src = PREVIEW + '?t=' + Date.now();
+  } catch (error) {
+    result.textContent = (file ? 'Upload' : 'Clear') + ' failed: ' + error.message;
+    result.classList.add('bad');
+  } finally {
+    setBusy(false);
+  }
+}
+
+document.querySelectorAll('.image-slot').forEach(function (slot) {
+  var kind = slot.dataset.kind;
+  var input = slot.querySelector('input[type=file]');
+  input.addEventListener('change', function () {
+    var file = input.files && input.files[0];
+    input.value = '';
+    if (file) imageAction(kind, file);
+  });
+  slot.querySelector('.image-clear').addEventListener('click', function () {
+    imageAction(kind, null);
+  });
+});
+
 function renderTracks(tracks) {
   var body = el('tracks');
   body.textContent = '';
@@ -308,6 +425,9 @@ function setBusy(value) {
   el('publish-btn').disabled = value;
   el('publish-site-btn').disabled = value;
   el('refresh-btn').disabled = value;
+  document.querySelectorAll('.image-slot input, .image-clear').forEach(function (control) {
+    control.disabled = value;
+  });
   document.querySelectorAll('.track-remove').forEach(function (button) {
     button.disabled = value;
   });
@@ -318,6 +438,7 @@ async function refresh() {
   try {
     var data = await api('/status');
     renderStatus(data);
+    renderImages(data.images);
     renderTracks(data.tracks || []);
   } catch (error) {
     el('subtitle').textContent = 'Could not reach the plugin: ' + error.message;

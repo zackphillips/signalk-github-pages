@@ -122,8 +122,9 @@ Everything it needs comes off the config page or the Signal K tree. The name is
 or `<owner>.github.io/<name>/` for a project site) unless `overrides.overrideSiteUrl` is
 ticked for a custom domain.
 
-The logo and the icon are two separate file pickers, `site.logo` and
-`site.icon`. Choose a PNG, JPEG, WebP or SVG in each and the plugin publishes
+The logo and the icon are two separate uploads on the plugin's console
+(**Webapps → GitHub Pages Vessel Tracker**, under **Logo and icon**), not on
+the config page. Choose a PNG, JPEG, WebP or SVG for each and the plugin publishes
 them to `data/vessel/logo.<ext>` and `data/vessel/icon.<ext>`, uploaded
 independently and only when their own bytes change. The logo is shown beside
 the name in the status hero and the footer; the icon is what the browser tab,
@@ -131,11 +132,19 @@ the phone home screen and a shared link's preview use. They are separate
 because a detailed logo that reads fine at 200px comes out as a muddy
 favicon.
 
-Neither field has a size limit of the plugin's own. Each image is
-fingerprinted, so a large file costs one upload rather than one per cycle.
-The ceiling that does exist is the Signal K server's: it accepts a config save
-up to `FILEUPLOADSIZELIMIT`, 10 MB by default, and base64 adds about a third
-on the way in.
+The images are kept as files in the plugin's data directory, not in the plugin
+config. Signal K's admin UI loads every plugin's configuration in one request,
+so an image stored there slowed down every plugin's config page. Versions up
+to 1.0.3 had them on the config page; on the first start after upgrading, the
+plugin moves a saved logo and icon into the data directory and removes them
+from the config by itself.
+
+Neither upload has a size limit of the plugin's own. Each image is
+fingerprinted, so a large file costs one commit rather than one per cycle.
+The ceiling is the Signal K server's JSON body limit, `FILEUPLOADSIZELIMIT`,
+10 MB by default, and base64 adds about a third on the way. Every visitor
+downloads the logo, though, so the console flags anything over 1 MB: a
+200-400 px PNG or an SVG is plenty for the status hero.
 
 With no logo set, the pages show the icon in its place. With no icon set,
 the tab, home-screen and link-preview icon fall back to a generic

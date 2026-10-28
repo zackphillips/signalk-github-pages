@@ -13,18 +13,30 @@
  * never deleted, so clearing one field stops republishing that image without
  * touching the other or removing artwork someone committed by hand.
  *
- * The admin UI hands each field over as a data URL
- * (`data:image/png;name=burgee.png;base64,...`). This module turns that
- * string into bytes and a path; `publisher.ts` puts it in a commit and
+ * Neither image lives in the plugin config. They used to: the config page had
+ * a file picker for each, which stored the upload as a base64 data URL inside
+ * the plugin's options. The Signal K admin UI loads every plugin's options in
+ * one response, so a 5 MB logo became a 7 MB string that every plugin's config
+ * page downloaded and parsed before it could render. The images are uploaded
+ * from the plugin's own console now and kept as plain files in the plugin data
+ * directory (`images/logo.png`, `images/icon.svg`), which nothing else reads.
+ *
+ * The console hands each upload over as a data URL
+ * (`data:image/png;name=burgee.png;base64,...`), the same shape the config
+ * page's file picker produced. This module turns that string into bytes and a
+ * path, stores and loads the result, and `publisher.ts` puts it in a commit;
  * `manifest.ts` claims the path only while there is one to publish.
  *
  * There is no size limit here. Each image is fingerprinted by `publisher.ts`
  * and uploaded only when its own bytes change, so a large file costs one
  * upload rather than one per cycle. The ceiling that does exist is the Signal
- * K server's: it takes a config POST up to `FILEUPLOADSIZELIMIT`, 10 MB by
- * default, and base64 inflates a file by about a third on the way in.
+ * K server's JSON body limit, `FILEUPLOADSIZELIMIT`, 10 MB by default, and
+ * base64 inflates a file by about a third on the way in. Every visitor to the
+ * site downloads the logo, though, so the console says so past
+ * `LARGE_IMAGE_BYTES`.
  */
 import { Buffer } from 'node:buffer';
+import type { StateStore } from './state';
 
 /** Where an image is published, by the media type it came in as. */
 const EXTENSIONS: Record<string, string> = {
@@ -59,7 +71,7 @@ export type IconResult = { icon: VesselIcon | null; problems: string[] };
  * Decode one of the two image config fields.
  *
  * Empty is not a problem — it is the default, and the caller decides what it
- * falls back to. Anything else that will not decode is a problem, because an
+ * falls back to. Anything else that will not decode is reported, because an
  * image silently dropped looks exactly like one that did not upload.
  */
 function parseVesselImage(
@@ -75,8 +87,7 @@ function parseVesselImage(
     return {
       image: null,
       problems: [
-        `The ${field} is not an uploaded image. Use the file picker on this field, ` +
-          'or clear it to fall back to the default.',
+        `The ${field} is not an uploaded image.`,
       ],
     };
   }
@@ -97,7 +108,7 @@ function parseVesselImage(
   if (!/;base64/i.test(parameters)) {
     return {
       image: null,
-      problems: [`The ${field} is not base64-encoded; re-upload it on the config page.`],
+      problems: [`The ${field} is not base64-encoded; upload it again.`],
     };
   }
 
@@ -120,4 +131,115 @@ export function parseLogo(value: unknown): LogoResult {
 export function parseIcon(value: unknown): IconResult {
   const { image, problems } = parseVesselImage(value, 'vessel icon', 'data/vessel/icon');
   return { icon: image, problems };
+}
+
+export type VesselImageKind = 'logo' | 'icon';
+
+export const VESSEL_IMAGE_KINDS: readonly VesselImageKind[] = ['logo', 'icon'];
+
+/** Past this, the console warns that every visitor downloads the file. */
+export const LARGE_IMAGE_BYTES = 1024 * 1024;
+
+/** Decode an upload for either field. */
+export function parseVesselImageFor(
+  kind: VesselImageKind,
+  value: unknown,
+): VesselImageResult<VesselImage> {
+  return kind === 'logo'
+    ? parseVesselImage(value, 'vessel logo', 'data/vessel/logo')
+    : parseVesselImage(value, 'vessel icon', 'data/vessel/icon');
+}
+
+/** Where images are kept in the plugin data directory. */
+const IMAGE_DIR = 'images';
+
+function mediaTypeFor(extension: string): string | undefined {
+  return Object.entries(EXTENSIONS).find(([, ext]) => ext === extension)?.[0];
+}
+
+/**
+ * The stored image of one kind, or null.
+ *
+ * The file name carries the extension, and the extension is the media type:
+ * nothing else is recorded, so there is no second file to disagree with it.
+ */
+export async function loadVesselImage(
+  store: StateStore,
+  kind: VesselImageKind,
+): Promise<VesselImage | null> {
+  for (const name of await store.list(IMAGE_DIR)) {
+    const match = /^(logo|icon)\.([a-z]+)$/.exec(name);
+    if (!match || match[1] !== kind) continue;
+    const mediaType = mediaTypeFor(match[2]!);
+    if (!mediaType) continue;
+    const content = await store.readBytes(`${IMAGE_DIR}/${name}`);
+    if (!content?.length) continue;
+    return { path: `data/vessel/${kind}.${match[2]}`, content, mediaType };
+  }
+  return null;
+}
+
+/**
+ * Replace the stored image of one kind, or remove it with null.
+ *
+ * Any other extension of the same kind is removed first, so a PNG replaced by
+ * an SVG does not leave the PNG to be found by the next load.
+ */
+export async function saveVesselImage(
+  store: StateStore,
+  kind: VesselImageKind,
+  image: VesselImage | null,
+): Promise<void> {
+  const keep = image ? `${kind}.${image.path.split('.').pop()}` : null;
+  if (image && keep) await store.writeBytes(`${IMAGE_DIR}/${keep}`, image.content);
+  for (const name of await store.list(IMAGE_DIR)) {
+    if (name.startsWith(`${kind}.`) && name !== keep) {
+      await store.remove(`${IMAGE_DIR}/${name}`);
+    }
+  }
+}
+
+/**
+ * Load the logo and icon into the running config, at start.
+ *
+ * A data URL still in the saved options is from before the images left the
+ * config page, or from a config page left open across the upgrade and then
+ * saved. It wins: `resolveConfig` has already decoded it into `site`, so it is
+ * written to the data directory, and the keys are then taken out of the saved
+ * options so the admin UI stops shipping them to every plugin's config page.
+ * The bytes are stored before the options are rewritten, so a failure
+ * part-way loses nothing; a key that would not decode was already reported by
+ * `resolveConfig` and is removed all the same. Otherwise the stored image, if
+ * any, is loaded.
+ */
+export async function adoptVesselImages(deps: {
+  options: unknown;
+  site: Record<VesselImageKind, VesselImage | null>;
+  store: StateStore;
+  saveOptions: (options: Record<string, unknown>) => Promise<void>;
+  log: (message: string) => void;
+}): Promise<void> {
+  const { site, store, log } = deps;
+  const saved =
+    deps.options && typeof deps.options === 'object'
+      ? (deps.options as Record<string, unknown>)
+      : {};
+  const savedSite =
+    saved.site && typeof saved.site === 'object' ? (saved.site as Record<string, unknown>) : {};
+  const legacy = VESSEL_IMAGE_KINDS.filter((kind) => kind in savedSite);
+
+  for (const kind of VESSEL_IMAGE_KINDS) {
+    const fromOptions = site[kind];
+    if (fromOptions) {
+      await saveVesselImage(store, kind, fromOptions);
+      log(`Moved the vessel ${kind} out of the plugin config into the data directory.`);
+    } else {
+      site[kind] = await loadVesselImage(store, kind);
+    }
+  }
+
+  if (legacy.length === 0) return;
+  const strippedSite = { ...savedSite };
+  for (const kind of legacy) delete strippedSite[kind];
+  await deps.saveOptions({ ...saved, site: strippedSite });
 }

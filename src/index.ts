@@ -38,6 +38,7 @@ import { NotificationRecorder } from './notificationRecorder';
 import { PositionRecorder } from './track';
 import { registerRoutes, type Router, type WebappDeps } from './webapp';
 import { isValidTimezone } from './time';
+import { adoptVesselImages } from './logo';
 import type { VesselIdentity } from './siteConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -673,6 +674,20 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       };
 
       void (async () => {
+        try {
+          await adoptVesselImages({
+            options,
+            site: config.site,
+            store,
+            saveOptions: (stripped) =>
+              new Promise<void>((resolve, reject) =>
+                app.savePluginOptions(stripped, (error) => (error ? reject(error) : resolve())),
+              ),
+            log: (message) => app.debug(message),
+          });
+        } catch (error: any) {
+          app.error(`Could not load the vessel logo and icon: ${error?.message ?? error}`);
+        }
         try {
           await publisher.seed();
         } catch (error: any) {

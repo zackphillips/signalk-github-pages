@@ -755,16 +755,28 @@ describe('the vessel logo', () => {
     expect(makeConfig({ site: { logo: '   ' } }).site.logo).toBeNull();
   });
 
-  it('is a config problem rather than a silent drop', () => {
-    // A logo that vanishes looks exactly like a logo that did not upload.
+  it('reports a saved value that will not decode, without stopping the plugin', () => {
+    // The field is no longer on the config page, so a fatal error there could
+    // not be fixed from it; the value is removed from the options at start.
     for (const logo of [
       'data:application/pdf;base64,JVBERi0=',
       'https://example.com/logo.png',
       'data:image/png;base64,',
     ]) {
       const resolved = resolveConfig({ ...COMPLETE_FORM, site: { logo } });
-      expect(resolved.ok, logo).toBe(false);
+      expect(resolved.ok, logo).toBe(true);
+      if (resolved.ok) {
+        expect(resolved.config.site.logo, logo).toBeNull();
+        expect(resolved.warnings.join(' '), logo).toMatch(/vessel logo.*discarded/);
+      }
     }
+  });
+
+  it('is not a field on the config page', () => {
+    // A data URL in the options is shipped to every plugin's config page.
+    const schema = buildConfigSchema() as any;
+    expect(schema.properties.site.properties.logo).toBeUndefined();
+    expect(schema.properties.site.properties.icon).toBeUndefined();
   });
 
   it('takes one of any size: it is uploaded only when its bytes change', () => {
@@ -791,11 +803,12 @@ describe('the vessel icon', () => {
     expect(makeConfig({ site: { icon: '   ' } }).site.icon).toBeNull();
   });
 
-  it('is a config problem rather than a silent drop, same as the logo', () => {
+  it('reports a saved value that will not decode, same as the logo', () => {
     const resolved = resolveConfig({
       ...COMPLETE_FORM,
       site: { icon: 'https://example.com/icon.png' },
     });
-    expect(resolved.ok).toBe(false);
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect(resolved.config.site.icon).toBeNull();
   });
 });
