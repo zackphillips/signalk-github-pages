@@ -51,7 +51,26 @@ export class GitHubError extends Error {
  * "Contents: read and write" reads the repository perfectly and fails on the
  * first commit.
  */
-export function tokenHint(status: number | undefined, repo: string): string {
+export function tokenHint(
+  status: number | undefined,
+  repo: string,
+  signIn?: { installUrl: string | null },
+): string {
+  // A signed-in token is a GitHub App's, and fails differently: it has
+  // exactly the permissions the App asks for, so a 403 or a 404 almost always
+  // means the App is not installed on this repository.
+  if (signIn) {
+    if (status === 401) {
+      return " The GitHub sign-in was rejected: it was revoked. Sign in again from the plugin's console.";
+    }
+    if (status === 403 || status === 404) {
+      return (
+        ` The GitHub App is probably not installed on ${repo}, or the signed-in account cannot` +
+        ` write it.${signIn.installUrl ? ` Install it on this repository: ${signIn.installUrl}` : ''}`
+      );
+    }
+    return '';
+  }
   if (status === 401) {
     return ' The token was rejected: it is wrong, revoked, or past its expiry date.';
   }

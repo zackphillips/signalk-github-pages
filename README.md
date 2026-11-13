@@ -90,7 +90,17 @@ in it, and the site is served from your `github.io` origin, so a leaked token
 means someone else's JavaScript on your page. A dedicated repository keeps that
 to the tracker. The plugin shares a repository politely, but the token does not.
 
-**2. A token.** [Make a fine-grained
+**2. A token.** The quickest route is to sign in with GitHub from the
+plugin's console (**Webapps → GitHub Pages Vessel Tracker**, after step 3):
+install the GitHub App on the Pages repository, and only that one, then press
+**Sign in with GitHub** and enter the code it shows at
+[github.com/login/device](https://github.com/login/device) on any device. The
+token it gets reaches only the repositories the App is installed on, with
+Contents: read and write and nothing else, and it does not expire. Leave the
+owner blank on the config page and it is your account. A 403 or 404 after
+signing in means the App is not installed on the repository.
+
+Or [make a fine-grained
 PAT](https://github.com/settings/personal-access-tokens/new) and tick exactly
 this much:
 
@@ -130,8 +140,8 @@ To run unreleased code from `main`, install
 TypeScript build through the package's `prepare` script.
 
 Then open **Server → Plugin Config → GitHub Pages Vessel Tracker**, fill in
-the repository owner and the token, enable. Everything else has a working
-default or is derived.
+the repository owner and the token (or sign in from the console), enable.
+Everything else has a working default or is derived.
 
 The first cycle writes the whole site — HTML, CSS, JS, icons — then telemetry
 only. Give Pages a minute, then open the URL.
@@ -144,8 +154,8 @@ only. Give Pages a minute, then open the URL.
 
 ## Configuration
 
-Two fields are required: `github.owner` and `github.token`. The ones you
-are most likely to change:
+Two fields are required, `github.owner` and `github.token`, and signing in
+from the console fills both. The ones you are most likely to change:
 
 | Field | Default | What it does |
 |---|---|---|
@@ -168,8 +178,11 @@ derived, and each has an override. The polar comes from
 > that directory. Scope it to the one repository, and rotate it if the Pi ever
 > leaves your hands.
 >
-> To keep it off the config page, put it in a file and point the plugin at it
+> To keep it off the config page, sign in from the console, which keeps the
+> token in the plugin's data directory with mode 600, or put it in a file and
+> point the plugin at it
 > ([Token from a file](https://github.com/zackphillips/signalk-github-pages/blob/main/docs/configuration.md#token-from-a-file)).
+> Either is still plain text on the Pi's disk.
 
 ## Privacy
 

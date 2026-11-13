@@ -12,6 +12,9 @@
  *   POST /publish/site      rewrite every frontend file, then publish
  *   POST /images/:kind      upload the logo or the icon
  *   POST /images/:kind/clear  stop publishing it
+ *   GET  /auth              the GitHub sign-in: who, or the code to enter
+ *   POST /auth/start        ask GitHub for a sign-in code
+ *   POST /auth/signout      forget the signed-in token
  *
  * The preview is the reason the frontend moved out of `public/` and into
  * `site/`: the two directories now mean different things, one served to the
@@ -29,7 +32,8 @@ import { renderPreviewData } from './preview';
 import { frontendOptions, template } from './frontend';
 import { describePrune, type PruneRequest } from './prune';
 import type { Publisher } from './publisher';
-import type { PluginConfig } from './config';
+import type { PluginConfig, TokenSource } from './config';
+import type { GitHubLogin } from './githubAuth';
 import type { Tree } from './snapshot';
 import { mergeVesselIdentity, readVesselDetails, type VesselIdentity } from './siteConfig';
 import type { StateStore } from './state';
@@ -98,6 +102,39 @@ export interface WebappDeps {
   log: (message: string) => void;
 }
 
+/**
+ * The sign-in, which lives outside the running plugin: a plugin with no token
+ * stops at its config check, and the console is where the token comes from.
+ */
+export interface AuthDeps {
+  login: Pick<GitHubLogin, 'describe' | 'start' | 'signOut'>;
+  /** Where the running plugin's token came from, or null when it is not running. */
+  tokenSource: () => TokenSource | null;
+}
+
+/**
+ * The sign-in routes. Registered whether or not the plugin is running, and
+ * never answering with the token itself.
+ *
+ * The GET is free of side effects like every GET here: it reports the code
+ * already issued, and only the POST asks GitHub for one.
+ */
+function registerAuthRoutes(router: Router, auth: AuthDeps): void {
+  const answer = async (response: Response, work: () => Promise<unknown>) => {
+    try {
+      const described = (await work()) as Record<string, unknown>;
+      response.json({ ...described, tokenSource: auth.tokenSource() });
+    } catch (error: any) {
+      response.status(502).json({ error: error?.message ?? String(error) });
+    }
+  };
+  router.get('/auth', (_request, response) => answer(response, () => auth.login.describe()));
+  router.post('/auth/start', (_request, response) => answer(response, () => auth.login.start()));
+  router.post('/auth/signout', (_request, response) =>
+    answer(response, () => auth.login.signOut()),
+  );
+}
+
 /** Content types for the handful of extensions the site is made of. */
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -141,7 +178,11 @@ export function resolveSitePath(siteDir: string, requested: string): string | nu
  * arrives while it is stopped gets a 503 that says so rather than a stack
  * trace from a publisher that no longer exists.
  */
-export function registerRoutes(router: Router, deps: () => WebappDeps | null): void {
+export function registerRoutes(
+  router: Router,
+  deps: () => WebappDeps | null,
+  auth?: AuthDeps,
+): void {
   const fail = (response: Response, error: any, status = 500) => {
     const message = error?.message ?? String(error);
     deps()?.log(`Webapp request failed: ${message}`);
@@ -159,6 +200,8 @@ export function registerRoutes(router: Router, deps: () => WebappDeps | null): v
     }
     return current;
   };
+
+  if (auth) registerAuthRoutes(router, auth);
 
   router.get('/status', async (_request, response) => {
     const current = running(response);

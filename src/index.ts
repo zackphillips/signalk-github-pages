@@ -18,12 +18,15 @@ import {
   readOverrides,
   resolveOwnerAndName,
   configUiSchema,
+  processSecrets,
   resolveConfig,
   type NearestTideStation,
   type PluginConfig,
   type PolarStatus,
   type SchemaContext,
+  type TokenSource,
 } from './config';
+import { GitHubLogin, githubApp, installUrl, readSignedInSync } from './githubAuth';
 import { bundledTideStations, nearestTideStation, treePosition } from './tideStations';
 import { FailureAlarm, type AlarmAction } from './alarm';
 import { readPassage, type Passage } from './course';
@@ -99,6 +102,14 @@ function readIdentity(app: SignalKApp): VesselIdentity {
 function formatClock(date: Date): string {
   return date.toISOString().slice(11, 16);
 }
+
+/** For the start line in the log. */
+const TOKEN_SOURCE_NAMES: Record<TokenSource, string> = {
+  file: 'the token file',
+  env: 'the environment',
+  login: 'the GitHub sign-in',
+  page: 'the config page',
+};
 
 /** How often the active polar is reread between publishes, in seconds. */
 const POLAR_CHECK_SECONDS = 5 * 60;
@@ -177,6 +188,51 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
   // Whether the last cycle reached its branch, for the config page. Null until
   // a cycle has run.
   let branchStatus: SchemaContext['branch'] = null;
+  // The options the server last started the plugin with, so a sign-in can
+  // restart it on the new token without anyone pressing Save.
+  let lastOptions: unknown;
+  // Where the running plugin's token came from; null while it is not running.
+  let tokenSource: TokenSource | null = null;
+
+  /**
+   * The GitHub sign-in. Made on first use rather than here, because it needs
+   * the data directory and the server hands that out once the plugin is
+   * registered. It outlives start and stop: a plugin without a token stops at
+   * its config check, and the console is where it gets one.
+   */
+  let githubLogin: GitHubLogin | null = null;
+  const login = (): GitHubLogin => {
+    githubLogin ??= new GitHubLogin({
+      store: new StateStore(app.getDataDirPath()),
+      app: githubApp(),
+      userAgent: `signalk-github-pages/${PLUGIN_VERSION}`,
+      log: (message) => app.debug(message),
+      // A new token, or none, takes a restart: the client, the publisher and
+      // the config were all built from the old one. Only when the server has
+      // the plugin enabled — `stopped` is false from start to stop, including
+      // a start that halted at the config check for want of this very token.
+      onChange: () => {
+        if (stopped) return;
+        app.debug('The GitHub sign-in changed; restarting on the new token.');
+        try {
+          plugin.stop();
+          plugin.start((lastOptions ?? {}) as object, () => undefined);
+        } catch (error: any) {
+          app.error(`Could not restart after the GitHub sign-in: ${error?.message ?? error}`);
+        }
+      },
+    });
+    return githubLogin;
+  };
+
+  /** The saved sign-in, or null. Read fresh: the console may have just changed it. */
+  const signedIn = () => {
+    try {
+      return readSignedInSync(app.getDataDirPath());
+    } catch {
+      return null;
+    }
+  };
 
   /**
    * The derived values the config page shows beside their override
@@ -203,6 +259,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
     } catch {
       // Nothing saved yet: the notes stay quiet until the owner is set.
     }
+    // An empty owner is the signed-in account, the same as resolveConfig.
+    const account = signedIn();
+    if (!owner && account) owner = account.login;
     const savedOverrides = readOverrides(saved);
     // The site address is shown derived the same way the publisher derives it,
     // project site included, so the box says what a link preview will actually
@@ -217,6 +276,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       siteUrl: repo.owner && repo.name ? pagesUrl(repo.owner, repo.name) : '',
       branch: branchStatus,
       tideStation: tideStationNote(),
+      signedInAs: account?.login ?? null,
     };
   };
 
@@ -248,8 +308,9 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     start(options: unknown) {
       stopped = false;
+      lastOptions = options;
 
-      const resolved = resolveConfig(options);
+      const resolved = resolveConfig(options, { ...processSecrets, signedIn: signedIn() });
       if (!resolved.ok) {
         // Nothing numeric has a default, so an unconfigured install stops here
         // rather than publishing at a cadence nobody chose. Report every
@@ -264,6 +325,10 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
         return;
       }
       const config: PluginConfig = resolved.config;
+      tokenSource = config.github.tokenSource;
+      const signInApp = githubApp();
+      const signInHint =
+        config.github.tokenSource === 'login' ? { installUrl: signInApp ? installUrl(signInApp) : null } : undefined;
       // Warnings resolve to something usable, so they never stop a start; they
       // are the settings most likely to be the reason the site looks wrong.
       for (const warning of resolved.warnings) app.error(`Config: ${warning}`);
@@ -275,7 +340,8 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       }
 
       app.debug(
-        `Starting: ${config.github.repo}@${config.github.branch}, ` +
+        `Starting: ${config.github.repo}@${config.github.branch} ` +
+          `(token from ${TOKEN_SOURCE_NAMES[config.github.tokenSource]}), ` +
           `${config.interval.underway}s underway / ${config.interval.stationary}s stationary, ` +
           `${config.instrumentLog.exclude.length} instrument path exclusion(s), ` +
           `${config.positionRetentionHours}h position retention, ` +
@@ -600,7 +666,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
           const detail = error?.status ? ` (HTTP ${error.status}: ${error.body ?? ''})` : '';
           app.error(
             `Publish cycle failed, retrying in ${seconds}s: ${message}${detail}` +
-              tokenHint(error?.status, config.github.repo),
+              tokenHint(error?.status, config.github.repo, signInHint),
           );
           app.setPluginError(
             `Last cycle failed at ${formatClock(new Date())}Z: ${message}. Retrying in ${Math.round(seconds / 60)} min.`,
@@ -705,6 +771,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
       if (polarWatch) clearInterval(polarWatch);
       polarWatch = undefined;
       webapp = null;
+      tokenSource = null;
       passage = null;
       recorder?.stop();
       recorder = null;
@@ -721,7 +788,7 @@ module.exports = function (app: SignalKApp): TrackerPlugin {
 
     /** The console's backend. Signal K mounts it once, for the server's life. */
     registerWithRouter(router: Router) {
-      registerRoutes(router, () => webapp);
+      registerRoutes(router, () => webapp, { login: login(), tokenSource: () => tokenSource });
     },
   };
 

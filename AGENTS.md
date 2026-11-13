@@ -33,6 +33,7 @@ src/
   logo.ts           The logo and icon: decoded from an upload, kept in the data dir
   frontend.ts       Reading site/ and templating what belongs to the adopter
   github.ts         Git Data API client and the publish-with-retry
+  githubAuth.ts     Signing in with GitHub: the device flow, and the token it keeps
   manifest.ts       Ownership allowlist — what the plugin may write
   state.ts          Rolling state in the plugin data dir, atomic writes
   track.ts          navigation.position deltas, decimated by shape
@@ -430,6 +431,24 @@ Run `npm test` and `npm run typecheck` before committing.
   shorter than one publish interval, which now only fires on a very slow
   cadence). Zero hours publishes no log at all. `SPARKLINE_MAX_POINTS` is a
   draw cap, not a trim; it does not shorten the window.
+- **Signing in is the device flow through a GitHub App, and nothing else.**
+  The web flow redirects to a callback URL registered in advance, and every
+  boat's server is at a different address; it also needs a client secret,
+  which an npm package cannot keep. An OAuth App would work with the device
+  flow too, but its only usable scope is `repo`: every repository the person
+  can push to. The App's user token reaches only the repositories it is
+  installed on. The App is registered with token expiry turned off, because
+  refreshing takes the secret; a token that comes back with `expires_in`
+  anyway is used and logged, and no refresh is attempted. The token lives in
+  `auth/github.json` in the data directory, mode 600, and never in the
+  plugin options, for the same reason the logo is not there. The sign-in
+  routes are registered whether or not the plugin is running — a missing
+  token is exactly why it would not be — and `GET /auth` never carries the
+  token. A completed sign-in or a sign-out restarts the plugin with the
+  options it was last started with. Precedence is file, environment,
+  sign-in, page: the environment is set on purpose by someone with a shell,
+  and a button pressed on the boat's wifi must not silently replace it.
+  `GITHUB_APP.clientId` empty turns the whole feature off.
 - **Every network call needs a timeout.** `GitHubClient` sets an
   `AbortSignal.timeout` on every request. A call without one blocks forever on
   a half-open connection, which is the normal marina-hotspot failure.

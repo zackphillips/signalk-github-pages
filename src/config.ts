@@ -54,6 +54,12 @@ export interface PluginConfig {
     repo: string;
     branch: string;
     token: string;
+    /**
+     * Where the token came from. A signed-in token fails differently from a
+     * typed one — not installed on the repository rather than missing a
+     * permission — so the failure hint needs to know which it was.
+     */
+    tokenSource: TokenSource;
   };
   /** Publish cadence in seconds. The config page asks for minutes. */
   interval: {
@@ -336,6 +342,8 @@ export interface SchemaContext {
   branch?: { name: string; ok: boolean; detail?: string } | null;
   /** The station the site would pick from the boat's position right now. */
   tideStation?: NearestTideStation | null;
+  /** The GitHub account signed in from the console, if any. */
+  signedInAs?: string | null;
 }
 
 /** The marks the Overrides section puts in front of each derived value. */
@@ -394,8 +402,16 @@ function annotate(schema: typeof configSchema, flag: string, note: string): void
  * hourglass when no cycle has run to find out.
  */
 export function buildConfigSchema(context: SchemaContext = {}): typeof configSchema {
-  const { repoName, siteUrl, branch, tideStation } = context;
+  const { repoName, siteUrl, branch, tideStation, signedInAs } = context;
   const schema = JSON.parse(JSON.stringify(configSchema)) as typeof configSchema;
+
+  // Signed in, the token box is the one thing on the page to leave alone; say
+  // so where the person is looking, rather than only in the console.
+  if (signedInAs) {
+    (schema.properties.github.properties.token as { description: string }).description =
+      `${FOUND} Signed in with GitHub as ${signedInAs} from the plugin's console; leave this ` +
+      'empty. A token here is used only after signing out.';
+  }
 
   annotate(
     schema,
@@ -503,17 +519,18 @@ export const configSchema = {
       description:
         'The repository name, branch and site address follow from the owner; each ' +
         'can be changed under Overrides.',
-      required: ['owner'],
       properties: {
         owner: {
           type: 'string',
           title: 'Repository owner',
-          description: 'Your GitHub username, or the organization that owns the repository.',
+          description:
+            'Your GitHub username, or the organization that owns the repository. Empty ' +
+            'uses the account signed in from the console.',
         },
         token: {
           type: 'string',
           title: 'Personal access token',
-          description: PAT_GUIDANCE,
+          description: `Not needed if you sign in with GitHub from the plugin's console. ${PAT_GUIDANCE}`,
         },
       },
     },
@@ -951,6 +968,9 @@ function tokenWarning(token: string): string | null {
   );
 }
 
+/** Where a token came from, in the order they are tried. */
+export type TokenSource = 'file' | 'env' | 'login' | 'page';
+
 /** Environment variable holding the token itself. */
 export const TOKEN_ENV = 'SIGNALK_GITHUB_PAGES_TOKEN';
 /** Environment variable holding the path of a file that holds the token. */
@@ -963,6 +983,8 @@ export interface SecretSource {
   readFile: (path: string) => string;
   /** Permission bits of a file, or null when they mean nothing (Windows). */
   fileMode: (path: string) => number | null;
+  /** The account signed in from the console, read from the data directory by `index.ts`. */
+  signedIn?: { token: string; login: string } | null;
 }
 
 export const processSecrets: SecretSource = {
@@ -973,13 +995,21 @@ export const processSecrets: SecretSource = {
 
 interface TokenResolution {
   token: string;
+  source: TokenSource;
   problems: string[];
   warnings: string[];
 }
 
 /**
  * The token, from the first of: a file named by `SIGNALK_GITHUB_PAGES_TOKEN_FILE`,
- * `SIGNALK_GITHUB_PAGES_TOKEN`, then the config page.
+ * `SIGNALK_GITHUB_PAGES_TOKEN`, the account signed in from the console, then
+ * the config page.
+ *
+ * The environment wins over the sign-in because it is the deliberate,
+ * headless choice: someone who set it on the service did so on purpose, and a
+ * sign-in pressed from a phone on the boat's wifi must not silently replace
+ * it. The sign-in wins over the page because signing in is the newer act, and
+ * the page copy is the one left behind.
  *
  * Signal K keeps plugin config as plain JSON that its admin API hands to any
  * admin session, so a token typed into the page is as exposed as that file.
@@ -995,8 +1025,10 @@ function resolveToken(typed: unknown, secrets: SecretSource): TokenResolution {
   const file = (secrets.env[TOKEN_FILE_ENV] ?? '').trim();
   const fromEnv = (secrets.env[TOKEN_ENV] ?? '').trim();
 
+  const signedIn = secrets.signedIn?.token ? secrets.signedIn : null;
+
   let token = '';
-  let source = '';
+  let source: TokenSource = 'page';
   if (file) {
     try {
       token = secrets.readFile(file).trim();
@@ -1007,7 +1039,7 @@ function resolveToken(typed: unknown, secrets: SecretSource): TokenResolution {
     }
     if (!token && !problems.length) problems.push(`${TOKEN_FILE_ENV} points to ${file}, which is empty.`);
     if (token) {
-      source = TOKEN_FILE_ENV;
+      source = 'file';
       let mode: number | null = null;
       try {
         mode = secrets.fileMode(file);
@@ -1022,27 +1054,43 @@ function resolveToken(typed: unknown, secrets: SecretSource): TokenResolution {
     }
   } else if (fromEnv) {
     token = fromEnv;
-    source = TOKEN_ENV;
+    source = 'env';
+  } else if (signedIn) {
+    token = signedIn.token;
+    source = 'login';
   } else if (fromPage) {
     token = fromPage;
   }
 
+  const sourceName: Record<TokenSource, string> = {
+    file: TOKEN_FILE_ENV,
+    env: TOKEN_ENV,
+    login: `the GitHub sign-in (${signedIn?.login ?? ''})`,
+    page: 'the config page',
+  };
   if (!token && !problems.length) {
     problems.push(
-      `GitHub personal access token is not set. Enter it on this page, or set ${TOKEN_FILE_ENV}.`,
+      'No GitHub token: sign in with GitHub from the plugin\'s console, enter a personal access ' +
+        `token on this page, or set ${TOKEN_FILE_ENV}.`,
     );
   }
-  if (token && source && fromPage) {
+  if (token && source !== 'page' && fromPage) {
     warnings.push(
-      `A token is also saved on the config page; ${source} wins. Clear the page field so the ` +
-        'secret is not left in plugin-config-data.',
+      `A token is also saved on the config page; ${sourceName[source]} wins. Clear the page ` +
+        'field so the secret is not left in plugin-config-data.',
     );
   }
-  if (token) {
+  if (token && (source === 'file' || source === 'env') && signedIn) {
+    warnings.push(
+      `Signed in to GitHub as ${signedIn.login}, but ${sourceName[source]} is set and wins. ` +
+        'Unset it to publish with the sign-in.',
+    );
+  }
+  if (token && source !== 'login') {
     const warning = tokenWarning(token);
     if (warning) warnings.push(warning);
   }
-  return { token, problems, warnings };
+  return { token, source, problems, warnings };
 }
 
 export interface ResolvedConfig {
@@ -1167,8 +1215,10 @@ export function resolveConfig(
 
   const warnings: string[] = [];
 
+  // An empty owner is the signed-in account: the person who just signed in
+  // with GitHub has said whose repository this is.
   const { owner, name, problems: repoProblems } = resolveOwnerAndName(
-    github.owner,
+    str(github.owner) || (secrets.signedIn?.login ?? ''),
     overrides.repository,
     bool(overrides.overrideRepository),
   );
@@ -1267,6 +1317,7 @@ export function resolveConfig(
         repo: `${owner}/${name}`,
         branch,
         token,
+        tokenSource: resolvedToken.source,
       },
       interval: {
         underway,
