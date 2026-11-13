@@ -41,11 +41,11 @@ export interface GitHubAppIdentity {
 }
 
 /**
- * The registered App. Empty until it is registered, which turns sign-in off
- * and leaves the personal access token as the only route.
+ * The registered App, owned by the plugin's maintainer. An empty client ID
+ * turns sign-in off and leaves the personal access token as the only route.
  */
 export const GITHUB_APP: GitHubAppIdentity = {
-  clientId: '',
+  clientId: 'Iv23ligwOrc5lVnNBIZR',
   slug: 'signalk-github-pages',
 };
 
