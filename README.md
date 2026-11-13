@@ -249,6 +249,22 @@ did without calling back into the server, so a full publish cycle is tested
 without Signal K and without a network. The source layout and the rules that
 are not obvious are in [AGENTS.md](https://github.com/zackphillips/signalk-github-pages/blob/main/AGENTS.md).
 
+### Releasing
+
+Releases are published by CI, never from a laptop. Add a `## x.y.z - date`
+entry to `CHANGELOG.md`, commit it, then:
+
+```bash
+npm version minor          # or patch; bumps package.json, commits, tags vX.Y.Z
+git push origin main --follow-tags
+```
+
+The tag runs `.github/workflows/publish.yml`, which checks the tag against
+`package.json` and the changelog, runs the type check and tests, and publishes
+with npm trusted publishing (OIDC), so no npm token exists and every version
+carries a provenance attestation. A manual `npm publish` skips the
+attestation and makes the tag's run fail on the duplicate version.
+
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).

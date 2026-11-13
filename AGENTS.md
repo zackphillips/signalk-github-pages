@@ -56,6 +56,9 @@ npm run dev       # site/ + sample/ on http://localhost:8000
 
 Run `npm test` and `npm run typecheck` before committing.
 
+Releases go through a `v*` tag and `.github/workflows/publish.yml` (npm trusted
+publishing); never run `npm publish` locally. See Releasing in the README.
+
 ## Rules that are not obvious
 
 - **`publisher.ts` takes a tree and returns a result.** It never calls the
