@@ -1,15 +1,16 @@
 # Configuration
 
 Everything is on **Server → Plugin Config → GitHub Pages Vessel Tracker**.
-Only the owner and a token are required; the rest has a working default or
-is read from the server.
+Only the owner and a token are required, and [signing in with
+GitHub](#signing-in-with-github) provides both; the rest has a working default
+or is read from the server.
 
 ## Fields
 
 | Field | Default | Notes |
 |---|---|---|
-| `github.owner` | **required** | The user or organization, e.g. `yourname` |
-| `github.token` | **required**, here or [from a file](#token-from-a-file) | Fine-grained PAT, Contents: read/write, a repository that holds only the tracker, 90-day expiry |
+| `github.owner` | **required**, or the signed-in account | The user or organization, e.g. `yourname` |
+| `github.token` | **required**, here, [from a file](#token-from-a-file) or [signed in](#signing-in-with-github) | Fine-grained PAT, Contents: read/write, a repository that holds only the tracker, 90-day expiry |
 | `interval.underwayMinutes` | `2` | When `navigation.state` is sailing or motoring |
 | `interval.stationaryMinutes` | `60` | Moored, anchored, or state unknown |
 | `privacyZones[]` | *empty* | `{name, lat, lon, radius_m}` — see [Privacy zones](privacy.md) |
@@ -42,6 +43,30 @@ boat: privacy zones start empty, and [the vessel's own
 details](site.md#what-comes-from-signal-k) come from Signal K rather than from this
 page.
 
+## Signing in with GitHub
+
+The console (**Webapps → GitHub Pages Vessel Tracker**) can get a token for
+you by GitHub's device flow, so nothing is copied or pasted:
+
+1. Install the GitHub App on the Pages repository. Choose **Only select
+   repositories** and pick that one.
+2. Press **Sign in with GitHub**, open
+   [github.com/login/device](https://github.com/login/device) on any device,
+   and enter the code the console shows.
+
+The plugin restarts on the new token by itself. The token reaches only the
+repositories the App is installed on, with Contents: read and write, and it
+does not expire. It is kept in `auth/github.json` in the plugin's data
+directory (mode 600), never in the plugin config, and the console never sends
+it back to a browser. With the owner field empty, the repository is the
+signed-in account's `<login>.github.io`.
+
+**Sign out** forgets the token on the boat. GitHub keeps the authorization
+until you revoke it at
+[Settings → Applications → Authorized GitHub Apps](https://github.com/settings/apps/authorizations).
+A 403 or 404 while signed in almost always means the App is not installed on
+the repository; the error in the log links to the install page.
+
 ## Token from a file
 
 > [!WARNING]
@@ -71,7 +96,8 @@ looks in this order and takes the first it finds:
 1. `SIGNALK_GITHUB_PAGES_TOKEN_FILE`, the path of a file holding the token.
 2. `SIGNALK_GITHUB_PAGES_TOKEN`, the token itself. Simpler, but the value shows
    in `systemctl show` and the process environment, so prefer the file.
-3. The config page.
+3. The account signed in from the console.
+4. The config page.
 
 A file that is named but missing or empty stops the plugin with an error; it
 does not fall back to a token saved on the page, because that one may be the

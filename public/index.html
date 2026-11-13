@@ -116,11 +116,53 @@
   }
   .file-button:hover { border-color: var(--accent); }
   .empty { color: var(--muted); font-style: italic; }
+  .user-code {
+    font: 600 28px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: .12em;
+    padding: 6px 12px;
+    border: 1px dashed var(--accent);
+    border-radius: 8px;
+    user-select: all;
+  }
+  ol.steps { margin: 0 0 10px; padding-left: 20px; }
+  ol.steps li { margin-bottom: 6px; }
 </style>
 </head>
 <body>
   <h1>GitHub Pages Vessel Tracker</h1>
   <p class="sub" id="subtitle">Loading…</p>
+
+  <!-- The sign-in works while the plugin is stopped: a plugin with no token
+       halts at its config check, and this is where the token comes from. -->
+  <section class="panel" id="auth-panel">
+    <h2>GitHub account</h2>
+    <div id="auth-signed-out" hidden>
+      <ol class="steps">
+        <li>Install the GitHub App on your site's repository, and only that one:
+          <a id="auth-install" href="#" target="_blank" rel="noopener"></a></li>
+        <li>Sign in, and enter the code GitHub asks for.</li>
+      </ol>
+      <button id="auth-start">Sign in with GitHub</button>
+    </div>
+    <div id="auth-pending" hidden>
+      <p style="margin-top:0">Open <a id="auth-verify" href="#" target="_blank" rel="noopener"></a>
+        on any device and enter:</p>
+      <div class="row">
+        <span class="user-code" id="auth-code"></span>
+        <button class="small" id="auth-copy">Copy</button>
+      </div>
+      <p class="note" id="auth-expiry"></p>
+    </div>
+    <div id="auth-signed-in" hidden>
+      <p style="margin-top:0" id="auth-who"></p>
+      <div class="row">
+        <button id="auth-signout">Sign out</button>
+        <a id="auth-install-more" href="#" target="_blank" rel="noopener">Change which repositories the App can reach</a>
+      </div>
+    </div>
+    <p class="note" id="auth-note"></p>
+    <p class="note bad" id="auth-error" hidden></p>
+  </section>
 
   <section class="panel">
     <h2>Status</h2>
@@ -567,8 +609,115 @@ el('reload-preview').addEventListener('click', function () {
   el('preview').src = PREVIEW + '?t=' + Date.now();
 });
 
+// The GitHub sign-in. The code is shown as text as well as a link: Signal K
+// serves this page in a sandboxed iframe, and a browser may refuse to open a
+// new tab from one.
+var authPoll = null;
+var TOKEN_SOURCES = {
+  env: 'SIGNALK_GITHUB_PAGES_TOKEN',
+  file: 'the file SIGNALK_GITHUB_PAGES_TOKEN_FILE names',
+  page: 'the token on the config page',
+};
+
+function setLink(id, href) {
+  var link = el(id);
+  link.href = href;
+  link.textContent = href.replace(/^https:\/\//, '');
+}
+
+function renderAuth(data) {
+  var pending = data.pending;
+  var account = data.account;
+  el('auth-signed-out').hidden = !data.available || !!account || !!pending;
+  el('auth-pending').hidden = !pending;
+  el('auth-signed-in').hidden = !account || !!pending;
+  if (data.installUrl) {
+    setLink('auth-install', data.installUrl);
+    el('auth-install-more').href = data.installUrl;
+  }
+  var note = '';
+  if (!data.available) {
+    note = 'Sign-in with GitHub is not available in this release. Use a personal ' +
+      'access token on the plugin config page.';
+  }
+  if (pending) {
+    setLink('auth-verify', pending.verificationUri);
+    el('auth-code').textContent = pending.userCode;
+    el('auth-expiry').textContent = 'Waiting for the code to be entered. It expires at ' +
+      new Date(pending.expiresAt).toLocaleTimeString() + '.';
+  }
+  if (account) {
+    el('auth-who').textContent = 'Signed in as ' + account.login +
+      (account.expiresAt ? ', until ' + new Date(account.expiresAt).toLocaleString() : '') + '.';
+    if (data.tokenSource === 'login') {
+      note = 'Publishing with this account.';
+    } else if (data.tokenSource) {
+      note = 'Not publishing with it: ' + TOKEN_SOURCES[data.tokenSource] +
+        ' is set and takes precedence.';
+    } else {
+      note = 'The plugin is not running. Check it is enabled, and its config page for what is missing.';
+    }
+    note += ' Signing out forgets the token here; to revoke it on GitHub, use ' +
+      data.authorizationsUrl.replace(/^https:\/\//, '') + '.';
+  }
+  el('auth-note').textContent = note;
+  el('auth-error').textContent = data.error || '';
+  el('auth-error').hidden = !data.error;
+
+  if (pending && !authPoll) {
+    authPoll = setInterval(loadAuth, 3000);
+  } else if (!pending && authPoll) {
+    clearInterval(authPoll);
+    authPoll = null;
+    // A sign-in that just landed restarts the plugin on the new token.
+    if (account) setTimeout(refresh, 1500);
+  }
+}
+
+async function loadAuth() {
+  try {
+    renderAuth(await api('/auth'));
+  } catch (error) {
+    el('auth-error').textContent = 'Could not read the sign-in: ' + error.message;
+    el('auth-error').hidden = false;
+  }
+}
+
+async function authAction(path, button) {
+  button.disabled = true;
+  try {
+    renderAuth(await api(path, { method: 'POST' }));
+  } catch (error) {
+    el('auth-error').textContent = error.message;
+    el('auth-error').hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+el('auth-start').addEventListener('click', function () {
+  authAction('/auth/start', el('auth-start'));
+});
+el('auth-signout').addEventListener('click', function () {
+  authAction('/auth/signout', el('auth-signout'));
+  setTimeout(refresh, 1500);
+});
+el('auth-copy').addEventListener('click', function () {
+  var code = el('auth-code').textContent;
+  var done = function () { el('auth-copy').textContent = 'Copied'; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).then(done, function () {
+      // The sandbox can refuse the clipboard; the code is selectable on a tap.
+      window.getSelection().selectAllChildren(el('auth-code'));
+    });
+  } else {
+    window.getSelection().selectAllChildren(el('auth-code'));
+  }
+});
+
 el('open-preview').href = PREVIEW;
 el('preview').src = PREVIEW;
+loadAuth();
 refresh();
 </script>
 </body>

@@ -158,6 +158,14 @@ describe('tokenHint', () => {
     expect(tokenHint(404, 'owner/site')).toContain('owner/site is not visible');
   });
 
+  it('points a signed-in token at the App installation, not at a permission it cannot lack', () => {
+    const signIn = { installUrl: 'https://github.com/apps/x/installations/new' };
+    expect(tokenHint(404, 'owner/site', signIn)).toContain('not installed on owner/site');
+    expect(tokenHint(403, 'owner/site', signIn)).toContain(signIn.installUrl);
+    expect(tokenHint(401, 'owner/site', signIn)).toContain('Sign in again');
+    expect(tokenHint(404, 'owner/site', signIn)).not.toContain('Contents');
+  });
+
   it('says nothing about the token for a failure that is not about it', () => {
     expect(tokenHint(502, 'owner/site')).toBe('');
     expect(tokenHint(undefined, 'owner/site')).toBe('');

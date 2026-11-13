@@ -37,7 +37,8 @@ describe('resolveConfig', () => {
     if (resolved.ok) return;
     expect(resolved.problems).toEqual([
       'GitHub repository owner is not set (your username, or the organization).',
-      `GitHub personal access token is not set. Enter it on this page, or set ${TOKEN_FILE_ENV}.`,
+      "No GitHub token: sign in with GitHub from the plugin's console, enter a personal access " +
+        `token on this page, or set ${TOKEN_FILE_ENV}.`,
     ]);
   });
 
@@ -442,8 +443,9 @@ describe('the Overrides section', () => {
   it('offers only the owner and the token in the repository section', () => {
     const github = (configSchema.properties as any).github;
     expect(Object.keys(github.properties).sort()).toEqual(['owner', 'token']);
-    // The token can come from the environment instead, so the form cannot insist on it.
-    expect(github.required).toEqual(['owner']);
+    // The token can come from the environment or the sign-in, and the owner
+    // from the sign-in, so the form insists on neither.
+    expect(github.required).toBeUndefined();
     expect((configUiSchema as any).github.token['ui:widget']).toBe('password');
   });
 
@@ -471,6 +473,12 @@ describe('the Overrides section', () => {
       expect(order.indexOf(field), field).toBe(order.indexOf(flag) + 1);
     }
     expect(order[order.length - 1]).toBe('*');
+  });
+
+  it('tells a signed-in boat to leave the token box empty', () => {
+    const schema = buildConfigSchema({ signedInAs: 'zack' }) as any;
+    expect(schema.properties.github.properties.token.description).toContain('Signed in with GitHub as zack');
+    expect((configSchema.properties as any).github.properties.token.description).toContain('sign in with GitHub');
   });
 
   it('says what to tick when making the token, and nothing more', () => {
@@ -551,8 +559,50 @@ describe('token sources', () => {
     const resolved = resolveConfig(noToken, secrets({}));
     expect(resolved.ok).toBe(false);
     if (resolved.ok) return;
-    expect(resolved.problems.join(' ')).toContain('is not set');
+    expect(resolved.problems.join(' ')).toContain('No GitHub token');
+    expect(resolved.problems.join(' ')).toContain('sign in with GitHub');
     expect(resolved.problems.join(' ')).toContain(TOKEN_FILE_ENV);
+  });
+
+  describe('the GitHub sign-in', () => {
+    const signedIn = (env: Record<string, string> = {}) => ({
+      ...secrets(env),
+      signedIn: { token: 'ghu_signed', login: 'zack' },
+    });
+
+    it('publishes with the signed-in token, and derives the owner from it', () => {
+      const resolved = resolveConfig({ github: {} }, signedIn());
+      if (!resolved.ok) throw new Error(resolved.problems.join(' '));
+      expect(resolved.config.github.token).toBe('ghu_signed');
+      expect(resolved.config.github.tokenSource).toBe('login');
+      expect(resolved.config.github.repo).toBe('zack/zack.github.io');
+      expect(resolved.warnings).toEqual([]);
+    });
+
+    it('keeps a typed owner: the account may publish to an organization', () => {
+      const resolved = resolveConfig({ github: { owner: 'crew' } }, signedIn());
+      expect(resolved.ok && resolved.config.github.repo).toBe('crew/crew.github.io');
+    });
+
+    it('wins over a token left on the page, and says the page copy is stale', () => {
+      const resolved = resolveConfig({ github: { token: 'ghp_page' } }, signedIn());
+      if (!resolved.ok) throw new Error('expected ok');
+      expect(resolved.config.github.token).toBe('ghu_signed');
+      expect(resolved.warnings.join(' ')).toContain('also saved on the config page');
+    });
+
+    it('loses to the environment, which was set on purpose, and says so', () => {
+      const resolved = resolveConfig({ github: {} }, signedIn({ [TOKEN_ENV]: 'ghp_env' }));
+      if (!resolved.ok) throw new Error('expected ok');
+      expect(resolved.config.github.token).toBe('ghp_env');
+      expect(resolved.config.github.tokenSource).toBe('env');
+      expect(resolved.warnings.join(' ')).toContain('Signed in to GitHub as zack');
+    });
+
+    it('records where a typed token came from', () => {
+      const resolved = resolveConfig({ github: { owner: 'zack', token: 'ghp_page' } }, secrets({}));
+      expect(resolved.ok && resolved.config.github.tokenSource).toBe('page');
+    });
   });
 });
 

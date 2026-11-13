@@ -285,3 +285,50 @@ describe('the logo and icon uploads', () => {
     }
   });
 });
+
+describe('the sign-in routes', () => {
+  const described = {
+    available: true,
+    installUrl: 'https://github.com/apps/x/installations/new',
+    authorizationsUrl: 'https://github.com/settings/apps/authorizations',
+    account: null,
+    pending: { userCode: 'WXYZ-1234', verificationUri: 'https://github.com/login/device', expiresAt: '' },
+    error: null,
+  };
+
+  it('answers while the plugin is stopped, since a missing token is why it stopped', async () => {
+    const { router, call } = fakeRouter();
+    const login = {
+      describe: vi.fn(async () => described),
+      start: vi.fn(async () => described),
+      signOut: vi.fn(async () => ({ ...described, pending: null })),
+    };
+    registerRoutes(router, () => null, { login, tokenSource: () => null });
+
+    const status = await call('get', '/auth');
+    expect(status.status).toBe(200);
+    expect(status.body).toMatchObject({ pending: { userCode: 'WXYZ-1234' }, tokenSource: null });
+    expect(login.start).not.toHaveBeenCalled();
+
+    expect((await call('post', '/auth/start')).body.pending.userCode).toBe('WXYZ-1234');
+    expect(login.start).toHaveBeenCalledTimes(1);
+    expect((await call('post', '/auth/signout')).body.pending).toBeNull();
+    // Everything else still says the plugin is not running.
+    expect((await call('get', '/status')).status).toBe(503);
+  });
+
+  it('reports a refusal from GitHub as a failed request', async () => {
+    const { router, call } = fakeRouter();
+    const login = {
+      describe: vi.fn(async () => described),
+      start: vi.fn(async () => {
+        throw new Error('Device flow is not enabled on the GitHub App.');
+      }),
+      signOut: vi.fn(async () => described),
+    };
+    registerRoutes(router, () => null, { login, tokenSource: () => 'login' });
+    const answer = await call('post', '/auth/start');
+    expect(answer.status).toBe(502);
+    expect(answer.body.error).toContain('not enabled');
+  });
+});

@@ -54,12 +54,18 @@ export class StateStore {
     }
   }
 
-  /** Temp file + fsync + rename: a crash leaves the previous file intact. */
-  async writeText(name: string, contents: string): Promise<void> {
+  /**
+   * Temp file + fsync + rename: a crash leaves the previous file intact.
+   *
+   * `mode` is for a secret: the temp file is created with it, so there is no
+   * moment when the token sits in a world-readable file.
+   */
+  async writeText(name: string, contents: string, options: { mode?: number } = {}): Promise<void> {
     const target = this.resolve(name);
     await fs.mkdir(path.dirname(target), { recursive: true });
     const temp = `${target}.tmp`;
-    const handle = await fs.open(temp, 'w');
+    await fs.rm(temp, { force: true });
+    const handle = await fs.open(temp, 'w', options.mode ?? 0o666);
     try {
       await handle.writeFile(contents, 'utf-8');
       await handle.sync();
