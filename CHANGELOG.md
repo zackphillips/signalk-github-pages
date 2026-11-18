@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-11-18
+
+- Sign in with GitHub from the plugin's console instead of making and pasting a personal access token. Install the GitHub App on the site's repository, press **Sign in with GitHub**, and enter the code it shows at github.com/login/device on any device. The token reaches only the repositories the App is installed on, with Contents read and write, and is kept in the plugin's data directory rather than the plugin config. The plugin restarts on it by itself. A personal access token still works, and a token set in the environment or a token file still wins over the sign-in.
+- The repository owner can be left empty once signed in; it is then the signed-in account.
+- Releases are published to npm from a version tag by GitHub Actions, with a provenance attestation.
+
 ## 1.1.0 - 2026-10-27
 
 - The vessel logo and icon are uploaded from the plugin's console instead of the config page, and kept as files in the plugin's data directory. As data URLs in the plugin config they were sent with every plugin's settings, so a large logo slowed down the config page for every plugin on the server. On the first start after upgrading, a saved logo and icon are moved out of the config automatically.
